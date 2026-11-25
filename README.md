@@ -38,6 +38,29 @@ All factory config lives as numbered versions in `~/.hephaestus/state.db`: facto
 - Every night at 03:00, Hephaestus writes all versions to `~/.hephaestus/backups/` and keeps the newest 14 backups.
 - `~/.hephaestus/secrets.json` (mode 600) holds named secrets that config versions refer to by name. Backups leave it out, so secrets must be entered again after a restore.
 
+## Config versions
+
+All factory config lives as numbered versions in `~/.hephaestus/state.db`: factory projects and their policies, the planner, lead, and improver roles, the instructions for factory threads, and skills. No repo holds them.
+
+- Every edit creates a draft version with a diff against the version it was built from. A draft becomes approved or rejected, an approved version becomes deployed, and the version it replaces becomes superseded.
+- Reverting a deployed version creates a draft that restores what that version changed. A value that a later version changed again keeps its later value, and the page says how many such values it left.
+- A project's policy starts from a preset and can override any setting. `yolo` merges when checks pass, with no review and no escalation paths. `standard`, the default, also needs an approving review from a different provider on the head commit and stops for changes under `.github/workflows/`. `strict` makes every merge wait for the owner. All three revert a factory merge whose checks fail, allow 2 review rounds, and cap open factory-filed issues at 5.
+- The Settings page lists versions with their author and diff, and edits create versions. It can approve, reject, and revert. Deploying an approved version to workers is not built yet, so until then no version reaches the deployed state.
+- Every night at 03:00, Hephaestus writes all versions to `~/.hephaestus/backups/` and keeps the newest 14 backups.
+- `~/.hephaestus/secrets.json` (mode 600) holds named secrets that config versions refer to by name. Backups leave it out, so secrets must be entered again after a restore.
+
+## T3
+
+Hephaestus drives this host's T3 server, and through it the linked worker environments, with T3's outside MCP server over loopback. It reads T3's port from `~/.t3/userdata/server-runtime.json` (or under `T3CODE_HOME`).
+
+- Install records the absolute path of the `t3` CLI, because the systemd user manager's `PATH` is usually shorter than a login shell's. On first use, the service runs `t3 auth pairing create` for a 5-minute pairing code and signs itself in with it. No browser is needed. It keeps the 30-day token in `~/.hephaestus/secrets.json`, and signs in again 3 days before the token expires or when T3 rejects it, revoking its earlier session.
+- It records every factory thread with its card, worker, provider instance, model, and config version, and copies each thread's activity into `state.db` while the thread runs. T3 updates items in place, so Hephaestus re-reads from the oldest item that is not final, and fetches the rest of any text T3 cut short. Restarts lose and duplicate nothing. Each thread is polled on its own and backs off up to 5 minutes after errors. A thread T3 no longer has is marked unavailable, and its history stays.
+- T3 cannot send attachments to a linked environment, so content for a worker goes inline in the thread's first message.
+- The Environments page lists the linked environments with reachability, access, and link expiry, and Overview warns 7 days before a link expires.
+- Uninstall revokes the T3 sessions Hephaestus signed in.
+
+`HEPHAESTUS_T3_INTEGRATION=1 HEPHAESTUS_T3_WORKER=<environment id> npx vitest run test/t3/integration.test.ts` runs one short thread on a real worker through this host's T3, then archives it and revokes its session.
+
 ## Uninstall
 
 ```sh

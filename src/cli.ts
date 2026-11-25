@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { DEFAULT_PORT, readConfig } from "./config.js";
@@ -15,6 +15,21 @@ import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
 import { SystemdUserService } from "./service.js";
 import { openStore } from "./store.js";
+import { T3Adapter } from "./t3/adapter.js";
+import {
+  T3Credentials,
+  mintPairingCode,
+  revokeSessions,
+  t3Runner,
+  signIn,
+  t3ClientName,
+} from "./t3/auth.js";
+import { T3Connection } from "./t3/connection.js";
+import { ThreadEvents } from "./t3/events.js";
+import { ThreadFollower } from "./t3/follower.js";
+import { cachedEnvironments, findExecutable, resolveT3Origin } from "./t3/origin.js";
+import { environmentRoutes, linkExpiryWarnings } from "./web/environments.js";
+import { SecretsFile } from "./config/secrets.js";
 import { settingsRoutes } from "./web/settings.js";
 
 const USAGE = `Usage:
@@ -55,6 +70,8 @@ async function main(argv: string[]): Promise<number> {
         nodePath: process.execPath,
         cliPath: realpathSync(fileURLToPath(import.meta.url)),
         roots: resolveRoots(process.env, paths.home),
+        ...t3PathOption(findExecutable("t3", process.env.PATH)),
+        ...t3HomeOption(process.env.T3CODE_HOME),
         skills,
         waitForReady: (config) => waitForDashboard(config),
       });
@@ -63,11 +80,25 @@ async function main(argv: string[]): Promise<number> {
     }
     case "uninstall": {
       parseArgs({ args: rest, options: {} });
+      const installed = existsSync(paths.config) ? readConfig(paths.config) : undefined;
       const { drift } = uninstall({
         paths,
         service: new SystemdUserService(installedUnitPath(paths)),
       });
       console.log("Uninstalled.");
+      if (installed !== undefined) {
+        try {
+          const revoked = await revokeSessions(
+            t3Runner(installed.t3Path, installed.t3Home),
+            t3ClientName(installed.instanceId),
+          );
+          console.log(
+            `Revoked ${String(revoked.length)} T3 MCP session(s) that Hephaestus signed in.`,
+          );
+        } catch (error) {
+          console.log(`Could not check for T3 MCP sessions to revoke: ${String(error)}`);
+        }
+      }
       if (drift === undefined) {
         console.log(
           "The install baseline was missing or unreadable, so changes to owner config are unknown.",
@@ -90,10 +121,25 @@ async function main(argv: string[]): Promise<number> {
       const store = new ConfigStore(db);
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
+      const clientName = t3ClientName(config.instanceId);
+      const runT3 = t3Runner(config.t3Path, config.t3Home);
+      // Resolved on every connect, so a T3 restart on another port is picked up.
+      const origin = (): string => resolveT3Origin(process.env, paths.home, config.t3Home);
+      const credentials = new T3Credentials(new SecretsFile(paths.secrets), async () => {
+        // Each sign-in replaces the last one, so old sessions do not pile up in T3.
+        await revokeSessions(runT3, clientName);
+        return signIn(origin(), clientName, await mintPairingCode(runT3, clientName));
+      });
+      const connection = new T3Connection(() => `${origin()}/mcp`, credentials);
+      const t3 = new T3Adapter(connection);
+      const environments = cachedEnvironments(t3, 30_000);
+      const following = new AbortController();
+      const follower = new ThreadFollower(t3, new ThreadEvents(db)).run(following.signal);
       const server = createDashboardServer({
         db,
         instanceId: config.instanceId,
-        routes: settingsRoutes(store),
+        routes: [...settingsRoutes(store), ...environmentRoutes(environments)],
+        overview: () => linkExpiryWarnings(environments),
       });
       server.listen(config.port, config.host, () => {
         console.log(`Dashboard listening on ${config.host}:${String(config.port)}`);
@@ -103,6 +149,11 @@ async function main(argv: string[]): Promise<number> {
         process.once("SIGINT", resolve);
       });
       stopBackups();
+      following.abort();
+      // Closing the connection fails calls still waiting on T3, so shutdown does not wait for them.
+      await connection.close();
+      await follower;
+      server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       db.close();
       return 0;
@@ -122,3 +173,11 @@ main(process.argv.slice(2)).then(
     process.exitCode = 1;
   },
 );
+
+function t3PathOption(path: string | undefined): { t3Path?: string } {
+  return path === undefined ? {} : { t3Path: path };
+}
+
+function t3HomeOption(home: string | undefined): { t3Home?: string } {
+  return home !== undefined && isAbsolute(home) ? { t3Home: home } : {};
+}

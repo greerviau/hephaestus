@@ -97,6 +97,11 @@ curl --silent --header "cookie: $cookie" "$base/api/config/versions/1" | grep -q
 test "$(status "$base/settings")" = 303 || fail "/settings without a session did not redirect"
 test "$(status "$base/api/config/versions")" = 401 || fail "/api/config/versions without a session was not 401"
 
+echo "== environments (no T3 in this container)"
+test "$(status --header "cookie: $cookie" "$base/environments")" = 502 || fail "/environments did not report T3 unreachable"
+curl --silent --header "cookie: $cookie" "$base/" | grep -q "T3 could not be reached" || fail "overview did not say T3 is unreachable"
+test "$(status "$base/api/environments")" = 401 || fail "/api/environments without a session was not 401"
+
 echo "== the session survives a service restart"
 systemctl --user restart hephaestus.service
 wait_for_dashboard
