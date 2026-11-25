@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  claudeSignInMessage,
   cleanupMessage,
   deployMessage,
   parseDeploy,
@@ -73,12 +74,13 @@ describe("worker scripts", () => {
     writeFileSync(join(remote, "codex/AGENTS.md"), "# Factory\n");
     writeFileSync(join(remote, "claude/skills/probe/SKILL.md"), "# Probe\n");
     writeFileSync(join(remote, "codex/skills/probe/SKILL.md"), "# Probe\n");
+    writeFileSync(join(remote, "VERSION"), "1\n");
     const git = (...args: string[]): string =>
       execFileSync("git", ["-C", remote, ...args], { encoding: "utf8" }).trim();
     git("init", "-q", "-b", "main");
     git("add", "-A");
     git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "v1");
-    git("tag", "v1");
+    git("tag", "p-v1");
     sha = git("rev-parse", "HEAD");
     mkdirSync(join(home, ".t3/userdata"), { recursive: true });
     writeFileSync(join(home, ".t3/userdata/settings.json"), JSON.stringify({ theme: "dark" }));
@@ -93,18 +95,26 @@ describe("worker scripts", () => {
   function run(script: string, ...args: string[]): string {
     const path = join(home, "script.sh");
     writeFileSync(path, script);
-    return execFileSync("bash", [path, ...args], {
-      encoding: "utf8",
-      env: { PATH: process.env.PATH, HOME: home },
-    });
+    try {
+      return execFileSync("bash", [path, ...args], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, HOME: home },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      const failed = error as { stdout?: string; stderr?: string };
+      throw new Error(`script failed: ${failed.stdout ?? ""}${failed.stderr ?? ""}`, {
+        cause: error,
+      });
+    }
   }
 
   it("deploy.sh installs the version and the instances, and a second run changes nothing", () => {
-    const script = scriptOf(deployMessage(1, sha, remote));
-    expect(run(script, "1", sha, remote).trim()).toBe(
+    const script = scriptOf(deployMessage(1, sha, remote, "p-v1"));
+    expect(run(script, "1", sha, remote, "p-v1").trim()).toBe(
       `DEPLOYED version=1 head=${sha} home=${home} instances=wrote`,
     );
-    expect(run(script, "1", sha, remote)).toContain("instances=unchanged");
+    expect(run(script, "1", sha, remote, "p-v1")).toContain("instances=unchanged");
 
     const settings = JSON.parse(readFileSync(join(home, ".t3/userdata/settings.json"), "utf8")) as {
       theme: string;
@@ -127,12 +137,46 @@ describe("worker scripts", () => {
   });
 
   it("deploy.sh stops when the tag points at another commit", () => {
-    const script = scriptOf(deployMessage(1, "d".repeat(40), remote));
-    expect(() => run(script, "1", "d".repeat(40), remote)).toThrow();
+    const script = scriptOf(deployMessage(1, "d".repeat(40), remote, "p-v1"));
+    expect(() => run(script, "1", "d".repeat(40), remote, "p-v1")).toThrow(/DEPLOY-FAILED tag/);
+  });
+
+  it("deploy.sh stops when the tagged commit holds another version", () => {
+    const script = scriptOf(deployMessage(2, sha, remote, "p-v1"));
+    expect(() => run(script, "2", sha, remote, "p-v1")).toThrow(/holds version 1, expected 2/);
+  });
+
+  it("deploy.sh refuses to replace a real folder at a skill's path", () => {
+    mkdirSync(join(home, ".hephaestus/codex/skills/probe"), { recursive: true });
+    const script = scriptOf(deployMessage(1, sha, remote, "p-v1"));
+    expect(() => run(script, "1", sha, remote, "p-v1")).toThrow(/is a real folder/);
+  });
+
+  it("set-claude-token.sh strips line breaks and keeps the rest of the settings", () => {
+    run(scriptOf(deployMessage(1, sha, remote, "p-v1")), "1", sha, remote, "p-v1");
+    const secret = join(home, "secret");
+    writeFileSync(secret, "sk-ant-oat01-abc\n  def\n");
+    const script = /```bash\n([\s\S]*?)```/.exec(claudeSignInMessage())?.[1] ?? "";
+    expect(run(script, secret).trim()).toBe("TOKEN-SET length=19");
+    const settings = JSON.parse(readFileSync(join(home, ".t3/userdata/settings.json"), "utf8")) as {
+      theme: string;
+      providerInstances: Record<string, { environment?: { name: string; value: string }[] }>;
+    };
+    expect(settings.theme).toBe("dark");
+    expect(settings.providerInstances["hephaestus-claude"]?.environment).toEqual([
+      { name: "CLAUDE_CODE_OAUTH_TOKEN", value: "sk-ant-oat01-abcdef", sensitive: true },
+    ]);
+  });
+
+  it("cleanup.sh fails and keeps ~/.hephaestus when T3's settings cannot be read", () => {
+    run(scriptOf(deployMessage(1, sha, remote, "p-v1")), "1", sha, remote, "p-v1");
+    writeFileSync(join(home, ".t3/userdata/settings.json"), "{ not json");
+    expect(() => run(scriptOf(cleanupMessage()))).toThrow();
+    expect(readFileSync(join(home, ".hephaestus/claude/CLAUDE.md"), "utf8")).toBe("# Factory\n");
   });
 
   it("cleanup.sh removes the instances and ~/.hephaestus and keeps the owner's settings", () => {
-    run(scriptOf(deployMessage(1, sha, remote)), "1", sha, remote);
+    run(scriptOf(deployMessage(1, sha, remote, "p-v1")), "1", sha, remote, "p-v1");
     expect(run(scriptOf(cleanupMessage())).trim()).toBe(
       "CLEANED instances=hephaestus-claude,hephaestus-codex hephaestus=removed",
     );

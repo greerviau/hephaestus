@@ -146,8 +146,15 @@ function workerManager(
       const slug = getMeta(db, CONFIG_REPO_KEY);
       return slug === undefined
         ? undefined
-        : new ConfigRepo(join(paths.root, "config-repo"), slug, gitPath, ghPath);
+        : new ConfigRepo(
+            join(paths.root, "config-repo"),
+            slug,
+            gitPath,
+            ghPath,
+            `${config.instanceId.slice(0, 8)}-`,
+          );
     },
+    instances: (environmentId) => t3.instances(environmentId),
     ...(hermesPath === undefined
       ? {}
       : {

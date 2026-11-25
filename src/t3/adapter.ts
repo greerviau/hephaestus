@@ -219,6 +219,36 @@ export class T3Adapter {
     return String(project.id);
   }
 
+  /**
+   * The provider instances on an environment with what T3 says stops each
+   * from running, or undefined when T3 does not offer this tool here.
+   */
+  async instances(
+    environmentId: string,
+  ): Promise<{ providerInstanceId: string; constraints: string[] }[] | undefined> {
+    let result: { providers?: { providerInstanceId?: string; constraints?: string[] }[] };
+    try {
+      result = await this.connection.call("orchestrator_capabilities", {
+        environmentId,
+      });
+    } catch (error) {
+      if (/unknown tool|not found|tool_not_found|method not found/i.test(String(error))) {
+        return undefined;
+      }
+      throw error;
+    }
+    return (result.providers ?? []).flatMap((provider) =>
+      provider.providerInstanceId === undefined
+        ? []
+        : [
+            {
+              providerInstanceId: provider.providerInstanceId,
+              constraints: provider.constraints ?? [],
+            },
+          ],
+    );
+  }
+
   async archive(environmentId: string, threadId: string): Promise<void> {
     await this.connection.call("t3_thread_organize", {
       environmentId,

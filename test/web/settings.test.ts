@@ -212,6 +212,15 @@ describe("Settings page", () => {
 
     expect(response.status).toBe(303);
     expect(deployed).toEqual([draft.id]);
+
+    const next = store.createVersion({
+      document: sampleConfig(),
+      author: "o",
+      message: "e",
+      parentId: 1,
+    });
+    await post(`/settings/versions/${String(next.id)}/approve`, {});
+    expect(deployed).toEqual([draft.id, next.id]);
   });
 
   it("answers 404 for a version that does not exist", async () => {

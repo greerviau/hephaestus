@@ -76,6 +76,8 @@ const MIGRATIONS = [
      home TEXT,
      deployed_version INTEGER,
      deployed_sha TEXT,
+     instance_problem TEXT,
+     checked_at TEXT,
      created_at TEXT NOT NULL,
      updated_at TEXT NOT NULL
    );

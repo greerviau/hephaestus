@@ -2,22 +2,33 @@ import type { Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
 import { openStore } from "../../src/store.js";
-import type { LaunchOptions, T3Adapter, ThreadItem } from "../../src/t3/adapter.js";
+import type { LaunchOptions, T3Adapter } from "../../src/t3/adapter.js";
+import { T3ToolError } from "../../src/t3/connection.js";
 import { ThreadEvents } from "../../src/t3/events.js";
 import { FactoryThreads } from "../../src/t3/threads.js";
 import type { ConfigRepo } from "../../src/workers/config-repo.js";
-import { FACTORY_CLAUDE, FACTORY_CODEX, WorkerManager } from "../../src/workers/manager.js";
+import {
+  FACTORY_CLAUDE,
+  FACTORY_CODEX,
+  WorkerManager,
+  type InstanceReport,
+} from "../../src/workers/manager.js";
 import { sampleConfig } from "../config/fixtures.js";
 
 const SHA = "a".repeat(40);
+const SHA2 = "b".repeat(40);
 
 class FakeT3 {
   launches: LaunchOptions[] = [];
   refuse = false;
+  hang = false;
   launchThread(
     options: LaunchOptions,
   ): Promise<{ threadId: string; runId: null; projectId: string }> {
-    if (this.refuse) return Promise.reject(new Error("refused"));
+    if (this.refuse) {
+      return Promise.reject(new T3ToolError("t3_thread_launch", "invalid_request", "refused"));
+    }
+    if (this.hang) return Promise.reject(new Error("socket hang up"));
     this.launches.push(options);
     return Promise.resolve({
       threadId: `t${String(this.launches.length)}`,
@@ -30,12 +41,16 @@ class FakeT3 {
 class FakeRepo {
   published: number[] = [];
   url = "https://github.com/octo/config.git";
+  shas = [SHA, SHA2];
   ensureRemote(): Promise<void> {
     return Promise.resolve();
   }
+  tagFor(version: number): string {
+    return `p-v${String(version)}`;
+  }
   publish(version: number): Promise<string> {
     this.published.push(version);
-    return Promise.resolve(SHA);
+    return Promise.resolve(this.shas[version - 1] ?? SHA);
   }
 }
 
@@ -46,20 +61,26 @@ let t3: FakeT3;
 let repo: FakeRepo;
 let manager: WorkerManager;
 let synced: number;
+let clock: number;
+let reports: InstanceReport[] | undefined;
 
-function finishThread(
-  threadId: string,
-  text: string,
-  status = "completed",
-  extra: ThreadItem[] = [],
-): void {
+function finishThread(threadId: string, text: string, status = "completed"): void {
   const launch = t3.launches[Number(threadId.slice(1)) - 1];
   if (launch === undefined) throw new Error(`no launch for ${threadId}`);
   events.upsertItems(launch.environmentId, threadId, [
-    ...extra,
-    { itemId: "final", position: 99, type: "assistant_message", status: "completed", text },
+    {
+      itemId: `final-${threadId}`,
+      position: 99,
+      type: "assistant_message",
+      status: "completed",
+      text,
+    },
   ]);
   events.setStatus(launch.environmentId, threadId, status);
+}
+
+function deployed(version: number, sha: string): string {
+  return `DEPLOYED version=${String(version)} head=${sha} home=/home/w instances=wrote`;
 }
 
 function viewOf(environmentId: string): ReturnType<WorkerManager["view"]> {
@@ -68,15 +89,28 @@ function viewOf(environmentId: string): ReturnType<WorkerManager["view"]> {
   return manager.view(worker);
 }
 
+/** Deploys version 1 to env-1 and passes both test turns. */
+async function makeReady(): Promise<void> {
+  await manager.deployVersion(1);
+  finishThread("t1", deployed(1, SHA));
+  await manager.tick();
+  finishThread("t2", "FACTORY-READY");
+  finishThread("t3", "FACTORY-READY");
+  await manager.tick();
+}
+
 beforeEach(() => {
+  clock = Date.parse("2026-11-25T12:00:00Z");
+  const now = (): Date => new Date(clock);
   db = openStore(":memory:");
-  store = new ConfigStore(db);
+  store = new ConfigStore(db, now);
   const first = store.createVersion({ document: sampleConfig(), author: "test", message: "first" });
   store.approve(first.id);
-  events = new ThreadEvents(db);
+  events = new ThreadEvents(db, now);
   t3 = new FakeT3();
   repo = new FakeRepo();
   synced = 0;
+  reports = undefined;
   manager = new WorkerManager({
     db,
     store,
@@ -88,6 +122,8 @@ beforeEach(() => {
       synced += 1;
       return Promise.resolve();
     },
+    instances: () => Promise.resolve(reports),
+    now,
   });
   manager.setEnabled("env-1", "mark-01", true);
   manager.setEnabled("env-2", "mark-02", false);
@@ -99,11 +135,13 @@ describe("WorkerManager", () => {
 
     expect(repo.published).toEqual([1]);
     expect(store.get(1).state).toBe("deployed");
+    expect(manager.desired()).toEqual({ version: 1, sha: SHA, tag: "p-v1" });
     expect(synced).toBe(1);
     expect(t3.launches.map((launch) => launch.environmentId)).toEqual(["env-1"]);
-    const launch = t3.launches[0];
-    expect(launch?.providerInstanceId).toBe("claudeAgent");
-    expect(launch?.message).toContain(`bash deploy.sh 1 ${SHA} https://github.com/octo/config.git`);
+    expect(t3.launches[0]?.providerInstanceId).toBe("claudeAgent");
+    expect(t3.launches[0]?.message).toContain(
+      `bash deploy.sh 1 ${SHA} https://github.com/octo/config.git p-v1`,
+    );
     expect(events.thread("env-1", "t1")?.kind).toBe("setup");
   });
 
@@ -118,63 +156,24 @@ describe("WorkerManager", () => {
     expect(repo.published).toEqual([]);
   });
 
-  it("records a successful deploy and starts a test turn on each factory instance", async () => {
+  it("makes a worker ready once it runs the desired version and both test turns pass", async () => {
     await manager.deployVersion(1);
-    finishThread(
-      "t1",
-      `\`\`\`\nDEPLOYED version=1 head=${SHA} home=/home/w instances=wrote\n\`\`\``,
-    );
-
+    expect(viewOf("env-1").blocker).toBe("A deploy is running.");
+    finishThread("t1", deployed(1, SHA));
     await manager.tick();
-
-    expect(manager.worker("env-1")).toMatchObject({
-      deployedVersion: 1,
-      deployedSha: SHA,
-      home: "/home/w",
-    });
-    expect(manager.latestTask("env-1", "deploy")?.status).toBe("succeeded");
     expect(t3.launches.slice(1).map((launch) => launch.providerInstanceId)).toEqual([
       FACTORY_CLAUDE,
       FACTORY_CODEX,
     ]);
-  });
-
-  it("fails a deploy whose reported commit is not the one published", async () => {
-    await manager.deployVersion(1);
-    finishThread(
-      "t1",
-      `DEPLOYED version=1 head=${"b".repeat(40)} home=/home/w instances=unchanged`,
-    );
-
-    await manager.tick();
-
-    const task = manager.latestTask("env-1", "deploy");
-    expect(task?.status).toBe("failed");
-    expect(String(task?.detail.reason)).toMatch(/not version 1/);
-    expect(manager.worker("env-1")?.deployedVersion).toBeNull();
-  });
-
-  it("fails a deploy whose thread ended without completing", async () => {
-    await manager.deployVersion(1);
-    finishThread("t1", "", "failed");
-
-    await manager.tick();
-
-    expect(manager.latestTask("env-1", "deploy")?.detail.reason).toBe("the thread ended failed");
-  });
-
-  it("makes a worker ready once it runs the deployed version and both test turns pass", async () => {
-    await manager.deployVersion(1);
-    expect(viewOf("env-1").blocker).toBe("A deploy is running.");
-    finishThread("t1", `DEPLOYED version=1 head=${SHA} home=/home/w instances=wrote`);
-    await manager.tick();
     finishThread("t2", "FACTORY-READY");
     finishThread("t3", "Not logged in");
     await manager.tick();
-
-    const view = viewOf("env-1");
-    expect(view).toMatchObject({ claude: "signed-in", codex: "signed-out", ready: false });
-    expect(view.blocker).toBe("Sign in Factory Codex.");
+    expect(viewOf("env-1")).toMatchObject({
+      claude: "signed-in",
+      codex: "signed-out",
+      ready: false,
+    });
+    expect(viewOf("env-1").blocker).toBe("Sign in Factory Codex.");
 
     await manager.startCodexSignIn("env-1");
     events.upsertItems("env-1", "t4", [
@@ -191,41 +190,190 @@ describe("WorkerManager", () => {
       url: "https://auth.openai.com/codex/device",
       code: "2UY4-4HUKL",
     });
-
     finishThread("t4", "```\nCODEX-SIGNED-IN\n```");
     await manager.tick();
-    expect(t3.launches.at(-1)?.providerInstanceId).toBe(FACTORY_CODEX);
     finishThread("t5", "FACTORY-READY");
     await manager.tick();
 
     expect(manager.readyWorkers().map((worker) => worker.environmentId)).toEqual(["env-1"]);
   });
 
+  it("fails a deploy whose reported commit is not the one published", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA2));
+    await manager.tick();
+
+    expect(String(manager.latestTask("env-1", "deploy")?.detail.reason)).toMatch(/not version 1/);
+    expect(manager.worker("env-1")?.deployedVersion).toBeNull();
+  });
+
+  it("is not ready after a failed redeploy of the version it already runs", async () => {
+    await makeReady();
+    expect(viewOf("env-1").ready).toBe(true);
+
+    await manager.deploy("env-1");
+    finishThread("t4", "DEPLOY-FAILED tag p-v1 is x, expected y");
+    await manager.tick();
+
+    expect(viewOf("env-1")).toMatchObject({ ready: false });
+    expect(viewOf("env-1").blocker).toMatch(/last deploy failed: tag p-v1/);
+  });
+
+  it("rolls a newer version out after the worker's running deploy ends", async () => {
+    await manager.deployVersion(1);
+    const second = store.createVersion({
+      document: sampleConfig(),
+      author: "t",
+      message: "two",
+      parentId: 1,
+    });
+    store.approve(second.id);
+    await manager.deployVersion(second.id);
+    expect(t3.launches).toHaveLength(1);
+    expect(manager.desired()?.version).toBe(2);
+
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+
+    const deploys = t3.launches.filter((launch) => launch.title === "Hephaestus: deploy config");
+    expect(deploys.at(-1)?.message).toContain(`bash deploy.sh 2 ${SHA2}`);
+    expect(viewOf("env-1").blocker).toBe("A deploy is running.");
+  });
+
+  it("waits for a worker's factory threads to finish before deploying to it", async () => {
+    await makeReady();
+    events.recordThread({
+      environmentId: "env-1",
+      threadId: "work",
+      title: "Implement",
+      providerInstanceId: FACTORY_CLAUDE,
+      model: "m",
+      configVersion: 1,
+      cardId: "1",
+      kind: "implement",
+    });
+    const second = store.createVersion({
+      document: sampleConfig(),
+      author: "t",
+      message: "two",
+      parentId: 1,
+    });
+    store.approve(second.id);
+    const launches = t3.launches.length;
+
+    await manager.deployVersion(second.id);
+    expect(t3.launches).toHaveLength(launches);
+    expect(viewOf("env-1").blocker).toMatch(/Waiting for running factory threads/);
+    await expect(manager.deploy("env-1")).rejects.toThrow(/1 factory threads are running/);
+
+    events.setStatus("env-1", "work", "completed");
+    await manager.tick();
+    expect(t3.launches.at(-1)?.message).toContain(`bash deploy.sh 2 ${SHA2}`);
+  });
+
+  it("retries a failed deploy after a pause", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", "DEPLOY-FAILED network");
+    await manager.tick();
+    expect(t3.launches).toHaveLength(1);
+
+    clock += 31 * 60_000;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(2);
+  });
+
+  it("recovers a task whose launch reply was lost, and gives up on one that never started", async () => {
+    await manager.deployVersion(1);
+    t3.hang = true;
+    const task = await manager.startClaudeSignIn("env-1");
+    expect(task).toMatchObject({ status: "running", threadId: null });
+    // The launch record says T3 answered after all.
+    db.prepare(
+      "UPDATE factory_launches SET status = 'launched', thread_id = 'late' WHERE client_request_id = ?",
+    ).run(task.clientRequestId);
+    await manager.tick();
+    expect(manager.task(task.id)?.threadId).toBe("late");
+
+    const other = await manager.startCodexSignIn("env-1");
+    clock += 6 * 60_000;
+    await manager.tick();
+    expect(manager.task(other.id)).toMatchObject({
+      status: "failed",
+      detail: { reason: "the thread did not start" },
+    });
+  });
+
+  it("times out a task whose thread never ends", async () => {
+    const task = await manager.startCodexSignIn("env-1");
+    clock += 31 * 60_000;
+    await manager.tick();
+    expect(manager.task(task.id)?.status).toBe("failed");
+  });
+
+  it("marks a task failed when T3 refuses the launch", async () => {
+    await manager.deployVersion(1);
+    t3.refuse = true;
+    const task = await manager.startCodexSignIn("env-1");
+    expect(task.status).toBe("failed");
+    expect(String(task.detail.reason)).toMatch(/would not start/);
+  });
+
   it("starts a Claude test turn after the token is stored, and reports a rejected token", async () => {
+    await manager.deployVersion(1);
     await manager.startClaudeSignIn("env-1");
-    finishThread("t1", "TOKEN-FAILED the pasted value is not a Claude setup token");
+    finishThread("t2", "TOKEN-FAILED the pasted value is not a Claude setup token");
     await manager.tick();
     expect(manager.latestTask("env-1", "claude-sign-in")?.detail.reason).toBe(
       "the pasted value is not a Claude setup token",
     );
 
     await manager.startClaudeSignIn("env-1");
-    finishThread("t2", "TOKEN-SET length=108");
+    finishThread("t3", "TOKEN-SET length=108");
     await manager.tick();
     expect(t3.launches.at(-1)?.providerInstanceId).toBe(FACTORY_CLAUDE);
   });
 
   it("does not start a second task of the same kind while one runs", async () => {
+    await manager.deployVersion(1);
     await manager.startClaudeSignIn("env-1");
     await manager.startClaudeSignIn("env-1");
-    expect(t3.launches).toHaveLength(1);
+    expect(t3.launches).toHaveLength(2);
   });
 
-  it("marks a task failed when T3 refuses the launch", async () => {
-    t3.refuse = true;
-    const task = await manager.startCodexSignIn("env-1");
-    expect(task.status).toBe("failed");
-    expect(String(task.detail.reason)).toMatch(/would not start/);
+  it("is not ready when T3 reports a factory instance missing or disabled", async () => {
+    await makeReady();
+    reports = [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints: ["Provider instance is disabled."] },
+    ];
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1").blocker).toBe("Factory Codex: Provider instance is disabled.");
+
+    reports = [
+      { providerInstanceId: FACTORY_CODEX, constraints: ["Provider is not authenticated."] },
+    ];
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1").blocker).toBe("Factory Claude is missing on this worker; deploy again.");
+  });
+
+  it("accepts a cleanup only when the thread completed and reported removal", async () => {
+    const task = await manager.startCleanup("env-1");
+    await manager.finish(task, "failed", "CLEANED instances=none hephaestus=removed");
+    expect(manager.task(task.id)?.status).toBe("failed");
+
+    const again = await manager.startCleanup("env-1");
+    await manager.finish(again, "completed", "CLEANUP-FAILED ~/.hephaestus could not be removed");
+    expect(manager.task(again.id)?.detail.reason).toBe("~/.hephaestus could not be removed");
+
+    const third = await manager.startCleanup("env-1");
+    await manager.finish(
+      third,
+      "completed",
+      "CLEANED instances=hephaestus-claude hephaestus=removed",
+    );
+    expect(manager.task(third.id)?.status).toBe("succeeded");
   });
 
   it("names the next step for a worker that has not been set up", () => {

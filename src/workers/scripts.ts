@@ -14,8 +14,8 @@ const RUN_EXACTLY =
   "Do not change, inspect, or second-guess the script, and do not run anything else.";
 
 /** The first message of a deploy thread: the fixed script inline, and the version to install. */
-export function deployMessage(version: number, sha: string, repoUrl: string): string {
-  return `Hephaestus deploy thread. Save the script below exactly as \`deploy.sh\` in the current directory, then run \`bash deploy.sh ${String(version)} ${sha} ${repoUrl}\` once. ${RUN_EXACTLY} Reply with the script's full output in one fenced block, and nothing else.
+export function deployMessage(version: number, sha: string, repoUrl: string, tag: string): string {
+  return `Hephaestus deploy thread. Save the script below exactly as \`deploy.sh\` in the current directory, then run \`bash deploy.sh ${String(version)} ${sha} ${repoUrl} ${tag}\` once. ${RUN_EXACTLY} Reply with the script's full output in one fenced block, and nothing else.
 
 \`\`\`bash
 ${script("deploy.sh")}\`\`\``;

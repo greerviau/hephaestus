@@ -48,10 +48,31 @@ export function versionFiles(version: number, config: FactoryConfig): Record<str
   return files;
 }
 
+/** Publishes run one at a time per clone, across all ConfigRepo objects for it. */
+const locks = new Map<string, Promise<unknown>>();
+
+function serialized<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const previous = locks.get(key) ?? Promise.resolve();
+  const next = previous.then(work, work);
+  locks.set(
+    key,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
+export class NotPrivateError extends Error {
+  constructor(slug: string) {
+    super(`${slug} is not a private repo. Factory config must not be public; name a private repo.`);
+  }
+}
+
 /**
  * Hephaestus's private config repo: one tag per deployed config version,
  * which deploy threads fetch on each worker. Only Hephaestus writes to it,
- * from a clone under ~/.hephaestus. Git authenticates through `gh`.
+ * from a clone under ~/.hephaestus. Git authenticates through `gh`. Tags
+ * carry this install's prefix, so a reinstall that starts again at version 1
+ * cannot reuse an older install's tags.
  */
 export class ConfigRepo {
   constructor(
@@ -59,71 +80,97 @@ export class ConfigRepo {
     private readonly slug: string,
     private readonly gitPath: string,
     private readonly ghPath: string,
+    private readonly tagPrefix: string,
     private readonly exec: CommandRun = commandRunner,
   ) {
     if (!isRepoSlug(slug)) throw new Error(`${slug} is not an owner/repo name.`);
+    if (!/^[A-Za-z0-9-]*$/.test(tagPrefix)) throw new Error(`Invalid tag prefix ${tagPrefix}.`);
   }
 
   get url(): string {
     return `https://github.com/${this.slug}.git`;
   }
 
-  /** Creates the private repo on GitHub when it does not exist yet. */
+  tagFor(version: number): string {
+    return `${this.tagPrefix}v${String(version)}`;
+  }
+
+  /** Checks the repo is private, and creates it, private, when GitHub says it does not exist. */
   async ensureRemote(): Promise<void> {
+    let found: { isPrivate: boolean } | undefined;
     try {
-      await this.exec(this.ghPath, ["repo", "view", this.slug, "--json", "name"]);
-    } catch {
-      await this.exec(this.ghPath, [
-        "repo",
-        "create",
-        this.slug,
-        "--private",
-        "--description",
-        "Hephaestus config versions. Written only by Hephaestus.",
-      ]);
+      found = JSON.parse(
+        await this.exec(this.ghPath, ["repo", "view", this.slug, "--json", "isPrivate"]),
+      ) as { isPrivate: boolean };
+    } catch (error) {
+      if (!/Could not resolve to a Repository/i.test(String(error))) throw error;
     }
-  }
-
-  /** Commits the version's files, tags it `v<version>`, pushes both, and returns the commit SHA. */
-  async publish(version: number, config: FactoryConfig): Promise<string> {
-    await this.ensureClone();
-    const tag = `v${String(version)}`;
-    const existing = await this.tagCommit(tag);
-    if (existing !== undefined) {
-      await this.git(["push", "-q", "origin", `refs/tags/${tag}`]);
-      return existing;
+    if (found !== undefined) {
+      if (!found.isPrivate) throw new NotPrivateError(this.slug);
+      return;
     }
-    for (const entry of readdirSync(this.dir)) {
-      if (entry !== ".git") rmSync(join(this.dir, entry), { recursive: true, force: true });
-    }
-    for (const [path, text] of Object.entries(versionFiles(version, config))) {
-      const target = join(this.dir, path);
-      mkdirSync(dirname(target), { recursive: true });
-      writeFileSync(target, text);
-    }
-    await this.git(["add", "-A"]);
-    await this.git([
-      "-c",
-      "user.name=Hephaestus",
-      "-c",
-      "user.email=hephaestus@localhost",
-      "commit",
-      "-q",
-      "--allow-empty",
-      "-m",
-      `Config version ${String(version)}`,
+    await this.exec(this.ghPath, [
+      "repo",
+      "create",
+      this.slug,
+      "--private",
+      "--description",
+      "Hephaestus config versions. Written only by Hephaestus.",
     ]);
-    await this.git(["tag", tag]);
-    await this.git(["push", "-q", "origin", "HEAD:refs/heads/main", `refs/tags/${tag}`]);
-    return (await this.git(["rev-parse", "HEAD"])).trim();
   }
 
-  private async tagCommit(tag: string): Promise<string | undefined> {
-    try {
-      return (await this.git(["rev-parse", "--verify", "-q", `refs/tags/${tag}^{commit}`])).trim();
-    } catch {
-      return undefined;
-    }
+  /**
+   * Commits the version's files, tags that commit, pushes both, and returns
+   * the commit SHA. Publishing a version again returns its tagged commit, and
+   * fails if the tag holds other files.
+   */
+  publish(version: number, config: FactoryConfig): Promise<string> {
+    return serialized(this.dir, async () => {
+      await this.ensureClone();
+      const tag = this.tagFor(version);
+      for (const entry of readdirSync(this.dir)) {
+        if (entry !== ".git") rmSync(join(this.dir, entry), { recursive: true, force: true });
+      }
+      for (const [path, text] of Object.entries(versionFiles(version, config))) {
+        const target = join(this.dir, path);
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, text);
+      }
+      await this.git(["add", "-A"]);
+      const tree = (await this.git(["write-tree"])).trim();
+      const existing = await this.revParse(`refs/tags/${tag}^{commit}`);
+      if (existing !== undefined) {
+        const tagged = await this.revParse(`refs/tags/${tag}^{tree}`);
+        if (tagged !== tree) {
+          throw new Error(
+            `Tag ${tag} in ${this.slug} holds other files than version ${String(version)}.`,
+          );
+        }
+        await this.git(["push", "-q", "origin", `refs/tags/${tag}`]);
+        return existing;
+      }
+      await this.git([
+        "-c",
+        "user.name=Hephaestus",
+        "-c",
+        "user.email=hephaestus@localhost",
+        "commit",
+        "-q",
+        "--allow-empty",
+        "-m",
+        `Config version ${String(version)}`,
+      ]);
+      const sha = (await this.git(["rev-parse", "HEAD"])).trim();
+      await this.git(["tag", tag, sha]);
+      await this.git(["push", "-q", "origin", `${sha}:refs/heads/main`, `refs/tags/${tag}`]);
+      return sha;
+    });
+  }
+
+  private revParse(ref: string): Promise<string | undefined> {
+    return this.git(["rev-parse", "--verify", "-q", ref])
+      .then((sha) => sha.trim())
+      .catch(() => undefined);
   }
 
   private async ensureClone(): Promise<void> {
@@ -133,17 +180,22 @@ export class ConfigRepo {
       await this.git(["remote", "add", "origin", this.url]);
     }
     await this.git(["remote", "set-url", "origin", this.url]);
-    await this.git(["fetch", "-q", "--tags", "origin"]).catch(() => undefined);
-    const remoteMain = await this.git(["rev-parse", "--verify", "-q", "refs/remotes/origin/main"])
-      .then((sha) => sha.trim())
-      .catch(() => undefined);
+    // An empty new repo has nothing to fetch.
+    await this.git(["fetch", "-q", "--force", "--tags", "origin"]).catch(() => undefined);
+    const remoteMain = await this.revParse("refs/remotes/origin/main");
     if (remoteMain !== undefined) await this.git(["reset", "-q", "--hard", remoteMain]);
   }
 
   private git(args: string[]): Promise<string> {
     return this.exec(
       this.gitPath,
-      ["-c", `credential.https://github.com.helper=!${this.ghPath} auth git-credential`, ...args],
+      [
+        "-c",
+        "credential.helper=",
+        "-c",
+        `credential.https://github.com.helper=!${this.ghPath} auth git-credential`,
+        ...args,
+      ],
       this.dir,
     );
   }

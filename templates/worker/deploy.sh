@@ -2,24 +2,31 @@
 # Installs one config version on this worker and keeps the two factory
 # provider instances in T3's settings. Hephaestus sends this script inline in
 # a deploy thread; the config repo cannot change it.
-# Usage: deploy.sh <version> <commit sha> <config repo https url>
+# Usage: deploy.sh <version> <commit sha> <config repo https url> <tag>
 set -euo pipefail
-version=$1 sha=$2 repo_url=$3
-tag="v$version"
+version=$1 sha=$2 repo_url=$3 tag=$4
 root=$HOME/.hephaestus
 cfg=$root/config
 settings=${T3CODE_HOME:-$HOME/.t3}/userdata/settings.json
 umask 077
-mkdir -p "$cfg/versions" "$root/claude" "$root/codex"
+mkdir -p "$cfg/versions" "$root/claude/skills" "$root/codex/skills"
+export GIT_TERMINAL_PROMPT=0
+gh_path=$(command -v gh || true)
+git_() {
+  if [ -n "$gh_path" ]; then
+    git -c credential.helper= -c "credential.https://github.com.helper=!$gh_path auth git-credential" "$@"
+  else
+    git "$@"
+  fi
+}
 
 if [ -d "$cfg/repo/.git" ]; then
   git -C "$cfg/repo" remote set-url origin "$repo_url"
-  git -C "$cfg/repo" fetch -q --force --tags origin
 else
-  git clone -q --no-checkout "$repo_url" "$cfg/repo"
-  git -C "$cfg/repo" fetch -q --force --tags origin
+  git_ clone -q --no-checkout "$repo_url" "$cfg/repo"
 fi
-head=$(git -C "$cfg/repo" rev-parse "$tag^{commit}")
+git_ -C "$cfg/repo" fetch -q --force origin "+refs/tags/$tag:refs/tags/$tag"
+head=$(git -C "$cfg/repo" rev-parse "refs/tags/$tag^{commit}")
 if [ "$head" != "$sha" ]; then
   echo "DEPLOY-FAILED tag $tag is $head, expected $sha"
   exit 1
@@ -29,23 +36,33 @@ if [ ! -d "$cfg/versions/$sha" ]; then
   git -C "$cfg/repo" archive "$sha" | tar -x -C "$tmp"
   mv -T "$tmp" "$cfg/versions/$sha"
 fi
-ln -sfn "versions/$sha" "$cfg/.current.tmp"
+installed=$(cat "$cfg/versions/$sha/VERSION" 2>/dev/null || true)
+if [ "$installed" != "$version" ]; then
+  echo "DEPLOY-FAILED commit $sha holds version ${installed:-none}, expected $version"
+  exit 1
+fi
+ln -sfnT "versions/$sha" "$cfg/.current.tmp"
 mv -T "$cfg/.current.tmp" "$cfg/current"
-ln -sfn ../config/current/claude/CLAUDE.md "$root/claude/CLAUDE.md"
-ln -sfn ../config/current/claude/skills "$root/claude/skills"
-ln -sfn ../config/current/codex/AGENTS.md "$root/codex/AGENTS.md"
+ln -sfnT "../config/versions/$sha/claude/CLAUDE.md" "$root/claude/CLAUDE.md"
+ln -sfnT "../config/versions/$sha/codex/AGENTS.md" "$root/codex/AGENTS.md"
 
-# Codex resolves skill paths and keeps the list it first found, so its skills
-# directory is a real one with a symlink per skill that each deploy rewrites.
-[ -L "$root/codex/skills" ] && rm "$root/codex/skills"
-mkdir -p "$root/codex/skills"
-for link in "$root/codex/skills"/*; do
-  if [ -L "$link" ]; then rm "$link"; fi
-done
-for dir in "$cfg/versions/$sha/codex/skills"/*/; do
-  [ -d "$dir" ] || continue
-  name=$(basename "$dir")
-  ln -sfn "../../config/versions/$sha/codex/skills/$name" "$root/codex/skills/$name"
+# Each skill is a symlink into this version's folder, so a skills directory
+# changes on every deploy and an old version's files stay where they were.
+for agent in claude codex; do
+  dir=$root/$agent/skills
+  [ -L "$dir" ] && rm "$dir" && mkdir -p "$dir"
+  for link in "$dir"/*; do
+    if [ -L "$link" ]; then rm "$link"; fi
+  done
+  for skill in "$cfg/versions/$sha/$agent/skills"/*/; do
+    [ -d "$skill" ] || continue
+    name=$(basename "$skill")
+    if [ -e "$dir/$name" ] && [ ! -L "$dir/$name" ]; then
+      echo "DEPLOY-FAILED $dir/$name is a real folder; remove it so the factory skill can be installed"
+      exit 1
+    fi
+    ln -sfnT "../../config/versions/$sha/$agent/skills/$name" "$dir/$name"
+  done
 done
 
 python3 - "$root" "$HOME" <<'PY'
@@ -75,7 +92,32 @@ os.replace(path + ".tmp", path)
 PY
 
 instances=$(python3 - "$settings" "$root" <<'PY'
-import json, os, shutil, sys, time
+import os, sys
+def update_settings(path, change):
+    """Applies change(settings) to T3's settings file under a lock, retrying if T3 wrote it meanwhile."""
+    import fcntl, json, os, tempfile
+    lock_dir = os.path.join(os.environ["HOME"], ".hephaestus")
+    os.makedirs(lock_dir, mode=0o700, exist_ok=True)
+    with open(os.path.join(lock_dir, "settings.lock"), "w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        for _ in range(10):
+            before = os.stat(path).st_mtime_ns if os.path.exists(path) else None
+            settings = json.load(open(path)) if before is not None else {}
+            result = change(settings)
+            if result is None:
+                return None
+            fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".hephaestus-", suffix=".tmp")
+            with os.fdopen(fd, "w") as f:
+                json.dump(settings, f, indent=2)
+                f.write("\n")
+            os.chmod(tmp, 0o600)
+            after = os.stat(path).st_mtime_ns if os.path.exists(path) else None
+            if after != before:
+                os.remove(tmp)
+                continue
+            os.replace(tmp, path)
+            return result
+        raise SystemExit("T3 kept changing its settings file; try again")
 path, root = sys.argv[1], sys.argv[2]
 want = {
     "hephaestus-claude": {"driver": "claudeAgent", "displayName": "Factory Claude", "enabled": True,
@@ -87,26 +129,18 @@ def covers(have, need):
     if isinstance(need, dict):
         return isinstance(have, dict) and all(k in have and covers(have[k], v) for k, v in need.items())
     return have == need
-settings = json.load(open(path)) if os.path.exists(path) else {}
-current = settings.setdefault("providerInstances", {})
-changed = [k for k, v in want.items() if not covers(current.get(k), v)]
-if not changed:
-    print("unchanged")
-    sys.exit(0)
-if os.path.exists(path):
-    shutil.copy2(path, os.path.join(root, "t3-settings.backup-%d.json" % int(time.time())))
-for k in changed:
-    entry = current.get(k) if isinstance(current.get(k), dict) else {}
-    for field, value in want[k].items():
-        entry[field] = {**(entry.get(field) or {}), **value} if isinstance(value, dict) else value
-    current[k] = entry
-tmp = path + ".hephaestus-tmp"
-with open(tmp, "w") as f:
-    json.dump(settings, f, indent=2)
-    f.write("\n")
-os.chmod(tmp, 0o600)
-os.replace(tmp, path)
-print("wrote")
+def change(settings):
+    current = settings.setdefault("providerInstances", {})
+    changed = [k for k, v in want.items() if not covers(current.get(k), v)]
+    if not changed:
+        return None
+    for k in changed:
+        entry = current.get(k) if isinstance(current.get(k), dict) else {}
+        for field, value in want[k].items():
+            entry[field] = {**(entry.get(field) or {}), **value} if isinstance(value, dict) else value
+        current[k] = entry
+    return "wrote"
+print(update_settings(path, change) or "unchanged")
 PY
 )
 echo "DEPLOYED version=$version head=$(git -C "$cfg/repo" rev-parse "$sha^{commit}") home=$HOME instances=$instances"

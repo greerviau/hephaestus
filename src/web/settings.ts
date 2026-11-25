@@ -34,9 +34,7 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
     {
       method: "POST",
       path: /^\/settings\/versions\/(\d+)\/(approve|reject|revert)$/,
-      handle: (context) => {
-        act(context);
-      },
+      handle: (context) => act(context),
     },
     {
       method: "POST",
@@ -181,6 +179,11 @@ ${errors}
         }</p>
 <p>${escapeHtml(version.message)}</p>
 ${
+  url.searchParams.get("deploy") === null
+    ? ""
+    : `<p class="error">Approved, but not deployed: ${escapeHtml(url.searchParams.get("deploy") ?? "")}</p>`
+}
+${
   url.searchParams.get("hermes") === "failed"
     ? '<p class="error">The version is deployed, but applying it to the factory Hermes root failed. The service log has the error.</p>'
     : ""
@@ -248,7 +251,7 @@ ${diffTable(store.diff(version.id))}
     }
   }
 
-  function act({ response, params }: RouteContext): void {
+  async function act({ response, params }: RouteContext): Promise<void> {
     const id = Number(params[0]);
     const action = params[1];
     if (find(id) === undefined) {
@@ -256,8 +259,25 @@ ${diffTable(store.diff(version.id))}
       return;
     }
     try {
-      if (action === "approve") store.approve(id);
-      else if (action === "reject") store.reject(id);
+      if (action === "approve") {
+        store.approve(id);
+        // Approval deploys the version; a failed deploy can be retried from this page.
+        if (deploy !== undefined) {
+          try {
+            const { hermesError } = await deploy(id);
+            redirect(
+              response,
+              `/settings/versions/${String(id)}${hermesError === undefined ? "" : "?hermes=failed"}`,
+            );
+          } catch (error) {
+            redirect(
+              response,
+              `/settings/versions/${String(id)}?deploy=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`,
+            );
+          }
+          return;
+        }
+      } else if (action === "reject") store.reject(id);
       else {
         const { version, conflicts } = store.revert(id, "owner");
         redirect(
