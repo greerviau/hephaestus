@@ -17,19 +17,20 @@ All commands run from the repo root and need Docker.
 name=$(test/container/up.sh)
 ```
 
-`up.sh` builds the image from the checkout (`npm ci`, `npm run build`), boots systemd, and starts the user manager for `owner`.
+`up.sh` builds an image from the checkout (`npm ci`, `npm run build`), boots systemd in a container from that exact image ID, and starts the user manager for `owner`.
 It prints the container name when the user manager's bus is up, which is the ready signal.
-Each run uses its own container, so instances run side by side.
+Each run uses its own container and image ID, so instances run side by side.
 The container is the instance; record its name instead of a PID.
 
 ## Doctor
 
 ```sh
 test/container/as-owner.sh "$name" systemctl --user is-system-running
-docker exec "$name" stat -c %Y /opt/hephaestus/dist/cli.js
+test "$(docker exec "$name" cat /opt/hephaestus/SOURCE_SHA256)" = "$(test/container/source-hash.sh)" && echo "build matches checkout"
 ```
 
-The first prints `running` or `degraded`. The second shows the build time, which must be after `up.sh` started; otherwise the image is stale.
+The first prints `running` or `degraded`.
+The second compares a hash of `package.json`, `package-lock.json`, the tsconfig files, and `src/` taken inside the image with the same hash of the checkout, and prints `build matches checkout` when they agree.
 
 ## Drive
 
@@ -39,6 +40,8 @@ Run CLI commands as `owner`:
 printf '%s\n' 'correct horse battery' | test/container/as-owner.sh "$name" node /opt/hephaestus/dist/cli.js install --port 7700
 test/container/as-owner.sh "$name" node /opt/hephaestus/dist/cli.js uninstall
 ```
+
+Quote any command that uses `~` or `$HOME` with `sh -c '...'`, so the container's shell expands it, not the host's.
 
 Drive the dashboard with `curl` inside the container. Routes and handles: `GET /login` (form field `name="password"`), `POST /login`, `POST /logout`, `GET /`, `GET /api/session`, and the cookie `hephaestus_session`.
 
@@ -60,11 +63,12 @@ Capture each command, its output, HTTP status codes and `Set-Cookie` headers, `s
 test/container/down.sh "$name"
 ```
 
-This removes the container and everything in it. Evidence on the host stays.
+This removes the container, everything in it, and its image unless another container uses it. Evidence on the host stays.
 
 ## Helpers
 
 - `test/container/up.sh [name]`: build the image and boot a container; prints its name.
 - `test/container/as-owner.sh <name> <command...>`: run a command as `owner` with the user manager reachable.
-- `test/container/down.sh <name>`: remove the container.
+- `test/container/down.sh <name>`: remove the container and its image.
+- `test/container/source-hash.sh [root]`: print the source hash the doctor compares.
 - `.agents/skills/verify-hephaestus/scripts/journey.sh`: launch, run the full journey, save evidence, clean up. Prints the evidence directory.
