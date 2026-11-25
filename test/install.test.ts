@@ -20,6 +20,7 @@ import {
 } from "../src/install.js";
 import { resolvePaths, type Paths } from "../src/paths.js";
 import { UnitExistsError, type ServiceManager } from "../src/service.js";
+import { ConfigStore } from "../src/config/store.js";
 import { openStore } from "../src/store.js";
 
 class FakeService implements ServiceManager {
@@ -51,6 +52,7 @@ const options = () => ({
   port: 7700,
   nodePath: "/usr/bin/node",
   cliPath: "/opt/hephaestus/dist/cli.js",
+  skills: [{ name: "review", files: { "SKILL.md": "# Review\n" } }],
   waitForReady: () => {
     readyChecks += 1;
     return Promise.resolve();
@@ -100,6 +102,19 @@ describe("install", () => {
       'ExecStart=:"/usr/bin/node" "/opt/hephaestus/dist/cli.js" "serve"',
     );
     expect(readyChecks).toBe(1);
+  });
+
+  it("creates the first config version from the templates and the imported skills", async () => {
+    await install(options());
+
+    const db = openStore(paths.state);
+    const versions = new ConfigStore(db).list();
+    db.close();
+
+    expect(versions).toHaveLength(1);
+    expect(versions[0]).toMatchObject({ id: 1, state: "approved", author: "install" });
+    expect(versions[0]?.document.skills.review).toEqual({ "SKILL.md": "# Review\n" });
+    expect(versions[0]?.document.roles.lead.persona).toContain("start_work");
   });
 
   it("refuses to install over an existing install", async () => {

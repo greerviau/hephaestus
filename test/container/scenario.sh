@@ -49,8 +49,11 @@ ln -s "$HOME/skills-checkout/review" "$HOME/.claude/skills/review"
 echo "model = 'personal'" > "$HOME/.codex/config.toml"
 echo "{}" > "$HOME/.t3/userdata/settings.json"
 
+mkdir -p "$HOME/factory-skills/triage"
+echo "# Triage" > "$HOME/factory-skills/triage/SKILL.md"
+
 echo "== install"
-printf '%s\n' "$password" | $cli install --port "$port"
+printf '%s\n' "$password" | $cli install --port "$port" --skill "$HOME/factory-skills/triage"
 test -d "$HOME/.hephaestus" || fail "~/.hephaestus missing"
 test "$(stat -c %a "$HOME/.hephaestus")" = 700 || fail "~/.hephaestus is not mode 700"
 ls -la "$HOME/.hephaestus"
@@ -85,6 +88,14 @@ test -n "$cookie" || fail "login set no cookie"
 test "$(status --header "cookie: $cookie" "$base/")" = 200 || fail "/ with a session was not 200"
 test "$(status --header "cookie: $cookie" "$base/api/session")" = 200 \
   || fail "/api/session with a session was not 200"
+
+echo "== settings"
+settings=$(curl --silent --header "cookie: $cookie" "$base/settings")
+echo "$settings" | grep -q 'href="/settings/versions/1"' || fail "settings does not list version 1"
+curl --silent --header "cookie: $cookie" "$base/api/config/versions/1" | grep -q '"triage"' \
+  || fail "first version lacks the imported skill"
+test "$(status "$base/settings")" = 303 || fail "/settings without a session did not redirect"
+test "$(status "$base/api/config/versions")" = 401 || fail "/api/config/versions without a session was not 401"
 
 echo "== the session survives a service restart"
 systemctl --user restart hephaestus.service

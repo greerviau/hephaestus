@@ -30,7 +30,7 @@ test "$(docker exec "$name" cat /opt/hephaestus/SOURCE_SHA256)" = "$(test/contai
 ```
 
 The first prints `running` or `degraded`.
-The second compares a hash of `package.json`, `package-lock.json`, the tsconfig files, and `src/` taken inside the image with the same hash of the checkout, and prints `build matches checkout` when they agree.
+The second compares a hash of `package.json`, `package-lock.json`, the tsconfig files, `src/`, and `templates/` taken inside the image with the same hash of the checkout, and prints `build matches checkout` when they agree.
 
 ## Drive
 

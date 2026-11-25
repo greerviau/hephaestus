@@ -7,6 +7,16 @@ const MIGRATIONS = [
      created_at INTEGER NOT NULL,
      expires_at INTEGER NOT NULL
    );`,
+  `CREATE TABLE config_versions (
+     id INTEGER PRIMARY KEY,
+     parent_id INTEGER REFERENCES config_versions (id),
+     state TEXT NOT NULL CHECK (state IN ('draft', 'approved', 'deployed', 'rejected', 'superseded')),
+     author TEXT NOT NULL,
+     message TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     document TEXT NOT NULL
+   );
+   CREATE UNIQUE INDEX one_deployed_version ON config_versions (state) WHERE state = 'deployed';`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

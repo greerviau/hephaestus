@@ -1,9 +1,13 @@
 #!/usr/bin/env node
-import { existsSync, realpathSync } from "node:fs";
+import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { DEFAULT_PORT, readConfig } from "./config.js";
 import { resolveRoots } from "./baseline.js";
+import { scheduleBackups } from "./config/backup.js";
+import { importSkill } from "./config/defaults.js";
+import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
 import { resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
@@ -11,10 +15,14 @@ import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
 import { SystemdUserService } from "./service.js";
 import { openStore } from "./store.js";
+import { settingsRoutes } from "./web/settings.js";
 
 const USAGE = `Usage:
-  hephaestus install [--port <port>]   Create ~/.hephaestus, set the dashboard password, start the service.
-                                       Reads the password from stdin when stdin is not a terminal.
+  hephaestus install [--port <port>] [--skill <folder>]...
+                                       Create ~/.hephaestus, set the dashboard password, start the service.
+                                       Each --skill folder (one with a SKILL.md) goes into the first
+                                       config version. Reads the password from stdin when stdin is not
+                                       a terminal.
   hephaestus uninstall                 Remove the service and ~/.hephaestus, then report baseline changes.
   hephaestus serve                     Run the dashboard in the foreground (the service runs this).`;
 
@@ -28,12 +36,16 @@ async function main(argv: string[]): Promise<number> {
   const paths = resolvePaths();
   switch (command) {
     case "install": {
-      const { values } = parseArgs({ args: rest, options: { port: { type: "string" } } });
+      const { values } = parseArgs({
+        args: rest,
+        options: { port: { type: "string" }, skill: { type: "string", multiple: true } },
+      });
       const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
       if (!Number.isInteger(port) || port < 1 || port > 65535)
         throw new Error(`Invalid port: ${String(values.port)}`);
-      // Refuse before asking for a password that would not be used.
+      // Refuse, and read the skills, before asking for a password that would not be used.
       if (existsSync(paths.root)) throw new AlreadyInstalledError(paths.root);
+      const skills = (values.skill ?? []).map((folder) => importSkill(resolve(folder)));
       const password = await readPassword("Dashboard password: ");
       await install({
         paths,
@@ -43,6 +55,7 @@ async function main(argv: string[]): Promise<number> {
         nodePath: process.execPath,
         cliPath: realpathSync(fileURLToPath(import.meta.url)),
         roots: resolveRoots(process.env, paths.home),
+        skills,
         waitForReady: (config) => waitForDashboard(config),
       });
       console.log(`Installed. The dashboard listens on port ${String(port)}.`);
@@ -74,7 +87,14 @@ async function main(argv: string[]): Promise<number> {
       parseArgs({ args: rest, options: {} });
       const config = readConfig(paths.config);
       const db = openStore(paths.state);
-      const server = createDashboardServer({ db, instanceId: config.instanceId });
+      const store = new ConfigStore(db);
+      mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
+      const stopBackups = scheduleBackups(store, paths.backups);
+      const server = createDashboardServer({
+        db,
+        instanceId: config.instanceId,
+        routes: settingsRoutes(store),
+      });
       server.listen(config.port, config.host, () => {
         console.log(`Dashboard listening on ${config.host}:${String(config.port)}`);
       });
@@ -82,6 +102,7 @@ async function main(argv: string[]): Promise<number> {
         process.once("SIGTERM", resolve);
         process.once("SIGINT", resolve);
       });
+      stopBackups();
       await new Promise((resolve) => server.close(resolve));
       db.close();
       return 0;
