@@ -37,13 +37,34 @@ export function cachedEnvironments(
   ttlMs: number,
   now: () => number = Date.now,
 ): EnvironmentSource {
-  let cached: { at: number; value: Environments } | undefined;
+  let cached: { at: number; value: Environments } | { at: number; error: unknown } | undefined;
+  let pending: Promise<Environments> | undefined;
+  // A failure is kept briefly too, so a page that gave up waiting sees it on the next load.
+  const errorTtlMs = Math.min(ttlMs, 10_000);
   return {
-    async environments() {
-      if (cached !== undefined && now() - cached.at < ttlMs) return cached.value;
-      const value = await source.environments();
-      cached = { at: now(), value };
-      return value;
+    environments() {
+      if (cached !== undefined) {
+        const age = now() - cached.at;
+        if ("value" in cached && age < ttlMs) return Promise.resolve(cached.value);
+        if ("error" in cached && age < errorTtlMs) {
+          return Promise.reject(
+            cached.error instanceof Error ? cached.error : new Error(String(cached.error)),
+          );
+        }
+      }
+      pending ??= source.environments().then(
+        (value) => {
+          cached = { at: now(), value };
+          pending = undefined;
+          return value;
+        },
+        (error: unknown) => {
+          cached = { at: now(), error };
+          pending = undefined;
+          throw error;
+        },
+      );
+      return pending;
     },
   };
 }

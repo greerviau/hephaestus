@@ -137,6 +137,19 @@ describe("dashboard without a session", () => {
   });
 });
 
+describe("a store that cannot be read", () => {
+  it("keeps access closed and says why, with no controls", async () => {
+    const cookie = await sessionCookie();
+    db.close();
+    const response = await fetch(`${base}/`, { headers: { cookie }, redirect: "manual" });
+    const html = await response.text();
+    expect(response.status).toBe(503);
+    expect(html).toContain("cannot read its store");
+    expect(html).not.toContain("<form");
+    db = openStore(":memory:");
+  });
+});
+
 describe("login", () => {
   it("rejects a wrong password without setting a cookie", async () => {
     const response = await login("wrong horse battery");

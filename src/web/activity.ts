@@ -2,7 +2,7 @@ import { ROLE_NAMES } from "../config/document.js";
 import { STORE_ERROR, read, type FactoryPages } from "./factory.js";
 import { card, empty, escapeHtml, layout, pageHead, selectField, status, when } from "./html.js";
 import { sendHtml, type Route } from "./http.js";
-import { eventTitle, isBad } from "./work.js";
+import { eventDetail, eventTitle, isBad } from "./work.js";
 
 const LIMIT = 200;
 const SHOW = [
@@ -42,7 +42,7 @@ export function activityRoutes(factory: FactoryPages): Route[] {
               entries.push({
                 at: event.at,
                 text: `<a href="/work/${String(event.cardId)}">${escapeHtml(event.title)}</a>: ${escapeHtml(eventTitle(event))}`,
-                sub: event.detail === "" ? "" : escapeHtml(event.detail),
+                sub: eventDetail(event) === "" ? "" : escapeHtml(eventDetail(event)),
                 outcome: isBad(event) ? status("warn", "q", "Needs a look") : "",
               });
             }

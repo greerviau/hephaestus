@@ -200,6 +200,7 @@ const MIGRATIONS = [
      thread_id TEXT NOT NULL,
      note TEXT NOT NULL DEFAULT ''
    );`,
+  `ALTER TABLE notifications ADD COLUMN kind TEXT NOT NULL DEFAULT 'info';`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

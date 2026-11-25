@@ -139,7 +139,12 @@ export function analyticsRoutes(factory: FactoryPages): Route[] {
             ...(names.ok ? names.value : []).map((name): [string, string] => [name, name]),
           ],
           project,
-        )}${selectField("days", "Period", SPANS, span)}<button type="submit" class="btn-secondary">Show</button></form>`;
+        )}${selectField("days", "Period", SPANS, span)}${
+          // With the numbers unreadable, a different filter cannot help; reloading can.
+          data.ok && names.ok
+            ? '<button type="submit" class="btn-secondary">Show</button>'
+            : '<button type="submit" class="btn-secondary" disabled>Show</button><a class="btn btn-secondary" href="/analytics">Try again</a>'
+        }</form>`;
 
         let body: string;
         if (!data.ok)

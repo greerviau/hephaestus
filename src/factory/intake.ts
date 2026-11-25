@@ -222,6 +222,9 @@ export class Intake {
         // A reopened issue whose card was abandoned gets a new card.
         const card = this.options.cards.get(issue.cardId);
         if (card.stage !== "Abandoned") return card;
+      } else if (issue.state !== "awaiting-owner" && issue.state !== "held-cap") {
+        // A stale form must not undo a rejection.
+        throw new Error(`${repo}#${String(number)} is ${issue.state}, not waiting for you.`);
       }
       const current = await this.options.github.issue(repo, number);
       if (current.state !== "OPEN") throw new Error(`${repo}#${String(number)} is closed.`);
@@ -229,12 +232,20 @@ export class Intake {
     });
   }
 
-  reject(repo: string, number: number): void {
-    this.db
-      .prepare(
-        "UPDATE issues SET state = 'rejected', updated_at = ? WHERE repo = ? AND number = ? AND state != 'admitted'",
-      )
-      .run(this.now().toISOString(), repo, number);
+  /** The owner's rejection; it runs in turn with admissions, and only an issue waiting for the owner changes. */
+  reject(repo: string, number: number): Promise<void> {
+    return this.serial(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE issues SET state = 'rejected', updated_at = ? WHERE repo = ? AND number = ?
+           AND state IN ('awaiting-owner', 'held-cap')`,
+        )
+        .run(this.now().toISOString(), repo, number);
+      if (result.changes === 0) {
+        throw new Error(`${repo}#${String(number)} is not waiting for you.`);
+      }
+      return Promise.resolve();
+    });
   }
 
   /** Factory-filed issues admitted and awaiting work, whose card has no thread yet; the cap counts these. */

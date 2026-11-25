@@ -81,19 +81,21 @@ export function analytics(
     ) {
       if (event.detail.startsWith("PR #")) counts.prs += 1;
     } else if (event.kind === "stage:Escalated") counts.escalations += 1;
-    else if (event.kind === "stage:Reverting") counts.reverts += 1;
     else if (event.kind === "stage:Abandoned") counts.abandoned += 1;
   }
 
   const merges = db
     .prepare(
-      `SELECT m.at FROM merges m JOIN cards c ON c.id = m.card_id
-       WHERE m.revert = 0 AND m.at >= ?${repoFilter}`,
+      `SELECT m.at, m.revert FROM merges m JOIN cards c ON c.id = m.card_id
+       WHERE m.at >= ?${repoFilter}`,
     )
-    .all(since, ...repoArgs) as { at: string }[];
+    .all(since, ...repoArgs) as { at: string; revert: number }[];
+  // A revert counts when its revert PR merged, so a card that re-enters Reverting counts once.
   for (const merge of merges) {
     const counts = byDay.get(dayOf(merge.at));
-    if (counts !== undefined) counts.merges += 1;
+    if (counts === undefined) continue;
+    if (merge.revert === 1) counts.reverts += 1;
+    else counts.merges += 1;
   }
 
   const done = db

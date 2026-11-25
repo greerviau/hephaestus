@@ -83,11 +83,16 @@ export function isBad(event: CardEvent): boolean {
 }
 
 /** The mockup's timeline of a card's events, oldest first. */
+/** What an event says on a page. An error's stored text can carry upstream output, so it is not shown. */
+export function eventDetail(event: CardEvent): string {
+  return event.kind === "error" ? "A step failed; the service log has the error." : event.detail;
+}
+
 export function timeline(events: CardEvent[], now: number): string {
   return `<ol class="timeline">${events
     .map(
       (event, index) =>
-        `<li class="${[index === events.length - 1 ? "now" : "", isBad(event) ? "bad" : ""].join(" ").trim()}"><span class="t">${when(event.at, now)}</span><span class="dot" aria-hidden="true"></span><div class="ev"><strong>${escapeHtml(eventTitle(event))}</strong>${event.detail === "" ? "" : `<p>${escapeHtml(event.detail)}</p>`}</div></li>`,
+        `<li class="${[index === events.length - 1 ? "now" : "", isBad(event) ? "bad" : ""].join(" ").trim()}"><span class="t">${when(event.at, now)}</span><span class="dot" aria-hidden="true"></span><div class="ev"><strong>${escapeHtml(eventTitle(event))}</strong>${eventDetail(event) === "" ? "" : `<p>${escapeHtml(eventDetail(event))}</p>`}</div></li>`,
     )
     .join("\n")}</ol>`;
 }
@@ -242,6 +247,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const back = `/work/${String(id)}`;
         const actions = escalationActions(item, back);
 
+        const reverting = item.stage === "Reverting" || item.ownerAction === "revert-merge";
         const kv: [string, string][] = [
           ["Stage", stagePill(item)],
           [
@@ -252,8 +258,17 @@ export function workRoutes(factory: FactoryPages): Route[] {
             "Pull request",
             item.prNumber === null
               ? '<span class="s-muted">None yet</span>'
-              : `${externalLink(prUrl(item.repo, item.prNumber), `#${String(item.prNumber)}`)}${item.headSha === null ? "" : ` at <code title="${escapeHtml(item.headSha)}">${shortSha(item.headSha)}</code>`}`,
+              : `${externalLink(prUrl(item.repo, item.prNumber), `#${String(item.prNumber)}`)}${item.headSha === null || reverting ? "" : ` at <code title="${escapeHtml(item.headSha)}">${shortSha(item.headSha)}</code>`}`,
           ],
+          // While a card reverts, its head is the revert PR's.
+          ...(reverting && item.revertPr !== null
+            ? ([
+                [
+                  "Revert PR",
+                  `${externalLink(prUrl(item.repo, item.revertPr), `#${String(item.revertPr)}`)}${item.headSha === null ? "" : ` at <code title="${escapeHtml(item.headSha)}">${shortSha(item.headSha)}</code>`}`,
+                ],
+              ] as [string, string][])
+            : []),
           ["Branch", item.branch === null ? "-" : `<code>${escapeHtml(item.branch)}</code>`],
           ["Worker", escapeHtml(item.workerEnv ?? "Not chosen")],
           [

@@ -399,6 +399,26 @@ describe("Pipeline", () => {
     );
   });
 
+  it("refuses a stale send-to-lead and an approval for another action", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.escalateToOwner(id, "needs a decision");
+    await h.pipeline.sendToLead(id, "first note");
+    await expect(h.pipeline.sendToLead(id, "second note")).rejects.toThrow(
+      /not waiting for the owner/,
+    );
+    expect(h.cards.get(id).reason).toBe("first note");
+
+    const other = harness();
+    const card = admitted(other);
+    await toReview(other, card);
+    other.github.prs.set(5, pr(5, SHA, { files: [".github/workflows/ci.yml"] }));
+    other.finish("t2", reviewResult("approve", SHA));
+    await other.pipeline.tick();
+    await expect(other.pipeline.approveMerge(card, SHA, "revert-merge")).rejects.toThrow();
+    expect((await other.pipeline.approveMerge(card, SHA, "merge")).stage).toBe("Merging");
+  });
+
   it("does not start work for a repo that left the factory projects", async () => {
     const h = harness();
     const id = admitted(h);

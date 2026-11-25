@@ -321,7 +321,13 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
         return act(
           context,
           `/work/${String(id)}`,
-          (fields) => pipeline.approveMerge(id, text(fields, "headSha")),
+          (fields) => {
+            const action = text(fields, "action");
+            if (action !== "merge" && action !== "revert-merge") {
+              throw new Error("Unknown merge action.");
+            }
+            return pipeline.approveMerge(id, text(fields, "headSha"), action);
+          },
           "merge-approved",
           "merge-refused",
         );
@@ -368,7 +374,7 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
             const number = Number(text(fields, "number"));
             if (!Number.isInteger(number)) throw new Error("The issue number is not a number.");
             if (admit) await intake.approve(repo, number);
-            else intake.reject(repo, number);
+            else await intake.reject(repo, number);
           },
           admit ? "admitted" : "rejected",
           admit ? "admit-failed" : "action-failed",

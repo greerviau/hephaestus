@@ -35,6 +35,11 @@ describe("analytics", () => {
     expect(all.totals).toMatchObject({ prs: 1, merges: 1, reverts: 0, escalations: 1 });
     expect(all.cycleHours).toEqual({ median: 4, p90: 4, count: 1 });
 
+    // Entering Reverting is not a revert; a merged revert PR is, once.
+    cards.transition(b, "Implementing", "restarted");
+    cards.recordMerge("octo/lib", 9, "r", b, true);
+    expect(analytics(db, { days: 7, now }).totals.reverts).toBe(1);
+
     const lib = analytics(db, { repo: "octo/lib", days: 7, now });
     expect(lib.totals).toMatchObject({ prs: 0, merges: 0, escalations: 1 });
     expect(lib.cycleHours.count).toBe(0);

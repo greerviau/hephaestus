@@ -357,6 +357,13 @@ export class CardStore {
       .run(repo, prNumber, mergeSha, cardId, revert ? 1 : 0, this.now().toISOString());
   }
 
+  /** Revert PRs Hephaestus merged, which is when a revert is complete. */
+  revertCount(): number {
+    return (
+      this.db.prepare("SELECT COUNT(*) AS n FROM merges WHERE revert = 1").get() as { n: number }
+    ).n;
+  }
+
   mergedByHephaestus(repo: string, prNumber: number): boolean {
     return (
       this.db
@@ -365,18 +372,19 @@ export class CardStore {
     );
   }
 
-  notify(text: string, cardId: number | null = null): void {
+  /** `kind` is `escalation` for a card handed to the owner, which Overview already lists. */
+  notify(text: string, cardId: number | null = null, kind: "info" | "escalation" = "info"): void {
     this.db
-      .prepare("INSERT INTO notifications (at, card_id, text) VALUES (?, ?, ?)")
-      .run(this.now().toISOString(), cardId, text);
+      .prepare("INSERT INTO notifications (at, card_id, text, kind) VALUES (?, ?, ?, ?)")
+      .run(this.now().toISOString(), cardId, text, kind);
   }
 
-  notifications(): { id: number; at: string; cardId: number | null; text: string }[] {
+  notifications(): { id: number; at: string; cardId: number | null; text: string; kind: string }[] {
     return this.db
       .prepare(
-        "SELECT id, at, card_id AS cardId, text FROM notifications WHERE dismissed = 0 ORDER BY id DESC",
+        "SELECT id, at, card_id AS cardId, text, kind FROM notifications WHERE dismissed = 0 ORDER BY id DESC",
       )
-      .all() as { id: number; at: string; cardId: number | null; text: string }[];
+      .all() as { id: number; at: string; cardId: number | null; text: string; kind: string }[];
   }
 
   /** The newest notifications, dismissed or not, for the Activity page. */

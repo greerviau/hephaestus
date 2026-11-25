@@ -88,7 +88,17 @@ export function createDashboardServer({
     }
 
     const token = sessionToken(request);
-    if (token === undefined || !sessions.isValid(token)) {
+    let valid: boolean;
+    try {
+      valid = token !== undefined && sessions.isValid(token);
+    } catch (error) {
+      // The store holds the sessions too. Access stays closed, and the page says why.
+      console.error("Reading the session store failed", error);
+      if (path.startsWith("/api/")) sendJson(response, 503, { error: "store unavailable" });
+      else send(response, 503, HTML, storeDownPage());
+      return;
+    }
+    if (token === undefined || !valid) {
       if (path.startsWith("/api/")) sendJson(response, 401, { error: "unauthorized" });
       else redirect(response, "/login");
       return;
@@ -197,6 +207,20 @@ function sessionToken(request: IncomingMessage): string | undefined {
     if (name === SESSION_COOKIE) return value.join("=");
   }
   return undefined;
+}
+
+/** Shown when the store cannot be read: no session can be checked, so no control is offered. */
+function storeDownPage(): string {
+  return page(
+    "Unavailable",
+    `<main class="login-wrap">
+<section class="card login">
+  <img class="login-logo" src="${LOGO_PATH}" alt="" width="64" height="64">
+  <h1>Hephaestus</h1>
+  <div class="banner err" role="alert"><strong>Hephaestus cannot read its store.</strong><p>Nothing can be shown or changed until it can. The service log has the error. Reload to try again.</p></div>
+</section>
+</main>`,
+  );
 }
 
 function loginPage(error?: string): string {

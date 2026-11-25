@@ -256,13 +256,14 @@ export class Pipeline {
   }
 
   /** The owner's approval on the dashboard of the merge the card waits for, at the head shown there. */
-  approveMerge(cardId: number, headSha: string): Promise<Card> {
+  approveMerge(cardId: number, headSha: string, action?: "merge" | "revert-merge"): Promise<Card> {
     return this.withCard(cardId, () => {
       const card = this.cards.get(cardId);
       if (
         card.stage !== "Escalated" ||
         card.escalatedTo !== "owner" ||
         card.ownerAction === null ||
+        (action !== undefined && card.ownerAction !== action) ||
         card.headSha !== headSha
       ) {
         throw new Error(
@@ -285,7 +286,9 @@ export class Pipeline {
   sendToLead(cardId: number, note: string): Promise<Card> {
     return this.withCard(cardId, async () => {
       const card = this.cards.get(cardId);
-      if (card.stage !== "Escalated") throw new Error(`Card ${String(cardId)} is not escalated.`);
+      if (card.stage !== "Escalated" || card.escalatedTo !== "owner") {
+        throw new Error(`Card ${String(cardId)} is not waiting for the owner.`);
+      }
       this.cards.update(cardId, { escalatedTo: "lead", reason: note, ownerAction: null });
       this.cards.event(cardId, "escalated:lead", note);
       await this.mirrorHandBack(this.cards.get(cardId), note);
@@ -300,7 +303,11 @@ export class Pipeline {
       if (card.stage === "Escalated") {
         this.cards.update(cardId, { escalatedTo: "owner", reason });
         this.cards.event(cardId, "escalated:owner", reason);
-        this.cards.notify(`Card ${String(cardId)} in ${card.repo} needs you: ${reason}`, cardId);
+        this.cards.notify(
+          `Card ${String(cardId)} in ${card.repo} needs you: ${reason}`,
+          cardId,
+          "escalation",
+        );
         await this.mirror(this.cards.get(cardId), "Escalated");
       } else {
         await this.escalate(card, "owner", reason);
@@ -344,7 +351,8 @@ export class Pipeline {
               await this.advance(card);
             } catch (error) {
               console.error(`Advancing card ${String(id)} failed`, error);
-              this.cards.event(id, "error", error instanceof Error ? error.message : String(error));
+              // The message can carry gh's stderr; the record keeps a summary and the log has the rest.
+              this.cards.event(id, "error", "A step failed; the service log has the error.");
             }
           });
         }
@@ -1224,7 +1232,11 @@ export class Pipeline {
       waiting: null,
     });
     if (to === "owner") {
-      this.cards.notify(`Card ${String(card.id)} in ${card.repo} needs you: ${reason}`, card.id);
+      this.cards.notify(
+        `Card ${String(card.id)} in ${card.repo} needs you: ${reason}`,
+        card.id,
+        "escalation",
+      );
       await this.mirror(next, "Escalated");
     } else {
       await this.mirrorHandBack(next, reason);

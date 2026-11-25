@@ -131,6 +131,7 @@ describe("Overview", () => {
 
     const stale = await dashboard.post(`/work/${String(card)}/approve-merge`, {
       headSha: "f".repeat(40),
+      action: "merge",
       back: "/",
     });
     expect(stale.headers.get("location")).toBe("/?notice=merge-refused");
@@ -138,6 +139,7 @@ describe("Overview", () => {
 
     const approved = await dashboard.post(`/work/${String(card)}/approve-merge`, {
       headSha: SHA,
+      action: "merge",
       back: "/",
     });
     expect(approved.headers.get("location")).toBe("/?notice=merge-approved");

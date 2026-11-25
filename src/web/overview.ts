@@ -57,12 +57,15 @@ export function escalationActions(item: Card, back: string): string {
   const actions = cardActions(item);
   const id = String(item.id);
   const parts: string[] = [];
-  if (actions.approveMerge && item.headSha !== null) {
+  if (actions.approveMerge && item.headSha !== null && item.ownerAction !== null) {
+    // The button names the PR it merges: the card's own, or its revert PR.
+    const target = item.ownerAction === "revert-merge" ? item.revertPr : item.prNumber;
+    const what = item.ownerAction === "revert-merge" ? "revert PR" : "PR";
     parts.push(
       postButton(
         `/work/${id}/approve-merge`,
-        `${item.ownerAction === "revert-merge" ? "Approve revert merge" : "Approve merge"} at ${shortSha(item.headSha)}`,
-        { fields: { headSha: item.headSha, back }, variant: "primary" },
+        `Merge ${what} #${String(target)} at ${shortSha(item.headSha)}`,
+        { fields: { headSha: item.headSha, action: item.ownerAction, back }, variant: "primary" },
       ),
     );
   }
@@ -142,6 +145,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             .filter((version) => version.author === "improver" && version.state === "draft"),
         );
         const notifications = read("notifications", () => factory.cards.notifications());
+        const reverts = read("reverts", () => factory.cards.revertCount());
         const workers = read("workers", () => factory.workers?.views() ?? []);
         const paused = read("the pause switch", () => factory.pipeline.paused());
         const blocked = read("the thread caps", () => factory.pipeline.blockedBecause(undefined));
@@ -231,7 +235,16 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           }
         }
         if (notifications.ok) {
+          // A card escalated to the owner is listed above with its actions; its notification stays in Activity.
+          const listed = new Set(
+            (cards.ok ? cards.value : [])
+              .filter((item) => item.stage === "Escalated" && item.escalatedTo === "owner")
+              .map((item) => item.id),
+          );
           for (const item of notifications.value) {
+            if (item.kind === "escalation" && item.cardId !== null && listed.has(item.cardId)) {
+              continue;
+            }
             const linked =
               item.cardId === null ? "" : `<a href="/work/${String(item.cardId)}">Open card</a>`;
             needs.push({
@@ -260,7 +273,11 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         const running = inProgress.filter((item) => !isWaiting(item)).length;
         const waiting = inProgress.length - running;
 
-        const lede = `<strong>${String(needs.length)} need you</strong> &middot; ${String(running)} running &middot; ${String(waiting)} waiting`;
+        // With any source unread, an empty list or an exact count would be a claim the page cannot make.
+        const incomplete =
+          t3.state === "error" ||
+          [cards, issues, proposals, notifications, workers].some((part) => !part.ok);
+        const lede = `<strong>${incomplete ? "At least " : ""}${String(needs.length)} need you</strong> &middot; ${String(running)} running &middot; ${String(waiting)} waiting`;
         const actions = paused.ok
           ? paused.value
             ? `${pill("off", "Paused")}${postButton("/factory/resume", "Resume factory", { fields: { back: "/" }, variant: "primary", small: false })}`
@@ -274,14 +291,20 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         ].join("");
 
         const needsBody =
-          needs.length === 0 && t3.state !== "loading"
-            ? `<p class="calm">${icon("ok", "s-good")}Nothing needs you.</p>`
-            : `<ul class="need-rows">${needs
-                .map(
-                  (need) =>
-                    `<li><div class="nr-main">${status(need.tone, need.icon, need.title)}<span class="sub">${need.why}</span></div><div class="need-acts">${need.actions}</div></li>`,
-                )
-                .join("\n")}</ul>${t3.state === "loading" ? loading("Checking T3 links...") : ""}`;
+          needs.length === 0 && t3.state === "loading"
+            ? loading("Checking T3 links...")
+            : needs.length === 0 && incomplete
+              ? `<p class="calm">${icon("warn", "s-warn")}Some of what may need you could not be read. Reload to try again.</p>`
+              : needs.length === 0
+                ? `<p class="calm">${icon("ok", "s-good")}Nothing needs you.</p>`
+                : `<ul class="need-rows">${needs
+                    .map(
+                      (need) =>
+                        `<li><div class="nr-main">${status(need.tone, need.icon, need.title)}<span class="sub">${need.why}</span></div><div class="need-acts">${need.actions}</div></li>`,
+                    )
+                    .join(
+                      "\n",
+                    )}</ul>${t3.state === "loading" ? loading("Checking T3 links...") : ""}`;
 
         const body = [
           card({
@@ -310,7 +333,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             title: "Finished",
             span: 5,
             meta: '<a href="/work?stage=finished">View all</a>',
-            body: finishedBody(cards, now()),
+            body: finishedBody(cards, reverts, now()),
           }),
         ].join("\n");
 
@@ -358,15 +381,18 @@ function progressBody(
   return `${counts}${why}<ul class="prog">${rows}</ul>`;
 }
 
-function finishedBody(cards: Read<Card[]>, now: number): string {
+function finishedBody(cards: Read<Card[]>, reverts: Read<number>, now: number): string {
   if (!cards.ok) return empty("Cards could not be read.");
   const finished = cards.value.filter(
     (item) => item.stage === "Done" || item.stage === "Abandoned",
   );
-  if (finished.length === 0) return empty("Finished work appears here with its outcome.");
+  // A revert counts once its revert PR merged, whatever the card does next.
+  const reverted = reverts.ok ? reverts.value : 0;
+  if (finished.length === 0 && reverted === 0) {
+    return empty("Finished work appears here with its outcome.");
+  }
   const merged = finished.filter((item) => item.stage === "Done").length;
   const abandoned = finished.length - merged;
-  const reverted = cards.value.filter((item) => item.revertPr !== null).length;
   const recent = [...finished]
     .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
     .slice(0, 5)

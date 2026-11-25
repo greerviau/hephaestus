@@ -46,10 +46,13 @@ describe("Intake", () => {
       state: "OPEN",
     });
     await h.intake.poll();
-    h.intake.reject("octo/app", 7);
+    await h.intake.reject("octo/app", 7);
     await h.intake.poll();
     expect(h.intake.issue("octo/app", 7)?.state).toBe("rejected");
     expect(h.cards.list()).toEqual([]);
+    // An Admit form opened before the rejection must not undo it.
+    await expect(h.intake.approve("octo/app", 7)).rejects.toThrow(/not waiting for you/);
+    await expect(h.intake.reject("octo/app", 7)).rejects.toThrow(/not waiting for you/);
   });
 
   it("holds factory-filed issues past the cap for the owner", async () => {
