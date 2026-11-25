@@ -67,6 +67,8 @@ function charts(data: Analytics): string {
       body: `${legend(throughput.map((series, index) => ({ ...series, total: String(throughputTotals[index] ?? 0) })))}${columns(
         {
           id: "throughput",
+          width: 1100,
+          integer: true,
           labels,
           series: throughput,
           aria: `Merged, reverted, and abandoned cards per day: ${String(data.totals.merges)} merged, ${String(data.totals.reverts)} reverted, ${String(data.totals.abandoned)} abandoned.`,
@@ -79,6 +81,8 @@ function charts(data: Analytics): string {
         prs,
         lines({
           id: "prs",
+          width: 520,
+          integer: true,
           labels,
           series: prs,
           aria: `PRs per day, ${String(data.totals.prs)} in all.`,
@@ -89,6 +93,8 @@ function charts(data: Analytics): string {
         escalations,
         lines({
           id: "escalations",
+          width: 520,
+          integer: true,
           labels,
           series: escalations,
           aria: `Escalations per day, ${String(data.totals.escalations)} in all.`,
@@ -99,6 +105,7 @@ function charts(data: Analytics): string {
         cycle,
         lines({
           id: "cycle",
+          width: 520,
           labels,
           series: cycle,
           aria: "Median hours from a card's first thread to done, per day.",

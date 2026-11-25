@@ -203,9 +203,10 @@ describe("Thread view", () => {
     expect((await dashboard.get("/threads/w1/t-new")).html).toContain("No activity recorded yet.");
   });
 
-  it("answers 404 for an unknown thread", async () => {
+  it("answers 404 for an unknown or malformed thread path", async () => {
     dashboard = await startDashboard();
 
     expect((await dashboard.get("/threads/w1/nope")).status).toBe(404);
+    expect((await dashboard.get("/threads/w1/%E0%A4%A")).status).toBe(404);
   });
 });

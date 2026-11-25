@@ -333,8 +333,15 @@ export function workRoutes(factory: FactoryPages): Route[] {
       method: "GET",
       path: /^\/threads\/([^/]+)\/([^/]+)$/,
       handle: ({ response, params }) => {
-        const environmentId = decodeURIComponent(params[0] ?? "");
-        const threadId = decodeURIComponent(params[1] ?? "");
+        let environmentId: string;
+        let threadId: string;
+        try {
+          environmentId = decodeURIComponent(params[0] ?? "");
+          threadId = decodeURIComponent(params[1] ?? "");
+        } catch {
+          environmentId = "";
+          threadId = "";
+        }
         const thread = read("the thread", () => factory.events.thread(environmentId, threadId));
         const items = read("thread items", () => factory.events.items(environmentId, threadId));
         if (!thread.ok || !items.ok) {

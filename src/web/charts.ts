@@ -24,25 +24,31 @@ export interface ChartOptions {
   /** What the chart shows, for screen readers. */
   aria: string;
   height?: number;
+  /** The drawing's width in SVG units; close to its width on screen keeps labels near 12 px. */
+  width?: number;
+  /** Counts: gridlines only at whole numbers. */
+  integer?: boolean;
   format?: (value: number) => string;
 }
 
-const WIDTH = 720;
+const DEFAULT_WIDTH = 720;
 
 function plain(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 /** A round axis maximum and step that fit `max`, with four or five gridlines. */
-export function axis(max: number): { max: number; step: number } {
+export function axis(max: number, integer = false): { max: number; step: number } {
   if (max <= 0) return { max: 4, step: 1 };
   const rough = max / 4;
   const magnitude = 10 ** Math.floor(Math.log10(rough));
-  const step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) ?? rough;
+  let step = [1, 2, 2.5, 5, 10].map((m) => m * magnitude).find((s) => s >= rough) ?? rough;
+  if (integer) step = Math.max(1, Math.ceil(step));
   return { max: Math.ceil(max / step) * step, step };
 }
 
 function grid(
+  width: number,
   scale: { max: number; step: number },
   left: number,
   top: number,
@@ -53,7 +59,7 @@ function grid(
   for (let value = 0; value <= scale.max + 1e-9; value += scale.step) {
     const y = top + plotHeight - (value / scale.max) * plotHeight;
     lines.push(
-      `<line x1="${String(left)}" x2="${String(WIDTH)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${value === 0 ? "var(--axis)" : "var(--grid)"}" stroke-width="1"/><text x="${String(left - 8)}" y="${(y + 4).toFixed(1)}" text-anchor="end">${escapeHtml(format(Number(value.toFixed(2))))}</text>`,
+      `<line x1="${String(left)}" x2="${String(width)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${value === 0 ? "var(--axis)" : "var(--grid)"}" stroke-width="1"/><text x="${String(left - 8)}" y="${(y + 4).toFixed(1)}" text-anchor="end">${escapeHtml(format(Number(value.toFixed(2))))}</text>`,
     );
   }
   return lines.join("");
@@ -88,31 +94,32 @@ function tooltip(options: ChartOptions, index: number): string {
     .join(", ")}`;
 }
 
-function svgOpen(options: ChartOptions, height: number): string {
-  return `<div class="chart graph-scroll"><svg class="plot" viewBox="0 0 ${String(WIDTH)} ${String(height)}" role="img" aria-label="${escapeHtml(options.aria)}">`;
+function svgOpen(options: ChartOptions, width: number, height: number): string {
+  return `<div class="chart graph-scroll"><svg class="plot" viewBox="0 0 ${String(width)} ${String(height)}" role="img" aria-label="${escapeHtml(options.aria)}">`;
 }
 
 /** Stacked columns, one per label. */
 export function columns(options: ChartOptions): string {
   const height = options.height ?? 220;
+  const width = options.width ?? DEFAULT_WIDTH;
   const left = 36;
   const top = 8;
   const bottom = 28;
   const plotHeight = height - top - bottom;
-  const plotWidth = WIDTH - left;
+  const plotWidth = width - left;
   const count = options.labels.length;
   const totals = options.labels.map((_, index) =>
     options.series.reduce((sum, series) => sum + (series.values[index] ?? 0), 0),
   );
-  const scale = axis(Math.max(0, ...totals));
+  const scale = axis(Math.max(0, ...totals), options.integer);
   const band = plotWidth / Math.max(1, count);
   const barWidth = Math.min(24, band * 0.6);
   const hatchId = `hatch-${options.id}`;
   const shown = labelIndexes(count, plotWidth, 52);
   const parts: string[] = [
-    svgOpen(options, height),
+    svgOpen(options, width, height),
     `<defs><pattern id="${hatchId}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="var(--series-2)"/><line x1="0" y1="0" x2="0" y2="5" stroke="var(--surface)" stroke-width="1.6"/></pattern></defs>`,
-    grid(scale, left, top, plotHeight, options.format ?? plain),
+    grid(width, scale, left, top, plotHeight, options.format ?? plain),
   ];
   options.labels.forEach((label, index) => {
     const x = left + band * index + (band - barWidth) / 2;
@@ -150,22 +157,26 @@ export function columns(options: ChartOptions): string {
 /** Lines over the labels; a null value breaks the line. */
 export function lines(options: ChartOptions): string {
   const height = options.height ?? 200;
+  const width = options.width ?? DEFAULT_WIDTH;
   const left = 44;
   const right = 8;
   const top = 12;
   const bottom = 28;
   const plotHeight = height - top - bottom;
-  const plotWidth = WIDTH - left - right;
+  const plotWidth = width - left - right;
   const count = options.labels.length;
   const values = options.series.flatMap((series) =>
     series.values.filter((value): value is number => value !== null),
   );
-  const scale = axis(Math.max(0, ...values));
+  const scale = axis(Math.max(0, ...values), options.integer);
   const x = (index: number): number =>
     left + (count === 1 ? plotWidth / 2 : (index / (count - 1)) * plotWidth);
   const y = (value: number): number => top + plotHeight - (value / scale.max) * plotHeight;
   const format = options.format ?? plain;
-  const parts: string[] = [svgOpen(options, height), grid(scale, left, top, plotHeight, format)];
+  const parts: string[] = [
+    svgOpen(options, width, height),
+    grid(width, scale, left, top, plotHeight, format),
+  ];
   for (const series of options.series) {
     let pen = "M";
     let path = "";

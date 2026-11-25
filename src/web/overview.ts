@@ -351,7 +351,7 @@ function progressBody(
     .map((item) => {
       const lines = threads.ok ? threadLines(threads.value.get(item.id) ?? [], labels) : "";
       const waitingLine =
-        item.waiting === null ? "" : `<span class="sub">${escapeHtml(item.waiting)}</span>`;
+        item.waiting === null ? "" : `<p class="hint">${escapeHtml(item.waiting)}</p>`;
       return `<li><div class="prog-main">${cardLink(item)}<p class="doing">${stagePill(item)} ${lines}</p>${waitingLine}</div><div class="prog-when meta">${when(item.updatedAt, now)}</div></li>`;
     })
     .join("\n");

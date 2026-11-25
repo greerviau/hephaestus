@@ -557,6 +557,13 @@ td pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 1
 textarea.config { font-family: var(--mono); font-size: 14px; min-height: 420px; resize: vertical; }
 .chart text { font-size: 12px; fill: var(--muted); font-family: var(--font); }
 .chart .mark:hover { opacity: 0.8; }
+.mini-list li { align-items: center; }
+.mini-list .sub { display: block; color: var(--muted); font-size: 13px; }
+ul.need-rows .nr-main .status { color: var(--ink); }
+ul.need-rows .nr-main .status .ic.s-warn, ul.need-rows .nr-main .status .ic { color: var(--warn-ink); }
+ul.need-rows .nr-main .status.s-crit .ic { color: var(--crit); }
+ul.prog .hint { margin: 4px 0 0; }
+.form-grid.wide { max-width: none; }
 .stack-8 { display: grid; gap: 4px; margin-bottom: 8px; justify-items: start; }
 .stage-group + .stage-group { margin-top: 20px; }
 .kpis { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0 0 16px; }
