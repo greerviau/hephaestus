@@ -18,12 +18,12 @@ Every two minutes Hephaestus lists each factory project's open issues with `gh`.
 
 Hephaestus merges a PR itself, squashing it, only when the project's policy allows it:
 
-- Every check on the head commit passed, at least one ran unless the policy sets `allowNoChecks`, and every check named in the policy's `requiredChecks` ran. Hephaestus reads every check run and status through `gh`'s paginated API, so the gate works without branch protection. It waits three minutes after a new head so slow checks can register, and a head still waiting for checks after an hour goes to the owner.
+- Every check on the head commit passed, at least one ran unless the policy sets `allowNoChecks`, and every check named in the policy's `requiredChecks` ran and passed. Hephaestus reads every check run and status through `gh`'s paginated API, so the gate works without branch protection. It waits three minutes after a new head so slow checks can register, and a head still waiting for checks after an hour goes to the owner.
 - Unless the policy is `yolo`, the other provider's review approved exactly that head commit.
 - No changed file, including the old name of a renamed one, matches an escalation path, unless the owner approved that head on the dashboard.
 - The policy allows auto-merge and does not have the owner approve every merge.
 
-Otherwise the card is escalated with the reason: to the lead for failing checks or a missing review, and to the owner for escalation paths and owner approval. Hephaestus merges through GitHub's merge API, which answers with the merge commit, and puts `Merged by Hephaestus for card <id>.` in the squash commit. A PR someone else merged first is never taken for its own, and a merge whose reply was lost is recognized by that line. Agents are told never to merge. A factory PR merged by anything else ends its card, flagged, and Hephaestus never validates or reverts that merge.
+Otherwise the card is escalated with the reason: to the lead for failing checks or a missing review, and to the owner for escalation paths and owner approval. Hephaestus merges through GitHub's merge API, which answers with the merge commit, and puts `Merged by Hephaestus for card <id>.` in the squash commit. A PR someone else merged first is never taken for its own, and a merge whose reply was lost is recognized by that line. When GitHub cannot be read back to tell, the card goes to the owner. Agents are told never to merge. A factory PR merged by anything else ends its card, flagged, and Hephaestus never validates or reverts that merge.
 
 ## Validation and revert
 

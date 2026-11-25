@@ -217,7 +217,8 @@ function factoryEngine(
     github,
     config: () => deployed()?.document,
     board,
-    abandon: (cardId, reason) => late.pipeline?.abandon(cardId, reason) ?? Promise.resolve(),
+    abandon: (cardId, reason) =>
+      late.pipeline?.abandonUnstarted(cardId, reason) ?? Promise.resolve(),
   });
   const pipeline = new Pipeline({
     db,

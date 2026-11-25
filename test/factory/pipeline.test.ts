@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { MergeOutcomeUnknownError } from "../../src/factory/github.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
   MERGE,
@@ -366,6 +367,36 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA, { checkNames: ["check:ci", "check:e2e"] }));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5]);
+  });
+
+  it("takes a merged PR with its marker for its own merge, and sends an unknown outcome to the owner", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    // GitHub merged the PR on an earlier pass, and the reply was lost.
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
+
+    const other = harness();
+    const card = admitted(other);
+    await toReview(other, card);
+    other.github.merge = () => Promise.reject(new MergeOutcomeUnknownError(5));
+    other.finish("t2", reviewResult("approve", SHA));
+    await other.pipeline.tick();
+    expect(other.cards.get(card)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    expect(other.cards.get(card).reason).toMatch(/could not read back/);
+  });
+
+  it("does not abandon a card that started work", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    expect((await h.pipeline.abandonUnstarted(id, "the issue was closed")).stage).toBe(
+      "Implementing",
+    );
   });
 
   it("does not start work for a repo that left the factory projects", async () => {

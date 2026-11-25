@@ -62,7 +62,13 @@ export class FakeGitHub {
     this.merged.push(number);
     pr.state = "MERGED";
     pr.mergeSha = number === 9 ? "8".repeat(40) : MERGE;
+    this.ownMerges.add(pr.mergeSha);
     return Promise.resolve(pr.mergeSha);
+  }
+  /** Merge commits this fake made, which carry Hephaestus's marker. */
+  ownMerges = new Set<string>();
+  mergedWith(_repo: string, mergeSha: string): Promise<boolean | undefined> {
+    return Promise.resolve(this.ownMerges.has(mergeSha));
   }
   commitChecks(_repo: string, sha: string): Promise<CheckSummary> {
     return Promise.resolve(this.commits.get(sha) ?? checks("pending"));

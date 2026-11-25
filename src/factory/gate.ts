@@ -111,8 +111,9 @@ export function decideMerge(input: GateInput): GateDecision {
     return { action: "wait", reason: "no checks have run on the head commit yet" };
   }
   const ids = input.checkIds ?? [];
+  // A bare name means a check run; `status:<context>` names a commit status.
   const absent = policy.requiredChecks.filter(
-    (name) => !ids.some((id) => id === `check:${name}` || id === `status:${name}`),
+    (name) => !ids.includes(name.includes(":") ? name : `check:${name}`),
   );
   if (input.checks !== "failure" && absent.length > 0) {
     return { action: "wait", reason: `required checks have not run: ${absent.join(", ")}` };

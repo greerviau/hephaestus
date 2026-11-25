@@ -11,7 +11,12 @@ import { finalMessage } from "../workers/scripts.js";
 import type { Card, CardStore, EscalationTarget, Provider } from "./cards.js";
 import { decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
 import { createHash } from "node:crypto";
-import { AlreadyMergedError, type GitHub, type PullRequest } from "./github.js";
+import {
+  AlreadyMergedError,
+  MergeOutcomeUnknownError,
+  type GitHub,
+  type PullRequest,
+} from "./github.js";
 
 /** What the pipeline mirrors onto the Hermes board; absent when Hermes is not set up. */
 export interface PipelineBoard {
@@ -29,6 +34,7 @@ export interface PipelineOptions {
     | "defaultBranch"
     | "pullRequest"
     | "merge"
+    | "mergedWith"
     | "commitChecks"
     | "revertPullRequest"
     | "reopenIssue"
@@ -150,6 +156,13 @@ export class Pipeline {
         .get(...FACTORY_KINDS, exceptRequest ?? "", ...envArgs) as { n: number }
     ).n;
     return running + pending;
+  }
+
+  private replayWorker(environmentId: string): Worker | string {
+    const home = this.options.workers.worker(environmentId)?.home;
+    return home === undefined || home === null
+      ? "The worker of an unanswered launch is unknown."
+      : { environmentId, home };
   }
 
   /** The worker a launch went to whose reply never came, if any. */
@@ -293,6 +306,23 @@ export class Pipeline {
         await this.escalate(card, "owner", reason);
       }
       return this.cards.get(cardId);
+    });
+  }
+
+  /**
+   * Abandons a card whose issue closed, but only if, checked inside the
+   * card's lock, it still has no thread and no unanswered launch.
+   */
+  abandonUnstarted(cardId: number, reason: string): Promise<Card> {
+    return this.withCard(cardId, () => {
+      const card = this.cards.get(cardId);
+      const pending = this.options.db
+        .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
+        .get(String(cardId));
+      if (card.startedAt !== null || card.implementThread !== null || pending !== undefined) {
+        return Promise.resolve(card);
+      }
+      return Promise.resolve(this.cards.transition(cardId, "Abandoned", reason, { reason }));
     });
   }
 
@@ -441,10 +471,11 @@ export class Pipeline {
         return undefined;
       }
       // A replay goes back to the worker that may already have the thread.
+      // A replay goes back to the worker that may already have the thread, ready or not: T3
+      // answers it with that thread if it started, and the replay must not wait on a rollout
+      // that waits on it.
       const pending = this.pendingLaunch(request);
-      const worker = this.pickWorker(
-        pending === undefined ? card : { ...card, workerEnv: pending },
-      );
+      const worker = pending === undefined ? this.pickWorker(card) : this.replayWorker(pending);
       if (typeof worker === "string") {
         this.wait(card, worker);
         return undefined;
@@ -453,9 +484,7 @@ export class Pipeline {
       const current = this.cards.get(card.id);
       if (!still(current)) return undefined;
       // Everything is checked again after the preparation's awaits, on the same worker.
-      const again = this.pickWorker(
-        pending === undefined ? current : { ...current, workerEnv: pending },
-      );
+      const again = pending === undefined ? this.pickWorker(current) : worker;
       const blocked = !this.isFactoryProject(card.repo)
         ? `${card.repo} is no longer a factory project.`
         : typeof again === "string" || again.environmentId !== worker.environmentId
@@ -808,7 +837,19 @@ export class Pipeline {
       return this.escalate(card, "lead", "no PR to merge");
     }
     const pr = await this.options.github.pullRequest(card.repo, card.prNumber);
-    if (pr.state === "MERGED") return this.foreignMerge(card, pr.mergeSha);
+    if (pr.state === "MERGED") {
+      // A merge Hephaestus made, whose reply was lost, carries its marker.
+      const ours =
+        pr.mergeSha === null
+          ? false
+          : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
+      if (ours === undefined) {
+        this.wait(card, "reading back whether the merge was Hephaestus's");
+        return;
+      }
+      if (ours && pr.mergeSha !== null) return this.recordOwnMerge(card, pr, pr.mergeSha);
+      return this.foreignMerge(card, pr.mergeSha);
+    }
     if (pr.state !== "OPEN")
       return this.escalate(card, "lead", `PR #${String(pr.number)} was closed`);
     const wrong = this.foreignPullRequest(card, pr);
@@ -867,19 +908,30 @@ export class Pipeline {
       );
     } catch (error) {
       if (error instanceof AlreadyMergedError) return this.foreignMerge(card, error.mergeSha);
+      if (error instanceof MergeOutcomeUnknownError) {
+        return this.escalate(
+          card,
+          "owner",
+          `GitHub may have merged PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
+        );
+      }
       throw error;
     }
+    await this.recordOwnMerge(card, pr, mergeSha);
+  }
+
+  private async recordOwnMerge(card: Card, pr: PullRequest, mergeSha: string): Promise<void> {
+    const required = this.policy(card).requiredChecks.map((name) =>
+      name.includes(":") ? name : `check:${name}`,
+    );
     const next = this.options.db.transaction(() => {
       this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, false);
+      // The merge commit must finish every check the head ran, and every required one.
       return this.cards.transition(
         card.id,
         "Validating",
         `merged PR #${String(pr.number)} as ${mergeSha}`,
-        {
-          mergeSha,
-          expectedChecks: pr.checkNames,
-          waiting: null,
-        },
+        { mergeSha, expectedChecks: [...new Set([...pr.checkNames, ...required])], waiting: null },
       );
     })();
     await this.mirror(next, "Validating");
@@ -973,6 +1025,15 @@ export class Pipeline {
         });
       }
       const policy = this.policy(card);
+      // The deadline comes before the review, so a stalled rollback always reaches the owner.
+      if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS) && card.waiting !== null) {
+        return this.escalate(
+          card,
+          "owner",
+          `the revert PR #${String(pr.number)} has not merged after an hour: ${card.waiting}`,
+          { ownerAction: "revert-merge" },
+        );
+      }
       // The owner's approval of the revert's head stands in for its review.
       const ownerApproved = card.ownerApprovedSha === pr.headSha;
       if (policy.requireReview && !ownerApproved && !this.cards.approvedAt(card.id, pr.headSha)) {
@@ -1033,6 +1094,10 @@ export class Pipeline {
           ownerAction: "revert-merge",
         });
       }
+      if (!this.olderThan(card.headAt, this.options.checksSettleMs ?? CHECKS_SETTLE_MS)) {
+        this.wait(card, "revert PR: letting every check register");
+        return;
+      }
       try {
         const mergeSha = await this.options.github.merge(
           card.repo,
@@ -1042,6 +1107,14 @@ export class Pipeline {
         );
         this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, true);
       } catch (error) {
+        if (error instanceof MergeOutcomeUnknownError) {
+          return this.escalate(
+            card,
+            "owner",
+            `GitHub may have merged revert PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
+            { ownerAction: "revert-merge" },
+          );
+        }
         if (!(error instanceof AlreadyMergedError)) throw error;
         this.cards.event(
           card.id,

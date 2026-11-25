@@ -95,6 +95,16 @@ describe("decideMerge under each preset", () => {
     );
   });
 
+  it("does not let a commit status stand in for a required check run", () => {
+    const policy = { ...PRESETS.standard, requiredChecks: ["ci"] };
+    expect(decideMerge(input("standard", { policy, checkIds: ["status:ci"] })).action).toBe("wait");
+    expect(decideMerge(input("standard", { policy, checkIds: ["check:ci"] })).action).toBe("merge");
+    const statusPolicy = { ...PRESETS.standard, requiredChecks: ["status:deploy"] };
+    expect(
+      decideMerge(input("standard", { policy: statusPolicy, checkIds: ["status:deploy"] })).action,
+    ).toBe("merge");
+  });
+
   it("names the escalation path a PR touches", () => {
     const decision = decideMerge(
       input("standard", { files: ["a.ts", ".github/workflows/ci.yml"] }),

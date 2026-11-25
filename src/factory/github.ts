@@ -2,6 +2,29 @@ import { commandRunner, type CommandRun } from "../workers/config-repo.js";
 
 export type CheckState = "success" | "pending" | "failure" | "none";
 
+/** GitHub may have merged the PR, and Hephaestus could not read back whether it did. */
+export class MergeOutcomeUnknownError extends Error {
+  constructor(
+    readonly number: number,
+    options?: ErrorOptions,
+  ) {
+    super(`Could not tell whether PR #${String(number)} merged.`, options);
+  }
+}
+
+async function retry<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
+  let last: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await work();
+    } catch (error) {
+      last = error;
+      await new Promise((resolve) => setTimeout(resolve, 500 * (i + 1)));
+    }
+  }
+  throw last;
+}
+
 /** The PR was merged, but not by this merge call. */
 export class AlreadyMergedError extends Error {
   constructor(
@@ -248,22 +271,31 @@ export class GitHub {
         `commit_message=${marker}`,
       ]);
     } catch (error) {
-      const current = await this.pullRequest(repo, number).catch(() => undefined);
-      if (current?.state !== "MERGED" || current.mergeSha === null) throw error;
-      // The reply may have been lost after GitHub merged: the marker in the commit says whose merge it was.
-      const message = await this.gh([
-        "api",
-        `repos/${repo}/commits/${current.mergeSha}`,
-        "--jq",
-        ".commit.message",
-      ]).catch(() => "");
-      if (message.includes(marker)) return current.mergeSha;
+      // The reply may have been lost after GitHub merged; the marker in the commit says whose merge it was.
+      const current = await retry(() => this.pullRequest(repo, number)).catch(() => undefined);
+      if (current === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
+      if (current.state !== "MERGED" || current.mergeSha === null) throw error;
+      const ours = await this.mergedWith(repo, current.mergeSha, marker);
+      if (ours === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
+      if (ours) return current.mergeSha;
       throw new AlreadyMergedError(number, current.mergeSha);
     }
     if (answer.merged !== true || typeof answer.sha !== "string") {
       throw new Error(`GitHub did not merge PR #${String(number)}.`);
     }
     return answer.sha;
+  }
+
+  /** Whether a merge commit carries `marker`, or undefined when GitHub could not be read. */
+  async mergedWith(repo: string, mergeSha: string, marker: string): Promise<boolean | undefined> {
+    try {
+      const message = await retry(() =>
+        this.gh(["api", `repos/${repo}/commits/${mergeSha}`, "--jq", ".commit.message"]),
+      );
+      return message.includes(marker);
+    } catch {
+      return undefined;
+    }
   }
 
   /** Every check run and the latest status of each context on a commit, all pages. */
