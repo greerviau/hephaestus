@@ -319,7 +319,7 @@ function cell(value: unknown): string {
     : `<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
 }
 
-function diffTable(changes: Change[]): string {
+export function diffTable(changes: Change[]): string {
   if (changes.length === 0) return "<p>No changes.</p>";
   const rows = changes
     .map(

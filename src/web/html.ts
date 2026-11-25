@@ -281,3 +281,18 @@ export function dayLabel(day: string): string {
 export function backTo(value: string | null, fallback: string): string {
   return value !== null && /^\/(?![/\\])[\x21-\x7e]*$/.test(value) ? value : fallback;
 }
+
+/** A labelled select for a GET filter form. */
+export function selectField(
+  name: string,
+  label: string,
+  options: readonly (readonly [string, string])[],
+  value: string,
+): string {
+  return `<div class="field"><label for="${escapeHtml(name)}">${escapeHtml(label)}</label><select id="${escapeHtml(name)}" name="${escapeHtml(name)}">${options
+    .map(
+      ([option, text]) =>
+        `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(text)}</option>`,
+    )
+    .join("")}</select></div>`;
+}

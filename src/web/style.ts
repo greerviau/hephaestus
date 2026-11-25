@@ -565,5 +565,6 @@ textarea.config { font-family: var(--mono); font-size: 14px; min-height: 420px; 
   .top-row { padding-bottom: 0; }
   nav.tabs { margin: 0 -16px; padding: 0 4px; }
   details.act > form { min-width: 0; }
+  .chart svg.plot { min-width: 560px; }
 }
 `;

@@ -20,7 +20,13 @@ export interface FactoryPages {
   intake: Pick<Intake, "issues" | "approve" | "reject">;
   pipeline: Pick<
     Pipeline,
-    "paused" | "setPaused" | "approveMerge" | "sendToLead" | "abandon" | "blockedBecause"
+    | "paused"
+    | "setPaused"
+    | "approveMerge"
+    | "sendToLead"
+    | "abandon"
+    | "blockedBecause"
+    | "runningThreads"
   >;
   events: ThreadEvents;
   mcp: Pick<FactoryMcp, "calls" | "evidence">;

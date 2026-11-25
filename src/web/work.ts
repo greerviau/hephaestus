@@ -19,6 +19,7 @@ import {
   type FactoryPages,
 } from "./factory.js";
 import {
+  selectField,
   card,
   empty,
   escapeHtml,
@@ -48,15 +49,6 @@ function matchesStage(item: Card, filter: string): boolean {
   return item.stage === filter;
 }
 
-function select(id: string, label: string, options: [string, string][], value: string): string {
-  return `<div class="field"><label for="${id}">${escapeHtml(label)}</label><select id="${id}" name="${id}">${options
-    .map(
-      ([option, text]) =>
-        `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(text)}</option>`,
-    )
-    .join("")}</select></div>`;
-}
-
 /** Factory projects in the config, plus any repo a card or issue names. */
 export function projects(factory: FactoryPages, cards: Card[], issues: TrackedIssue[]): string[] {
   const names = new Set(Object.keys(factory.store.current()?.document.projects ?? {}));
@@ -72,7 +64,7 @@ function threadPill(thread: StoredThread): string {
   return pill("bad", thread.status.replace("_", " "));
 }
 
-function eventTitle(event: CardEvent): string {
+export function eventTitle(event: CardEvent): string {
   if (event.kind.startsWith("stage:")) return `Moved to ${event.kind.slice("stage:".length)}`;
   if (event.kind === "escalated:lead") return "Sent to the lead";
   if (event.kind === "escalated:owner") return "Escalated to you";
@@ -81,7 +73,7 @@ function eventTitle(event: CardEvent): string {
   return event.kind;
 }
 
-function isBad(event: CardEvent): boolean {
+export function isBad(event: CardEvent): boolean {
   return (
     event.kind === "error" ||
     event.kind === "stage:Escalated" ||
@@ -115,7 +107,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
           projects(factory, cards.ok ? cards.value : [], issues.ok ? issues.value : []),
         );
         const back = here(url);
-        const filters = `<form class="filterbar" method="get" action="/work">${select(
+        const filters = `<form class="filterbar" method="get" action="/work">${selectField(
           "project",
           "Project",
           [
@@ -123,7 +115,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             ...(names.ok ? names.value : []).map((name): [string, string] => [name, name]),
           ],
           project,
-        )}${select("stage", "Stage", STAGE_FILTERS, stage)}<button type="submit" class="btn-secondary">Filter</button></form>`;
+        )}${selectField("stage", "Stage", STAGE_FILTERS, stage)}<button type="submit" class="btn-secondary">Filter</button></form>`;
 
         let issuesBody = empty("Tracked issues could not be read.");
         if (issues.ok) {

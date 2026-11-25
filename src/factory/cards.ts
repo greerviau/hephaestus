@@ -379,6 +379,25 @@ export class CardStore {
       .all() as { id: number; at: string; cardId: number | null; text: string }[];
   }
 
+  /** The newest notifications, dismissed or not, for the Activity page. */
+  recentNotifications(
+    limit = 200,
+  ): { id: number; at: string; cardId: number | null; text: string; dismissed: boolean }[] {
+    return (
+      this.db
+        .prepare(
+          "SELECT id, at, card_id AS cardId, text, dismissed FROM notifications ORDER BY id DESC LIMIT ?",
+        )
+        .all(limit) as {
+        id: number;
+        at: string;
+        cardId: number | null;
+        text: string;
+        dismissed: number;
+      }[]
+    ).map((row) => ({ ...row, dismissed: row.dismissed === 1 }));
+  }
+
   dismissNotification(id: number): void {
     this.db.prepare("UPDATE notifications SET dismissed = 1 WHERE id = ?").run(id);
   }
