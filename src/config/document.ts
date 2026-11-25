@@ -36,6 +36,8 @@ export interface FactorySettings {
   threadSkills: string[];
   /** The model each factory instance runs. */
   models: { claude: ModelChoice; codex: ModelChoice };
+  /** Hephaestus starts an admitted card itself, from its issue, when the lead has not after this many minutes; 0 waits for the lead. */
+  autoStartMinutes: number;
   /** The owner's own provider instance and model that run deploy and sign-in threads on a worker. */
   setup: ModelChoice & { instanceId: string };
   limits: {
@@ -50,6 +52,7 @@ export interface FactorySettings {
 
 export const DEFAULT_FACTORY: FactorySettings = {
   threadSkills: [],
+  autoStartMinutes: 10,
   models: { claude: { model: "claude-sonnet-5-5" }, codex: { model: "gpt-6.2-sol" } },
   setup: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" },
   limits: { threadsPerWorker: 2, threads: 4, startsPerDay: 40 },
@@ -176,6 +179,9 @@ export function validateConfig(value: unknown): FactoryConfig {
     const setup = model("factory.setup", factory.setup);
     if (setup !== undefined && (typeof setup.instanceId !== "string" || setup.instanceId === "")) {
       problems.push("factory.setup.instanceId must be a non-empty string");
+    }
+    if (!Number.isInteger(factory.autoStartMinutes) || (factory.autoStartMinutes as number) < 0) {
+      problems.push("factory.autoStartMinutes must be a whole number of 0 or more");
     }
     const limits = object("factory.limits", factory.limits) ?? {};
     for (const name of ["threadsPerWorker", "threads", "startsPerDay"]) {

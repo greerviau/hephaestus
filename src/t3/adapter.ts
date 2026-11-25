@@ -263,6 +263,19 @@ export class T3Adapter {
     );
   }
 
+  /** Projects on an environment with their workspace folders. */
+  async projects(environmentId: string): Promise<{ projectId: string; workspaceRoot: string }[]> {
+    const result = (await this.connection.call("t3_project_list", { environmentId })) as {
+      projects?: { projectId?: string; id?: string; workspaceRoot?: string }[];
+    };
+    return (result.projects ?? []).flatMap((project) => {
+      const projectId = project.projectId ?? project.id;
+      return projectId === undefined || project.workspaceRoot === undefined
+        ? []
+        : [{ projectId, workspaceRoot: project.workspaceRoot }];
+    });
+  }
+
   async archive(environmentId: string, threadId: string): Promise<void> {
     await this.connection.call("t3_thread_organize", {
       environmentId,

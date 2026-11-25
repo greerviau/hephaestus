@@ -1,0 +1,202 @@
+import type { Database } from "better-sqlite3";
+import type { FactoryConfig } from "../../src/config/document.js";
+import { CardStore } from "../../src/factory/cards.js";
+import type { CheckState, Issue, PullRequest } from "../../src/factory/github.js";
+import { Intake } from "../../src/factory/intake.js";
+import { Pipeline } from "../../src/factory/pipeline.js";
+import { openStore } from "../../src/store.js";
+import type { LaunchOptions, T3Adapter } from "../../src/t3/adapter.js";
+import { ThreadEvents } from "../../src/t3/events.js";
+import { FactoryThreads } from "../../src/t3/threads.js";
+import type { WorkerManager } from "../../src/workers/manager.js";
+import { sampleConfig } from "../config/fixtures.js";
+
+export const SHA = "1".repeat(40);
+export const SHA2 = "2".repeat(40);
+export const MERGE = "9".repeat(40);
+
+export class FakeGitHub {
+  issues = new Map<number, Issue>();
+  prs = new Map<number, PullRequest>();
+  commits = new Map<string, { state: CheckState; failed: string[] }>();
+  merged: number[] = [];
+  reverted: number[] = [];
+  reopened: number[] = [];
+  nextIssue = 100;
+
+  createIssue(_repo: string, title: string, body: string): Promise<number> {
+    const number = this.nextIssue++;
+    this.issues.set(number, { number, title, body, author: "owner", state: "OPEN" });
+    return Promise.resolve(number);
+  }
+  openIssues(): Promise<Issue[]> {
+    return Promise.resolve([...this.issues.values()].filter((issue) => issue.state === "OPEN"));
+  }
+  issue(_repo: string, number: number): Promise<Issue> {
+    const issue = this.issues.get(number);
+    return issue === undefined ? Promise.reject(new Error("no issue")) : Promise.resolve(issue);
+  }
+  reopenIssue(_repo: string, number: number): Promise<void> {
+    this.reopened.push(number);
+    return Promise.resolve();
+  }
+  defaultBranch(): Promise<string> {
+    return Promise.resolve("main");
+  }
+  pullRequest(_repo: string, number: number): Promise<PullRequest> {
+    const pr = this.prs.get(number);
+    return pr === undefined
+      ? Promise.reject(new Error(`no PR ${String(number)}`))
+      : Promise.resolve({ ...pr });
+  }
+  merge(_repo: string, number: number, headSha: string): Promise<string> {
+    const pr = this.prs.get(number);
+    if (pr === undefined || pr.headSha !== headSha) return Promise.reject(new Error("head moved"));
+    this.merged.push(number);
+    pr.state = "MERGED";
+    pr.mergeSha = number === 9 ? "8".repeat(40) : MERGE;
+    return Promise.resolve(pr.mergeSha);
+  }
+  commitChecks(_repo: string, sha: string): Promise<{ state: CheckState; failed: string[] }> {
+    return Promise.resolve(this.commits.get(sha) ?? { state: "pending", failed: [] });
+  }
+  revertPullRequest(_repo: string, number: number): Promise<number> {
+    this.reverted.push(number);
+    this.prs.set(9, pr(9, SHA2, { headBranch: "revert-5" }));
+    return Promise.resolve(9);
+  }
+}
+
+export function pr(
+  number: number,
+  headSha: string,
+  fields: Partial<PullRequest> = {},
+): PullRequest {
+  return {
+    number,
+    url: `https://github.com/octo/app/pull/${String(number)}`,
+    state: "OPEN",
+    headSha,
+    headBranch: `factory/card-${String(number)}`,
+    baseBranch: "main",
+    mergeSha: null,
+    files: ["src/app.ts"],
+    checks: "success",
+    failedChecks: [],
+    ...fields,
+  };
+}
+
+export class FakeT3 {
+  launches: LaunchOptions[] = [];
+  sends: { threadId: string; message: string }[] = [];
+  launchThread(
+    options: LaunchOptions,
+  ): Promise<{ threadId: string; runId: null; projectId: string }> {
+    this.launches.push(options);
+    return Promise.resolve({
+      threadId: `t${String(this.launches.length)}`,
+      runId: null,
+      projectId: "proj",
+    });
+  }
+  send(_environmentId: string, threadId: string, message: string): Promise<void> {
+    this.sends.push({ threadId, message });
+    return Promise.resolve();
+  }
+  cloneProject(): Promise<string> {
+    return Promise.resolve("proj");
+  }
+  projects(): Promise<{ projectId: string; workspaceRoot: string }[]> {
+    return Promise.resolve([]);
+  }
+}
+
+export interface Harness {
+  db: Database;
+  cards: CardStore;
+  events: ThreadEvents;
+  github: FakeGitHub;
+  t3: FakeT3;
+  intake: Intake;
+  pipeline: Pipeline;
+  config: FactoryConfig;
+  ready: { environmentId: string; label: string; home: string | null }[];
+  setClock(ms: number): void;
+  /** Ends a thread with a final assistant message. */
+  finish(threadId: string, text: string, status?: string): void;
+}
+
+export function harness(configure: (config: FactoryConfig) => void = () => undefined): Harness {
+  let clock = Date.parse("2026-11-25T12:00:00Z");
+  const now = (): Date => new Date(clock);
+  const db = openStore(":memory:");
+  const cards = new CardStore(db, now);
+  const events = new ThreadEvents(db, now);
+  const github = new FakeGitHub();
+  const t3 = new FakeT3();
+  const config = sampleConfig();
+  config.factory.autoStartMinutes = 0;
+  configure(config);
+  const ready = [{ environmentId: "w1", label: "w1", home: "/home/w" }];
+  const workers = {
+    readyWorkers: () => ready,
+    worker: (environmentId: string) =>
+      ready.find((worker) => worker.environmentId === environmentId),
+  } as unknown as Pick<WorkerManager, "readyWorkers" | "worker">;
+  const threads = new FactoryThreads(t3 as unknown as T3Adapter, events);
+  const intake = new Intake({ db, cards, github, config: () => config, now });
+  const pipeline = new Pipeline({
+    db,
+    cards,
+    github,
+    workers,
+    t3: t3,
+    threads,
+    events,
+    config: () => ({ id: 3, document: config }),
+    now,
+  });
+  let item = 0;
+  return {
+    db,
+    cards,
+    events,
+    github,
+    t3,
+    intake,
+    pipeline,
+    config,
+    ready,
+    setClock: (ms) => {
+      clock = ms;
+    },
+    finish: (threadId, text, status = "completed") => {
+      const launch = t3.launches.find((_, index) => `t${String(index + 1)}` === threadId);
+      const environmentId = launch?.environmentId ?? "w1";
+      item += 1;
+      events.upsertItems(environmentId, threadId, [
+        {
+          itemId: `final-${String(item)}`,
+          position: item,
+          type: "assistant_message",
+          status: "completed",
+          text,
+        },
+      ]);
+      events.setStatus(environmentId, threadId, status);
+    },
+  };
+}
+
+export function implementResult(prNumber: number, headSha: string): string {
+  return `Opened the PR.\n\n\`\`\`hephaestus-result\n{"status": "done", "pr": ${String(prNumber)}, "headSha": "${headSha}"}\n\`\`\``;
+}
+
+export function reviewResult(
+  verdict: "approve" | "changes",
+  headSha: string,
+  findings = "",
+): string {
+  return `\`\`\`hephaestus-result\n${JSON.stringify({ verdict, headSha, findings })}\n\`\`\``;
+}

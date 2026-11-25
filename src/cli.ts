@@ -15,7 +15,6 @@ import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
 import { SystemdUserService } from "./service.js";
 import { hermesRunner } from "./hermes/cli.js";
-import { syncFactoryHermes } from "./hermes/setup.js";
 import { openStore } from "./store.js";
 import { T3Adapter } from "./t3/adapter.js";
 import {
@@ -41,6 +40,15 @@ import { finalMessage } from "./workers/scripts.js";
 import type { Database } from "better-sqlite3";
 import type { Paths } from "./paths.js";
 import type { Config } from "./config.js";
+import { ROLE_NAMES } from "./config/document.js";
+import type { ConfigVersion } from "./config/store.js";
+import { CardStore } from "./factory/cards.js";
+import { GitHub } from "./factory/github.js";
+import { Intake } from "./factory/intake.js";
+import { FactoryMcp } from "./factory/mcp.js";
+import { Pipeline } from "./factory/pipeline.js";
+import { FactoryBoard } from "./hermes/board.js";
+import { mcpTokenSecret, syncFactoryHermes } from "./hermes/setup.js";
 
 const USAGE = `Usage:
   hephaestus install [--port <port>] [--skill <folder>]...
@@ -178,6 +186,53 @@ async function cleanUpWorkers(paths: Paths, config: Config): Promise<string[]> {
     db.close();
   }
   return failed;
+}
+
+/** Intake, the pipeline, and the MCP server for the factory profiles. */
+function factoryEngine(
+  db: Database,
+  paths: Paths,
+  config: Config,
+  store: ConfigStore,
+  t3: T3Adapter,
+  events: ThreadEvents,
+  workers: WorkerManager,
+): { intake: Intake; pipeline: Pipeline; cards: CardStore; mcp: FactoryMcp; github: GitHub } {
+  const ghPath = config.ghPath ?? findExecutable("gh", process.env.PATH) ?? "gh";
+  const github = new GitHub(ghPath);
+  const cards = new CardStore(db);
+  const hermesPath = config.hermesPath;
+  // The board exists once `hermes sync` or a deploy has set the factory root up.
+  const board = (): FactoryBoard | undefined =>
+    hermesPath !== undefined && existsSync(paths.hermes)
+      ? new FactoryBoard({ root: paths.hermes, run: hermesRunner(hermesPath, paths.hermes) })
+      : undefined;
+  const deployed = (): ConfigVersion | undefined =>
+    store.list().find((version) => version.state === "deployed");
+  const intake = new Intake({ db, cards, github, config: () => deployed()?.document, board });
+  const pipeline = new Pipeline({
+    db,
+    cards,
+    github,
+    workers,
+    t3,
+    threads: new FactoryThreads(t3, events),
+    events,
+    config: () => deployed(),
+    board,
+  });
+  const secrets = new SecretsFile(paths.secrets);
+  const mcp = new FactoryMcp({
+    db,
+    cards,
+    intake,
+    pipeline,
+    store,
+    events,
+    tokens: () =>
+      Object.fromEntries(ROLE_NAMES.map((role) => [role, secrets.get(mcpTokenSecret(role))])),
+  });
+  return { intake, pipeline, cards, mcp, github };
 }
 
 /** The worker manager the service and uninstall share. */
@@ -387,6 +442,20 @@ async function main(argv: string[]): Promise<number> {
       const following = new AbortController();
       const follower = new ThreadFollower(t3, events).run(following.signal);
       const workers = workerManager(db, paths, config, store, t3, events);
+      const engine = factoryEngine(db, paths, config, store, t3, events, workers);
+      const mcpServer = engine.mcp.listen(config.port + 1);
+      const engineTicks = [
+        setInterval(() => {
+          engine.pipeline.tick().catch((error: unknown) => {
+            console.error("Advancing cards failed", error);
+          });
+        }, 20_000),
+        setInterval(() => {
+          engine.intake.poll().catch((error: unknown) => {
+            console.error("Reading factory project issues failed", error);
+          });
+        }, 120_000),
+      ];
       const ticking = setInterval(() => {
         workers.tick().catch((error: unknown) => {
           console.error("Advancing worker tasks failed", error);
@@ -416,6 +485,8 @@ async function main(argv: string[]): Promise<number> {
       });
       stopBackups();
       clearInterval(ticking);
+      for (const timer of engineTicks) clearInterval(timer);
+      await new Promise((resolve) => mcpServer.close(resolve));
       following.abort();
       // Closing the connection fails calls still waiting on T3, so shutdown does not wait for them.
       await connection.close();

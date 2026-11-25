@@ -117,6 +117,13 @@ export class FactoryBoard {
     await this.comment(id, note);
   }
 
+  /** Puts an escalated card back in the lead's ready queue with a note saying why. */
+  async handBack(id: string, note: string): Promise<void> {
+    const current = await this.status(id);
+    if (current === "blocked" || current === "scheduled") await this.kanban("unblock", "--", id);
+    await this.comment(id, note);
+  }
+
   async comment(id: string, text: string): Promise<void> {
     await this.kanban("comment", "--author=hephaestus", "--", id, text);
   }
