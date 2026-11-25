@@ -1,3 +1,5 @@
+import { ICON_LINKS, LOGO_PATH } from "./brand.js";
+
 const ESCAPES: Record<string, string> = {
   "&": "&amp;",
   "<": "&lt;",
@@ -26,6 +28,7 @@ export function page(title: string, body: string, refreshSeconds?: number): stri
 <meta name="viewport" content="width=device-width, initial-scale=1">
 ${refreshSeconds === undefined ? "" : `<meta http-equiv="refresh" content="${String(refreshSeconds)}">\n`}<title>${escapeHtml(title)} - Hephaestus</title>
 <link rel="stylesheet" href="${STYLESHEET_PATH}">
+${ICON_LINKS}
 </head>
 <body>
 ${body}
@@ -41,7 +44,7 @@ export const NAV = [
   ["/activity", "Activity"],
   ["/analytics", "Analytics"],
   ["/improvement", "Improvement"],
-  ["/environments", "Compute"],
+  ["/environments", "Workers"],
   ["/settings", "Settings"],
 ] as const;
 
@@ -65,7 +68,7 @@ export function layout(title: string, body: string, options: LayoutOptions = {})
 <header class="top">
   <div class="wrap">
     <div class="top-row">
-      <a class="brand" href="/">Hephaestus</a>
+      <a class="brand" href="/"><img src="${LOGO_PATH}" alt="" width="24" height="24">Hephaestus</a>
       <div class="top-actions">
         <form method="post" action="/logout"><button type="submit" class="linkbtn">Sign out</button></form>
       </div>

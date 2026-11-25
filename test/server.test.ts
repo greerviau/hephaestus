@@ -95,6 +95,39 @@ describe("dashboard without a session", () => {
     expect(await response.text()).toContain("--accent");
   });
 
+  it.each([
+    ["/favicon.ico", "image/x-icon"],
+    ["/assets/brand/favicon-32.png", "image/png"],
+    ["/assets/brand/apple-touch-icon.png", "image/png"],
+    ["/assets/brand/logo-192.png", "image/png"],
+  ])("serves the icon %s without a session", async (path, type) => {
+    const response = await fetch(`${base}${path}`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(type);
+    expect(response.headers.get("cache-control")).toContain("max-age=");
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
+  it("serves only the brand files", async () => {
+    const response = await fetch(`${base}/assets/brand/..%2F..%2Fpackage.json`, {
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(303);
+  });
+
+  it("links the icons and shows the logo on the login page", async () => {
+    const html = await (await fetch(`${base}/login`)).text();
+
+    expect(html).toContain('<link rel="icon" href="/favicon.ico" sizes="any">');
+    expect(html).toContain('href="/assets/brand/favicon-32.png"');
+    expect(html).toContain(
+      '<link rel="apple-touch-icon" href="/assets/brand/apple-touch-icon.png">',
+    );
+    expect(html).toContain('src="/assets/brand/logo-192.png"');
+  });
+
   it("serves the login page with the instance id", async () => {
     const response = await fetch(`${base}/login`);
 

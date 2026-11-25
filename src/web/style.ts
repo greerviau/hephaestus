@@ -549,11 +549,15 @@ details.act > form label { font-size: 14px; color: var(--muted); }
 .login-wrap { max-width: 400px; margin: 64px auto; padding: 0 16px; }
 .login-wrap .card { display: grid; gap: 12px; }
 .login-wrap h1 { font-size: 24px; }
+.login-logo { width: 64px; height: 64px; }
+.brand { display: inline-flex; align-items: center; gap: 8px; }
+.brand img { width: 24px; height: 24px; }
 pre.block { background: var(--sunk); border-radius: var(--radius-s); padding: 12px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
 td pre { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; font-size: 13px; }
 textarea.config { font-family: var(--mono); font-size: 14px; min-height: 420px; resize: vertical; }
 .chart text { font-size: 12px; fill: var(--muted); font-family: var(--font); }
 .chart .mark:hover { opacity: 0.8; }
+.stack-8 { display: grid; gap: 4px; margin-bottom: 8px; justify-items: start; }
 .stage-group + .stage-group { margin-top: 20px; }
 .kpis { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0 0 16px; }
 .kpis div { display: grid; }

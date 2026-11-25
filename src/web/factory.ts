@@ -5,11 +5,9 @@ import type { FactoryMcp } from "../factory/mcp.js";
 import type { Intake } from "../factory/intake.js";
 import type { Pipeline } from "../factory/pipeline.js";
 import type { Stage } from "../hermes/board.js";
-import type { Environments } from "../t3/adapter.js";
 import { ENDED_STATUSES, type StoredThread, type ThreadEvents } from "../t3/events.js";
 import type { WorkerManager, WorkerView } from "../workers/manager.js";
 import type { EnvironmentSource } from "./environments.js";
-import { publicReason } from "./environments.js";
 import { backTo, banner, escapeHtml, pill } from "./html.js";
 import { readBody, redirect, type Route, type RouteContext } from "./http.js";
 import type { Deploy } from "./settings.js";
@@ -71,28 +69,6 @@ export function read<T>(what: string, run: () => T): Read<T> {
   } catch (error) {
     console.error(`Reading ${what} for the dashboard failed`, error);
     return { ok: false };
-  }
-}
-
-export type T3Read =
-  { state: "ok"; value: Environments } | { state: "loading" } | { state: "error"; reason: string };
-
-/** T3's linked environments, or loading when T3 has not answered within `waitMs`. */
-export async function readEnvironments(source: EnvironmentSource, waitMs: number): Promise<T3Read> {
-  let timer: NodeJS.Timeout | undefined;
-  const late = new Promise<T3Read>((resolve) => {
-    timer = setTimeout(() => {
-      resolve({ state: "loading" });
-    }, waitMs);
-  });
-  const answer = source.environments().then(
-    (value): T3Read => ({ state: "ok", value }),
-    (error: unknown): T3Read => ({ state: "error", reason: publicReason(error) }),
-  );
-  try {
-    return await Promise.race([answer, late]);
-  } finally {
-    clearTimeout(timer);
   }
 }
 

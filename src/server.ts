@@ -4,6 +4,7 @@ import { SESSION_TTL_MS, Sessions, readPasswordHash, verifyPassword } from "./au
 import { STYLESHEET_PATH, banner, escapeHtml, layout, page } from "./web/html.js";
 import { HTML, readBody, redirect, send, sendHtml, sendJson, type Route } from "./web/http.js";
 import { STYLESHEET } from "./web/style.js";
+import { LOGO_PATH, brandFile } from "./web/brand.js";
 
 export const SESSION_COOKIE = "hephaestus_session";
 export const INSTANCE_HEADER = "x-hephaestus-instance";
@@ -65,6 +66,16 @@ export function createDashboardServer({
     // The stylesheet holds nothing private, and the login page needs it before a session exists.
     if (path === STYLESHEET_PATH && (method === "GET" || method === "HEAD")) {
       send(response, 200, "text/css; charset=utf-8", STYLESHEET);
+      return;
+    }
+    const brand = method === "GET" || method === "HEAD" ? brandFile(path) : undefined;
+    if (brand !== undefined) {
+      response.writeHead(200, {
+        "content-type": brand.contentType,
+        "cache-control": "public, max-age=86400",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(method === "HEAD" ? undefined : brand.body);
       return;
     }
     if (path === "/login" && method === "GET") {
@@ -193,6 +204,7 @@ function loginPage(error?: string): string {
     "Sign in",
     `<main class="login-wrap">
 <form class="card login" method="post" action="/login">
+  <img class="login-logo" src="${LOGO_PATH}" alt="" width="64" height="64">
   <h1>Hephaestus</h1>
   ${error === undefined ? "" : `<p class="err-text" role="alert">${escapeHtml(error)}</p>`}
   <div class="field"><label for="password">Dashboard password</label>

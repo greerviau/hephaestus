@@ -2,7 +2,7 @@ import type { Card } from "../factory/cards.js";
 import type { TrackedIssue } from "../factory/intake.js";
 import type { StoredThread } from "../t3/events.js";
 import type { WorkerView } from "../workers/manager.js";
-import { expiresIn, expiringSoon } from "./environments.js";
+import { expiresIn, expiringSoon, readEnvironments } from "./environments.js";
 import {
   ACTIVE_STAGES,
   STORE_ERROR,
@@ -13,7 +13,6 @@ import {
   notice,
   providerName,
   read,
-  readEnvironments,
   shortSha,
   stagePill,
   t3Error,
@@ -109,7 +108,7 @@ function workerStep(view: WorkerView): string {
     return `Paste the Claude setup token into the thread "Hephaestus: sign in Factory Claude" on ${view.label} in T3.`;
   }
   if (view.tasks["codex-sign-in"]?.status === "running") {
-    return "Approve the Codex sign-in code shown on the Compute page.";
+    return "Approve the Codex sign-in code shown on the Workers page.";
   }
   return view.blocker ?? "";
 }
@@ -216,7 +215,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
                 `${environment.label}: the T3 link ${expiresIn(environment, now())}`,
               ),
               why: "Link it again from this host before then, or factory threads on it stop.",
-              actions: '<a href="/environments">Open Compute</a>',
+              actions: '<a href="/environments">Open Workers</a>',
             });
           }
         }
@@ -227,7 +226,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
               tone: "crit",
               title: `<a href="/environments">${escapeHtml(view.label)}</a>`,
               why: escapeHtml(workerStep(view)),
-              actions: '<a href="/environments">Open Compute</a>',
+              actions: '<a href="/environments">Open Workers</a>',
             });
           }
         }
