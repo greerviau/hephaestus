@@ -31,6 +31,7 @@ function signInWorker(): WorkerView {
     codex: "unknown",
     ready: false,
     blocker: "Sign in Factory Claude.",
+    ownerStep: true,
   };
 }
 

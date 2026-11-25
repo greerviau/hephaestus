@@ -86,27 +86,9 @@ export function t3Error(reason: string): string {
   );
 }
 
-/** Worker blockers that Hephaestus clears on its own; any other blocker waits for the owner. */
-const AUTOMATIC_BLOCKERS = [
-  /^A deploy is running\./,
-  /^An earlier deploy thread is still running/,
-  /^Waiting for running factory threads/,
-  /^Deploy version \d+\.$/,
-  /^Due for its periodic redeploy/,
-];
-
 /** Whether the worker's next step is the owner's: a sign-in, a failed deploy, a missing instance. */
 export function workerNeedsOwner(view: WorkerView): boolean {
-  if (!view.enabled) return false;
-  if (
-    view.tasks["claude-sign-in"]?.status === "running" ||
-    view.tasks["codex-sign-in"]?.status === "running"
-  ) {
-    return true;
-  }
-  if (view.ready || view.blocker === undefined) return false;
-  const blocker = view.blocker;
-  return !AUTOMATIC_BLOCKERS.some((pattern) => pattern.test(blocker));
+  return view.ownerStep;
 }
 
 export function shortSha(sha: string | null): string {
