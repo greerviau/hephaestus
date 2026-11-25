@@ -123,6 +123,19 @@ export class SystemdUserService implements ServiceManager {
     if (!readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
       throw new Error(`${this.unitPath} was not written by Hephaestus; leaving it running.`);
     }
+    // systemd may have loaded a unit of the same name from a directory that takes precedence.
+    const loaded = this.run("systemctl", [
+      "--user",
+      "show",
+      "-P",
+      "FragmentPath",
+      this.name,
+    ]).stdout.trim();
+    if (loaded !== "" && loaded !== this.unitPath) {
+      throw new Error(
+        `systemd runs ${this.name} from ${loaded}, not ${this.unitPath}; leaving it running.`,
+      );
+    }
     this.systemctl("stop", this.name);
     this.assertStopped();
   }

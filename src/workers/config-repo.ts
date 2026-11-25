@@ -139,7 +139,8 @@ export class ConfigRepo {
       // -f: a skill's own .gitignore must not keep its files out of the version.
       await this.git(["add", "-A", "-f"]);
       const tree = (await this.git(["write-tree"])).trim();
-      const staged = (await this.git(["ls-tree", "-r", "--name-only", tree])).trim().split("\n");
+      // -z: names with quotes or non-ASCII characters come through as they are.
+      const staged = (await this.git(["ls-tree", "-r", "-z", "--name-only", tree])).split("\0");
       const expected = Object.keys(versionFiles(version, config)).sort();
       if (
         JSON.stringify(staged.filter((path) => path !== "").sort()) !== JSON.stringify(expected)

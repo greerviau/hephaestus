@@ -35,6 +35,9 @@ export interface WorkerTask {
   version: number | null;
   sha: string | null;
   status: TaskStatus;
+  /** Positions in one sequence shared by tasks and checks, which orders events within a millisecond. */
+  createdSeq: number;
+  doneSeq: number | null;
   /** Free-form facts about the task: a failure reason, a device code, a deploy result. */
   detail: Record<string, unknown>;
   createdAt: string;
@@ -62,6 +65,8 @@ export interface InstanceCheck {
   /** Anything else T3 reported that stops the instance from running. */
   problem: string | null;
   at: string;
+  /** Where the check falls in the sequence tasks use. */
+  seq: number;
 }
 
 export type InstanceState =
@@ -97,6 +102,8 @@ interface TaskRow {
   sha: string | null;
   status: TaskStatus;
   detail: string;
+  created_seq: number;
+  done_seq: number | null;
   created_at: string;
   updated_at: string;
 }
@@ -122,6 +129,8 @@ function toTask(row: TaskRow): WorkerTask {
     version: row.version,
     sha: row.sha,
     status: row.status,
+    createdSeq: row.created_seq,
+    doneSeq: row.done_seq,
     detail: JSON.parse(row.detail) as Record<string, unknown>,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -159,6 +168,8 @@ export interface WorkerManagerOptions {
   configRepo: () => ConfigRepo | undefined;
   /** Applies the deployed version to the factory Hermes root. */
   syncHermes?: () => Promise<void>;
+  /** Threads T3 lists as running on a worker with a title containing `title`. */
+  activeThreads?: (environmentId: string, title: string) => Promise<string[]>;
   /** T3's provider list on a worker, when T3 offers it to Hephaestus; undefined when it does not. */
   instances?: (environmentId: string) => Promise<InstanceReport[] | undefined>;
   now?: () => Date;
@@ -322,17 +333,10 @@ export class WorkerManager {
       const signedIn = this.latestTask(id, signIn, "succeeded");
       const result = tasks[test];
       if (result === undefined) return "unknown";
-      for (const after of [deployed, signedIn]) {
-        if (after === undefined) continue;
-        if (result.id < after.id || Date.parse(result.createdAt) < Date.parse(after.updatedAt)) {
-          return "unknown";
-        }
-      }
+      if (!certifies(result, [deployed, signedIn])) return "unknown";
       if (result.status !== "succeeded") return "signed-out";
       // T3 saying the instance lost its sign-in after the test outranks the test.
-      if (check?.authenticated === false && Date.parse(check.at) > Date.parse(result.updatedAt)) {
-        return "signed-out";
-      }
+      if (check?.authenticated === false && check.seq > (result.doneSeq ?? 0)) return "signed-out";
       return "signed-in";
     };
     const claude = state("claude");
@@ -390,9 +394,11 @@ export class WorkerManager {
       }
       const desired = this.desired();
       if (version.state === "deployed" && desired?.version === id) {
-        // Deploying the current version again sends its saved target, even if the repo setting changed.
+        // Deploying the current version again sends its saved target, even if the repo setting
+        // changed, and retries applying it to the factory Hermes root.
+        const hermesError = await this.syncHermes();
         await this.reconcileNow(true);
-        return { sha: desired.sha };
+        return hermesError === undefined ? { sha: desired.sha } : { sha: desired.sha, hermesError };
       }
       await repo.ensureRemote();
       const sha = await repo.publish(id, version.document);
@@ -405,16 +411,20 @@ export class WorkerManager {
           setMeta(this.db, DESIRED_KEY, JSON.stringify(target));
         }
       })();
-      let hermesError: string | undefined;
-      try {
-        await this.options.syncHermes?.();
-      } catch (error) {
-        hermesError = errorText(error);
-        console.error("Applying the version to the factory Hermes root failed", error);
-      }
+      const hermesError = await this.syncHermes();
       await this.reconcileNow(true);
       return hermesError === undefined ? { sha } : { sha, hermesError };
     });
+  }
+
+  private async syncHermes(): Promise<string | undefined> {
+    try {
+      await this.options.syncHermes?.();
+      return undefined;
+    } catch (error) {
+      console.error("Applying the version to the factory Hermes root failed", error);
+      return errorText(error);
+    }
   }
 
   /** Publishing, rollouts, and reconciliation run one at a time, so none acts on a stale target. */
@@ -460,11 +470,26 @@ export class WorkerManager {
           `${String(threads)} factory threads are running on this worker. It deploys when they finish, so they keep the version they started with.`,
         );
       }
-      return this.startDeploy(environmentId, desired);
+      const task = await this.startDeploy(environmentId, desired);
+      if (task === undefined) {
+        throw new Error(
+          "T3 lists a deploy thread still running on this worker; wait for it to end.",
+        );
+      }
+      return task;
     });
   }
 
-  private startDeploy(environmentId: string, desired: DesiredDeploy): Promise<WorkerTask> {
+  /**
+   * Starts a deploy unless T3 lists a deploy thread still running on the
+   * worker, such as one whose launch reply never reached Hephaestus.
+   */
+  private async startDeploy(
+    environmentId: string,
+    desired: DesiredDeploy,
+  ): Promise<WorkerTask | undefined> {
+    const active = await this.options.activeThreads?.(environmentId, KIND_TITLES.deploy);
+    if (active !== undefined && active.length > 0) return undefined;
     return this.start(
       environmentId,
       "deploy",
@@ -541,8 +566,8 @@ export class WorkerManager {
       this.db
         .prepare(
           `INSERT INTO worker_tasks (environment_id, kind, client_request_id, message, version, sha,
-             status, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
+             status, created_seq, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
         )
         .run(
           environmentId,
@@ -551,6 +576,7 @@ export class WorkerManager {
           message,
           extra.version ?? null,
           extra.sha ?? null,
+          this.nextSeq(),
           at,
           at,
         ).lastInsertRowid,
@@ -636,17 +662,29 @@ export class WorkerManager {
   ): void {
     const task = this.task(id);
     if (task === undefined) return;
+    const ends =
+      fields.status !== undefined && fields.status !== "running" && task.status === "running";
     this.db
       .prepare(
-        "UPDATE worker_tasks SET thread_id = ?, status = ?, detail = ?, updated_at = ? WHERE id = ?",
+        "UPDATE worker_tasks SET thread_id = ?, status = ?, detail = ?, done_seq = ?, updated_at = ? WHERE id = ?",
       )
       .run(
         fields.threadId ?? task.threadId,
         fields.status ?? task.status,
         JSON.stringify(fields.detail ?? task.detail),
+        ends ? this.nextSeq() : task.doneSeq,
         this.now().toISOString(),
         id,
       );
+  }
+
+  /** The next position in the sequence that orders tasks and checks. */
+  private nextSeq(): number {
+    return this.db.transaction(() => {
+      const next = Number(getMeta(this.db, "worker_seq") ?? "0") + 1;
+      setMeta(this.db, "worker_seq", String(next));
+      return next;
+    })();
   }
 
   private fail(task: WorkerTask, reason: string): void {
@@ -763,6 +801,15 @@ export class WorkerManager {
           this.db
             .prepare("UPDATE workers SET checked_at = NULL WHERE environment_id = ?")
             .run(task.environmentId);
+          // A test that began before a deploy or sign-in finished certifies neither; run a fresh one.
+          const signIn = task.kind === "test-claude" ? "claude-sign-in" : "codex-sign-in";
+          const after = [
+            this.latestTask(task.environmentId, "deploy", "succeeded"),
+            this.latestTask(task.environmentId, signIn, "succeeded"),
+          ];
+          if (!certifies(current, after)) {
+            await this.startOnce(task.environmentId, task.kind, testTurnMessage());
+          }
         } else
           this.fail(
             task,
@@ -824,6 +871,7 @@ export class WorkerManager {
           authenticated: auth.length === 0,
           problem: other.length === 0 ? null : other.join(" "),
           at: at.toISOString(),
+          seq: this.nextSeq(),
         };
       }
       const problem = JSON.stringify(checks);
@@ -832,6 +880,11 @@ export class WorkerManager {
         .run(problem, at.toISOString(), row.environment_id);
     }
   }
+}
+
+/** Whether a test started after every task it must follow had finished. */
+function certifies(test: WorkerTask, after: (WorkerTask | undefined)[]): boolean {
+  return after.every((task) => task === undefined || test.createdSeq > (task.doneSeq ?? 0));
 }
 
 /** The reason a task gave for failing, or `fallback`. */

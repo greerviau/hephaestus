@@ -173,10 +173,21 @@ describe("SystemdUserService.remove", () => {
     };
     service().stop();
     expect(calls).toEqual([
+      "systemctl --user show -P FragmentPath hephaestus.service",
       "systemctl --user stop hephaestus.service",
       "systemctl --user is-active hephaestus.service",
     ]);
     expect(existsSync(unitPath)).toBe(true);
+
+    calls.length = 0;
+    responses["systemctl --user show -P FragmentPath hephaestus.service"] = {
+      status: 0,
+      stdout: "/etc/systemd/user/hephaestus.service\n",
+    };
+    expect(() => {
+      service().stop();
+    }).toThrow(/leaving it running/);
+    expect(calls).not.toContain("systemctl --user stop hephaestus.service");
   });
 
   it("keeps the unit when systemd cannot be reached", () => {

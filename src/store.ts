@@ -93,6 +93,8 @@ const MIGRATIONS = [
      sha TEXT,
      status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
      detail TEXT NOT NULL DEFAULT '{}',
+     created_seq INTEGER NOT NULL DEFAULT 0,
+     done_seq INTEGER,
      created_at TEXT NOT NULL,
      updated_at TEXT NOT NULL
    );

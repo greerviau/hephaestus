@@ -81,6 +81,18 @@ const CLEANUP_WAIT_MS = 5 * 60_000;
  * Runs the cleanup thread on every worker Hephaestus set up and reports each
  * outcome. A worker that cannot be reached keeps its setup, and the report says so.
  */
+/** Stops using the named workers, so the service deploys nothing there. */
+function disableWorkers(paths: Paths, labels: string[]): void {
+  const db = openStore(paths.state);
+  try {
+    const update = db.prepare("UPDATE workers SET enabled = 0 WHERE label = ?");
+    for (const label of labels) update.run(label);
+    if (labels.includes("all workers")) db.prepare("UPDATE workers SET enabled = 0").run();
+  } finally {
+    db.close();
+  }
+}
+
 /** Returns the labels of the workers it could not clean up. */
 async function cleanUpWorkers(paths: Paths, config: Config): Promise<string[]> {
   const failed: string[] = [];
@@ -200,6 +212,7 @@ function workerManager(
           );
     },
     instances: (environmentId) => t3.instances(environmentId),
+    activeThreads: (environmentId, title) => t3.activeThreads(environmentId, title),
     ...(hermesPath === undefined
       ? {}
       : {
@@ -279,9 +292,11 @@ async function main(argv: string[]): Promise<number> {
           failed = ["all workers"];
         }
         if (failed.length > 0 && values["skip-workers"] !== true) {
+          // A cleanup that may still be running must not race a deploy from the restarted service.
+          disableWorkers(paths, failed);
           service.start();
           console.log(
-            `Uninstall stopped, and Hephaestus is running again, because the factory setup is still on ${failed.join(", ")}. Run uninstall again later, or pass --skip-workers to uninstall anyway and remove the hephaestus-claude and hephaestus-codex provider instances and ~/.hephaestus there by hand.`,
+            `Uninstall stopped, and Hephaestus is running again, because the factory setup is still on ${failed.join(", ")}. Those workers are no longer used for factory work. Run uninstall again later, or pass --skip-workers to uninstall anyway and remove the hephaestus-claude and hephaestus-codex provider instances and ~/.hephaestus there by hand.`,
           );
           return 1;
         }

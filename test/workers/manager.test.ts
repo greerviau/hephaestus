@@ -63,6 +63,7 @@ let manager: WorkerManager;
 let synced: number;
 let clock: number;
 let reports: InstanceReport[] | undefined;
+let active: string[];
 
 function finishThread(threadId: string, text: string, status = "completed"): void {
   const launch = t3.launches[Number(threadId.slice(1)) - 1];
@@ -111,6 +112,7 @@ beforeEach(() => {
   repo = new FakeRepo();
   synced = 0;
   reports = undefined;
+  active = [];
   manager = new WorkerManager({
     db,
     store,
@@ -123,6 +125,7 @@ beforeEach(() => {
       return Promise.resolve();
     },
     instances: () => Promise.resolve(reports),
+    activeThreads: () => Promise.resolve(active),
     now,
   });
   manager.setEnabled("env-1", "mark-01", true);
@@ -433,6 +436,33 @@ describe("WorkerManager", () => {
     finishThread("t5", "FACTORY-READY");
     await manager.tick();
     expect(viewOf("env-1").claude).not.toBe("signed-in");
+  });
+
+  it("orders a test against a sign-in that finished in the same millisecond", async () => {
+    await makeReady();
+    await manager.startClaudeSignIn("env-1");
+    db.prepare("UPDATE worker_tasks SET status = 'succeeded' WHERE kind = 'test-claude'").run();
+    await manager.startTests("env-1");
+    // The token is stored after the manual test began, at the same clock reading.
+    finishThread("t4", "TOKEN-SET length=108");
+    finishThread("t5", "FACTORY-READY");
+    await manager.tick();
+    expect(viewOf("env-1").claude).toBe("checking");
+    const fresh = t3.launches.at(-1);
+    expect(fresh?.providerInstanceId).toBe(FACTORY_CLAUDE);
+    finishThread(`t${String(t3.launches.length)}`, "FACTORY-READY");
+    await manager.tick();
+    expect(viewOf("env-1").claude).toBe("signed-in");
+  });
+
+  it("starts no deploy while T3 lists a deploy thread still running there", async () => {
+    active = ["lost-reply-thread"];
+    await manager.deployVersion(1);
+    expect(t3.launches).toHaveLength(0);
+    await expect(manager.deploy("env-1")).rejects.toThrow(/still running/);
+    active = [];
+    await manager.tick();
+    expect(t3.launches).toHaveLength(1);
   });
 
   it("deploys the current version again from its saved target without publishing", async () => {
