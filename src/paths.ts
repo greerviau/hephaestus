@@ -9,6 +9,8 @@ export interface Paths {
   config: string;
   state: string;
   baseline: string;
+  backups: string;
+  secrets: string;
   unit: string;
 }
 
@@ -24,6 +26,8 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
     config: join(root, "config.json"),
     state: join(root, "state.db"),
     baseline: join(root, "baseline.json"),
+    backups: join(root, "backups"),
+    secrets: join(root, "secrets.json"),
     unit: join(configHome, "systemd", "user", SERVICE_NAME),
   };
 }

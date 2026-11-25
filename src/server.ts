@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Database } from "better-sqlite3";
 import { SESSION_TTL_MS, Sessions, readPasswordHash, verifyPassword } from "./auth.js";
+import { escapeHtml, layout, page } from "./web/html.js";
+import { HTML, readBody, redirect, send, sendHtml, sendJson, type Route } from "./web/http.js";
 
 export const SESSION_COOKIE = "hephaestus_session";
 export const INSTANCE_HEADER = "x-hephaestus-instance";
@@ -9,12 +11,14 @@ export const LOGIN_FAILURE_LIMIT = 10;
 export const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
 /** Password checks that may run at once; more get 429 so scrypt cannot starve the server. */
 const MAX_CONCURRENT_LOGINS = 4;
-const MAX_FORM_BYTES = 4096;
+const MAX_LOGIN_FORM_BYTES = 4096;
 
 export interface DashboardOptions {
   db: Database;
   /** Sent with every response, so install can confirm its own dashboard answers on the port. */
   instanceId: string;
+  /** Pages and API routes added by feature modules. All of them require a session. */
+  routes?: Route[];
   now?: () => number;
 }
 
@@ -31,6 +35,7 @@ interface Failures {
 export function createDashboardServer({
   db,
   instanceId,
+  routes = [],
   now = Date.now,
 }: DashboardOptions): Server {
   const sessions = new Sessions(db, now);
@@ -47,7 +52,8 @@ export function createDashboardServer({
   });
 
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
-    const path = new URL(request.url ?? "/", "http://localhost").pathname;
+    const url = new URL(request.url ?? "/", "http://localhost");
+    const path = url.pathname;
     const method = request.method ?? "GET";
     response.setHeader(INSTANCE_HEADER, instanceId);
 
@@ -78,15 +84,29 @@ export function createDashboardServer({
         `${SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`,
       );
       redirect(response, "/login");
-    } else if (path === "/api/session" && method === "GET") {
-      sendJson(response, 200, { authenticated: true });
-    } else if (path.startsWith("/api/")) {
-      sendJson(response, 404, { error: "not found" });
-    } else if (path === "/" && method === "GET") {
-      send(response, 200, HTML, shellPage());
-    } else {
-      send(response, 404, HTML, page("Not found", "<p>Not found.</p>"));
+      return;
     }
+    if (path === "/api/session" && method === "GET") {
+      sendJson(response, 200, { authenticated: true });
+      return;
+    }
+    if (path === "/" && method === "GET") {
+      sendHtml(
+        response,
+        200,
+        layout("Overview", "<h1>Overview</h1>\n<p>No factory projects yet.</p>"),
+      );
+      return;
+    }
+    for (const route of routes) {
+      if (route.method !== method) continue;
+      const match = route.path.exec(path);
+      if (match === null) continue;
+      await route.handle({ request, response, url, params: match.slice(1) });
+      return;
+    }
+    if (path.startsWith("/api/")) sendJson(response, 404, { error: "not found" });
+    else sendHtml(response, 404, layout("Not found", "<p>Not found.</p>"));
   }
 
   async function login(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -104,7 +124,7 @@ export function createDashboardServer({
     reserveAttempt(client);
     let valid = false;
     try {
-      const body = await readBody(request);
+      const body = await readBody(request, MAX_LOGIN_FORM_BYTES);
       if (body === undefined) {
         send(response, 413, "text/plain; charset=utf-8", "Request too large\n");
         return;
@@ -170,86 +190,15 @@ function sessionToken(request: IncomingMessage): string | undefined {
   return undefined;
 }
 
-async function readBody(request: IncomingMessage): Promise<string | undefined> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request as AsyncIterable<Buffer>) {
-    size += chunk.length;
-    if (size > MAX_FORM_BYTES) return undefined;
-    chunks.push(chunk);
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-const HTML = "text/html; charset=utf-8";
-
-function send(response: ServerResponse, status: number, contentType: string, body: string): void {
-  response.writeHead(status, {
-    "content-type": contentType,
-    "cache-control": "no-store",
-    "x-content-type-options": "nosniff",
-    "x-frame-options": "DENY",
-  });
-  response.end(body);
-}
-
-function sendJson(response: ServerResponse, status: number, body: unknown): void {
-  send(response, status, "application/json", JSON.stringify(body));
-}
-
-function redirect(response: ServerResponse, location: string): void {
-  response.writeHead(303, { location, "cache-control": "no-store" });
-  response.end();
-}
-
-function page(title: string, body: string): string {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>${title} - Hephaestus</title>
-<style>
-  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
-  body { margin: 0; }
-  header { display: flex; align-items: center; gap: 1rem; padding: 0.75rem 1rem; border-bottom: 1px solid #8884; }
-  header nav { flex: 1; display: flex; gap: 1rem; }
-  main { padding: 1rem; max-width: 60rem; }
-  form.login { display: grid; gap: 0.5rem; max-width: 20rem; margin: 4rem auto; }
-  .error { color: #c33; }
-</style>
-</head>
-<body>
-${body}
-</body>
-</html>
-`;
-}
-
 function loginPage(error?: string): string {
   return page(
     "Sign in",
     `<form class="login" method="post" action="/login">
   <h1>Hephaestus</h1>
-  ${error === undefined ? "" : `<p class="error">${error}</p>`}
+  ${error === undefined ? "" : `<p class="error">${escapeHtml(error)}</p>`}
   <label for="password">Dashboard password</label>
   <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
   <button type="submit">Sign in</button>
 </form>`,
-  );
-}
-
-function shellPage(): string {
-  return page(
-    "Overview",
-    `<header>
-  <strong>Hephaestus</strong>
-  <nav><a href="/">Overview</a></nav>
-  <form method="post" action="/logout"><button type="submit">Sign out</button></form>
-</header>
-<main>
-  <h1>Overview</h1>
-  <p>No factory projects yet.</p>
-</main>`,
   );
 }

@@ -14,6 +14,8 @@ import {
   type Drift,
 } from "./baseline.js";
 import { DEFAULT_HOST, readConfig, writeConfig, type Config } from "./config.js";
+import { defaultConfig, type ImportedSkill } from "./config/defaults.js";
+import { ConfigStore } from "./config/store.js";
 import type { Paths } from "./paths.js";
 import { UnitExistsError, unitFile, type ServiceManager } from "./service.js";
 import { openStore } from "./store.js";
@@ -39,6 +41,8 @@ export interface InstallOptions {
   cliPath: string;
   /** Where the owner's tools keep their config; defaults to each tool's default folder. */
   roots?: ConfigRoots;
+  /** Skills the owner chose to import into the first config version. */
+  skills: ImportedSkill[];
   /** Resolves once this install's dashboard answers, and rejects if it never does. */
   waitForReady: (config: Config) => Promise<void>;
 }
@@ -79,6 +83,13 @@ export async function install(options: InstallOptions): Promise<void> {
     const db = openStore(paths.state);
     try {
       writePasswordHash(db, hashPassword(password));
+      const store = new ConfigStore(db);
+      const first = store.createVersion({
+        document: defaultConfig(options.skills),
+        author: "install",
+        message: "First version from the shipped templates and imported skills",
+      });
+      store.approve(first.id);
     } finally {
       db.close();
     }
