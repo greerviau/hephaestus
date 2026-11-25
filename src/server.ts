@@ -51,6 +51,10 @@ export function createDashboardServer({
     const method = request.method ?? "GET";
     response.setHeader(INSTANCE_HEADER, instanceId);
 
+    if (method !== "GET" && method !== "HEAD" && !sameOrigin(request)) {
+      send(response, 403, "text/plain; charset=utf-8", "Cross-origin request refused\n");
+      return;
+    }
     if (path === "/login" && method === "GET") {
       send(response, 200, HTML, loginPage());
       return;
@@ -144,6 +148,18 @@ export function createDashboardServer({
     entry.count += 1;
     failures.set(client, entry);
   }
+}
+
+/**
+ * Browsers send Origin on every POST. A page on another port of the same host
+ * counts as same-site, so SameSite=Strict alone would let it send the session
+ * cookie; requiring Origin to match Host closes that. Clients that send no
+ * Origin, such as curl, are not browsers and cannot carry a victim's cookie.
+ */
+function sameOrigin(request: IncomingMessage): boolean {
+  const origin = request.headers.origin;
+  if (origin === undefined) return true;
+  return origin === `http://${request.headers.host ?? ""}`;
 }
 
 function sessionToken(request: IncomingMessage): string | undefined {

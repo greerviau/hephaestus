@@ -165,3 +165,45 @@ describe("login throttling", () => {
     expect((await login(PASSWORD)).status).toBe(303);
   });
 });
+
+describe("cross-origin requests", () => {
+  it("rejects a POST whose Origin is another port on the same host", async () => {
+    const cookie = await sessionCookie();
+
+    const response = await fetch(`${base}/logout`, {
+      method: "POST",
+      headers: { cookie, origin: "http://127.0.0.1:9" },
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(403);
+    expect((await fetch(`${base}/api/session`, { headers: { cookie } })).status).toBe(200);
+  });
+
+  it("rejects a cross-origin login", async () => {
+    const response = await fetch(`${base}/login`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-www-form-urlencoded",
+        origin: "http://evil.example",
+      },
+      body: new URLSearchParams({ password: PASSWORD }).toString(),
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(403);
+    expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("accepts a POST from the dashboard's own origin", async () => {
+    const cookie = await sessionCookie();
+
+    const response = await fetch(`${base}/logout`, {
+      method: "POST",
+      headers: { cookie, origin: base },
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(303);
+  });
+});
