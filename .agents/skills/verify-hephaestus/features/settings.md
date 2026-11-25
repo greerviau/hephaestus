@@ -14,11 +14,24 @@ Sign in, then follow Settings in the navigation bar (`/settings`).
 
 ## Driving it
 
-Install with a skill so version 1 has something to show, then sign in as in dashboard-auth.md:
+Install with a skill so version 1 has something to show:
 
 ```sh
 test/container/as-owner.sh "$name" sh -c 'mkdir -p ~/factory-skills/triage && echo "# Triage" > ~/factory-skills/triage/SKILL.md'
 printf '%s\n' 'correct horse battery' | test/container/as-owner.sh "$name" sh -c 'node /opt/hephaestus/dist/cli.js install --port 7700 --skill ~/factory-skills/triage'
+```
+
+Sign in:
+
+```sh
+cookie=$(test/container/as-owner.sh "$name" curl -s -D - -o /dev/null --data-urlencode 'password=correct horse battery' http://127.0.0.1:7700/login \
+  | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p')
+test -n "$cookie" && echo "signed in"
+```
+
+Then drive the page:
+
+```sh
 test/container/as-owner.sh "$name" curl -s -H "cookie: $cookie" http://127.0.0.1:7700/settings
 test/container/as-owner.sh "$name" curl -s -H "cookie: $cookie" http://127.0.0.1:7700/api/config/versions/1
 test/container/as-owner.sh "$name" sh -c "curl -s -H 'cookie: $cookie' http://127.0.0.1:7700/api/config/versions/1 | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const v=JSON.parse(s).version.document;v.roles.lead.persona=\"Lead carefully.\";process.stdout.write(JSON.stringify(v))})' > /tmp/edit.json"
@@ -30,5 +43,4 @@ The edit answers `303` with a redirect to `/settings/versions/2`, and the approv
 
 ## Gotchas
 
-- `$cookie` comes from the login step in dashboard-auth.md.
 - No version reaches `deployed` until worker deploys exist, so the Revert button does not appear yet. The unit tests in `test/web/settings.test.ts` cover revert.
