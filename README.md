@@ -1,4 +1,4 @@
-<p align="center"><img src="docs/images/banner.png" alt="Hephaestus" width="800"></p>
+<p align="center"><img src="docs/images/banner.jpg" alt="Hephaestus" width="800"></p>
 
 # Hephaestus
 
