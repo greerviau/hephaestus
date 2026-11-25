@@ -15,6 +15,21 @@ import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
 import { SystemdUserService } from "./service.js";
 import { openStore } from "./store.js";
+import { T3Adapter } from "./t3/adapter.js";
+import {
+  T3Credentials,
+  mintPairingCode,
+  revokeSessions,
+  runT3,
+  signIn,
+  t3ClientName,
+} from "./t3/auth.js";
+import { T3Connection } from "./t3/connection.js";
+import { ThreadEvents } from "./t3/events.js";
+import { ThreadFollower } from "./t3/follower.js";
+import { cachedEnvironments, resolveT3Origin } from "./t3/origin.js";
+import { environmentRoutes, linkExpiryWarnings } from "./web/environments.js";
+import { SecretsFile } from "./config/secrets.js";
 import { settingsRoutes } from "./web/settings.js";
 
 const USAGE = `Usage:
@@ -63,11 +78,22 @@ async function main(argv: string[]): Promise<number> {
     }
     case "uninstall": {
       parseArgs({ args: rest, options: {} });
+      const instanceId = existsSync(paths.config) ? readConfig(paths.config).instanceId : undefined;
       const { drift } = uninstall({
         paths,
         service: new SystemdUserService(installedUnitPath(paths)),
       });
       console.log("Uninstalled.");
+      if (instanceId !== undefined) {
+        try {
+          const revoked = await revokeSessions(runT3, t3ClientName(instanceId));
+          console.log(
+            `Revoked ${String(revoked.length)} T3 MCP session(s) that Hephaestus signed in.`,
+          );
+        } catch (error) {
+          console.log(`Could not check for T3 MCP sessions to revoke: ${String(error)}`);
+        }
+      }
       if (drift === undefined) {
         console.log(
           "The install baseline was missing or unreadable, so changes to owner config are unknown.",
@@ -90,10 +116,23 @@ async function main(argv: string[]): Promise<number> {
       const store = new ConfigStore(db);
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
+      const clientName = t3ClientName(config.instanceId);
+      const origin = resolveT3Origin(process.env, paths.home);
+      const credentials = new T3Credentials(new SecretsFile(paths.secrets), async () => {
+        // Each sign-in replaces the last one, so old sessions do not pile up in T3.
+        await revokeSessions(runT3, clientName);
+        return signIn(origin, clientName, await mintPairingCode(runT3, clientName));
+      });
+      const connection = new T3Connection(`${origin}/mcp`, credentials);
+      const t3 = new T3Adapter(connection);
+      const environments = cachedEnvironments(t3, 30_000);
+      const following = new AbortController();
+      const follower = new ThreadFollower(t3, new ThreadEvents(db)).run(following.signal);
       const server = createDashboardServer({
         db,
         instanceId: config.instanceId,
-        routes: settingsRoutes(store),
+        routes: [...settingsRoutes(store), ...environmentRoutes(environments)],
+        overview: () => linkExpiryWarnings(environments),
       });
       server.listen(config.port, config.host, () => {
         console.log(`Dashboard listening on ${config.host}:${String(config.port)}`);
@@ -103,7 +142,10 @@ async function main(argv: string[]): Promise<number> {
         process.once("SIGINT", resolve);
       });
       stopBackups();
+      following.abort();
       await new Promise((resolve) => server.close(resolve));
+      await follower;
+      await connection.close();
       db.close();
       return 0;
     }

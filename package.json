@@ -22,6 +22,7 @@
     "test:container": "sh test/container/run.sh"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
     "better-sqlite3": "13.0.3"
   },
   "devDependencies": {

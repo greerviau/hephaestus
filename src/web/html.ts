@@ -43,6 +43,7 @@ ${body}
 
 const NAV = [
   ["/", "Overview"],
+  ["/environments", "Environments"],
   ["/settings", "Settings"],
 ] as const;
 

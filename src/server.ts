@@ -19,6 +19,8 @@ export interface DashboardOptions {
   instanceId: string;
   /** Pages and API routes added by feature modules. All of them require a session. */
   routes?: Route[];
+  /** Extra HTML for the Overview page, such as warnings. */
+  overview?: () => Promise<string>;
   now?: () => number;
 }
 
@@ -36,6 +38,7 @@ export function createDashboardServer({
   db,
   instanceId,
   routes = [],
+  overview = () => Promise.resolve(""),
   now = Date.now,
 }: DashboardOptions): Server {
   const sessions = new Sessions(db, now);
@@ -94,7 +97,10 @@ export function createDashboardServer({
       sendHtml(
         response,
         200,
-        layout("Overview", "<h1>Overview</h1>\n<p>No factory projects yet.</p>"),
+        layout(
+          "Overview",
+          `<h1>Overview</h1>\n${await overview()}\n<p>No factory projects yet.</p>`,
+        ),
       );
       return;
     }
