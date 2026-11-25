@@ -2,7 +2,12 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
-import type { FactoryConfig, RoleConfig, RoleName } from "./document.js";
+import {
+  isSafeRelativePath,
+  type FactoryConfig,
+  type RoleConfig,
+  type RoleName,
+} from "./document.js";
 
 /** `templates/` in the repo; the same relative path works from `src/` and `dist/`. */
 const TEMPLATES = fileURLToPath(new URL("../../templates/", import.meta.url));
@@ -28,6 +33,12 @@ export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
     lead: role("lead"),
     improver: role("improver"),
   };
+  const names = new Set<string>();
+  for (const skill of skills) {
+    if (names.has(skill.name))
+      throw new Error(`There are two skills named ${skill.name}; rename one folder.`);
+    names.add(skill.name);
+  }
   return {
     projects: {},
     roles,
@@ -48,7 +59,9 @@ export function importSkill(dir: string): ImportedSkill {
         walk(absolute);
         continue;
       }
-      const key = relative(dir, absolute).split("\\").join("/");
+      const key = relative(dir, absolute);
+      if (!isSafeRelativePath(key))
+        throw new Error(`Skill file ${key} must be a relative path without backslashes.`);
       if (!stats.isFile()) throw new Error(`Skill file ${key} is not a regular file.`);
       if (stats.size > MAX_SKILL_FILE_BYTES) throw new Error(`Skill file ${key} is over 256 KB.`);
       const bytes = readFileSync(absolute);

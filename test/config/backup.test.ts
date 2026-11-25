@@ -57,6 +57,46 @@ describe("backup and restore", () => {
     expect(() => restoreVersions(populated(), file)).toThrow(/empty/);
   });
 
+  it("leaves a file that only looks like a backup", () => {
+    const store = populated();
+    writeFileSync(join(dir, "config-2000-01-01.json"), '{"mine": true}\n');
+    for (let day = 1; day <= 3; day += 1) {
+      backupVersions(store, dir, new Date(Date.UTC(2026, 10, day, 3)), 1);
+    }
+
+    expect(readdirSync(dir).sort()).toEqual(["config-2000-01-01.json", "config-2026-11-03.json"]);
+  });
+
+  it.each([
+    [
+      "an unsupported format version",
+      { format: "hephaestus-config-backup", version: 2, versions: [] },
+    ],
+    [
+      "a version that is its own parent",
+      {
+        format: "hephaestus-config-backup",
+        version: 1,
+        versions: [
+          {
+            id: 1,
+            parentId: 1,
+            state: "approved",
+            author: "a",
+            message: "",
+            createdAt: "x",
+            document: sampleConfig(),
+          },
+        ],
+      },
+    ],
+  ])("refuses to restore %s", (_label, backup) => {
+    const file = join(dir, "bad.json");
+    writeFileSync(file, JSON.stringify(backup));
+
+    expect(() => restoreVersions(new ConfigStore(openStore(":memory:")), file)).toThrow();
+  });
+
   it("keeps the newest backups and deletes older ones", () => {
     const store = populated();
     writeFileSync(join(dir, "unrelated.txt"), "keep me\n");

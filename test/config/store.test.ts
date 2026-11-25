@@ -1,6 +1,6 @@
 import type { Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
-import { ConfigValidationError } from "../../src/config/document.js";
+import { ConfigValidationError, MAX_CONFIG_BYTES } from "../../src/config/document.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "./fixtures.js";
@@ -207,5 +207,201 @@ describe("revert", () => {
     });
 
     expect(() => store.revert(draft.id, "owner")).toThrow(/deployed/);
+  });
+});
+
+describe("review fixes", () => {
+  it("bases new edits on the latest approved version before anything is deployed", () => {
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    const rejected = sampleConfig();
+    rejected.roles.lead.persona = "Rejected idea.";
+    const draft = store.createVersion({
+      document: rejected,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.reject(draft.id);
+
+    expect(store.current()?.id).toBe(first.id);
+  });
+
+  it("refuses to deploy a version built from something other than the deployed version", () => {
+    const first = deployed();
+    const a = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    const b = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(a.id);
+    store.approve(b.id);
+    store.markDeployed(a.id);
+
+    expect(() => {
+      store.markDeployed(b.id);
+    }).toThrow(/built from version 1.*version 2 is deployed/);
+  });
+
+  it("refuses to revert the first version", () => {
+    const first = deployed();
+
+    expect(() => store.revert(first.id, "owner")).toThrow(/first version/);
+  });
+
+  it("reports a conflict instead of recreating a project a later version deleted", () => {
+    const first = deployed();
+    const tuned = sampleConfig();
+    tuned.projects["octo/app"] = {
+      policy: { preset: "standard", overrides: { maxReviewRounds: 3 } },
+    };
+    const second = store.createVersion({
+      document: tuned,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    const removed = structuredClone(tuned);
+    removed.projects = {};
+    const third = store.createVersion({
+      document: removed,
+      author: "owner",
+      message: "",
+      parentId: second.id,
+    });
+    store.approve(third.id);
+    store.markDeployed(third.id);
+
+    const { version, conflicts } = store.revert(second.id, "owner");
+
+    expect(conflicts.map((change) => change.path.join("."))).toEqual([
+      "projects.octo/app.policy.overrides.maxReviewRounds",
+    ]);
+    expect(version.document.projects).toEqual({});
+  });
+
+  it("treats a value a later version changed and changed back as a later decision", () => {
+    const first = deployed();
+    const deploy = (
+      mutate: (config: ReturnType<typeof sampleConfig>) => void,
+      parentId: number,
+    ) => {
+      const document = structuredClone(store.get(parentId).document);
+      mutate(document);
+      const version = store.createVersion({ document, author: "owner", message: "", parentId });
+      store.approve(version.id);
+      store.markDeployed(version.id);
+      return version;
+    };
+    const second = deploy((c) => (c.roles.lead.persona = "B"), first.id);
+    const third = deploy((c) => (c.roles.lead.persona = "C"), second.id);
+    deploy((c) => (c.roles.lead.persona = "B"), third.id);
+
+    const { version, conflicts } = store.revert(second.id, "owner");
+
+    expect(conflicts.map((change) => change.path.join("."))).toEqual(["roles.lead.persona"]);
+    expect(version.document.roles.lead.persona).toBe("B");
+  });
+
+  it("applies the changes it can and reports the one that would break the config", () => {
+    const first = deployed();
+    const added = sampleConfig();
+    added.skills.review = { "SKILL.md": "# Review\n" };
+    added.instructions.extra = "More.\n";
+    const second = store.createVersion({
+      document: added,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    const uses = structuredClone(added);
+    uses.roles.lead.skills = ["review"];
+    const third = store.createVersion({
+      document: uses,
+      author: "owner",
+      message: "",
+      parentId: second.id,
+    });
+    store.approve(third.id);
+    store.markDeployed(third.id);
+
+    const { version, conflicts } = store.revert(second.id, "owner");
+
+    expect(conflicts.map((change) => change.path.join("."))).toEqual(["skills.review"]);
+    expect(version.document.instructions.extra).toBeUndefined();
+    expect(version.document.skills.review).toBeDefined();
+  });
+
+  it("diffs and reverts a key named like an Object.prototype member", () => {
+    const first = deployed();
+    const odd = sampleConfig();
+    odd.instructions = JSON.parse(
+      '{"factory": "# Factory instructions\\n", "constructor": "Odd but valid.\\n"}',
+    ) as Record<string, string>;
+    const second = store.createVersion({
+      document: odd,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+
+    expect(store.diff(second.id)).toEqual([
+      { path: ["instructions", "constructor"], before: undefined, after: "Odd but valid.\n" },
+    ]);
+    expect(
+      Object.hasOwn(store.revert(second.id, "owner").version.document.instructions, "constructor"),
+    ).toBe(false);
+  });
+
+  it("fills in the standard preset for a project added without a policy", () => {
+    const first = deployed();
+    const document = sampleConfig() as unknown as { projects: Record<string, unknown> };
+    document.projects["octo/new"] = {};
+
+    const version = store.createVersion({
+      document: document as never,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+
+    expect(version.document.projects["octo/new"]).toEqual({
+      policy: { preset: "standard", overrides: {} },
+    });
+  });
+
+  it.each([
+    ["a skill without SKILL.md", { readme: { "README.md": "x" } }, /SKILL\.md/],
+    ["a backslash in a skill path", { s: { "SKILL.md": "x", "..\\evil": "x" } }, /relative path/],
+    ["a dot-dot segment", { s: { "SKILL.md": "x", "a/../../evil": "x" } }, /relative path/],
+    ["a control character", { s: { "SKILL.md": "x", "a\n/../evil": "x" } }, /relative path/],
+  ])("rejects %s", (_label, skills, message) => {
+    const document = sampleConfig();
+    document.roles.planner.skills = [];
+    document.skills = skills;
+
+    expect(() => store.createVersion({ document, author: "owner", message: "" })).toThrow(message);
+  });
+
+  it("rejects a config larger than the editor can save", () => {
+    const document = sampleConfig();
+    document.instructions.huge = "x".repeat(MAX_CONFIG_BYTES);
+
+    expect(() => store.createVersion({ document, author: "owner", message: "" })).toThrow(
+      /too large/,
+    );
   });
 });

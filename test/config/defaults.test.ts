@@ -27,6 +27,12 @@ describe("defaultConfig", () => {
     expect(config.projects).toEqual({});
   });
 
+  it("refuses two imported skills with the same name", () => {
+    const skill = { name: "review", files: { "SKILL.md": "# Review\n" } };
+
+    expect(() => defaultConfig([skill, skill])).toThrow(/two skills named review/);
+  });
+
   it("includes imported skills", () => {
     const config = defaultConfig([{ name: "review", files: { "SKILL.md": "# Review\n" } }]);
 
@@ -49,6 +55,15 @@ describe("importSkill", () => {
 
   it("refuses a folder without SKILL.md", () => {
     expect(() => importSkill(dir)).toThrow(/SKILL\.md/);
+  });
+
+  it("keeps a backslash in a file name as part of the name", () => {
+    const skill = join(dir, "odd");
+    mkdirSync(skill);
+    writeFileSync(join(skill, "SKILL.md"), "# Odd\n");
+    writeFileSync(join(skill, "a\\b.md"), "x\n");
+
+    expect(() => importSkill(skill)).toThrow(/relative path|a\\b\.md/);
   });
 
   it("refuses a binary file", () => {

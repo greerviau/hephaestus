@@ -35,7 +35,7 @@ export function backupVersions(
   renameSync(temporary, path);
 
   const backups = readdirSync(dir)
-    .filter((name) => BACKUP_FILE.test(name))
+    .filter((name) => BACKUP_FILE.test(name) && isBackup(join(dir, name)))
     .sort();
   for (const name of backups.slice(0, Math.max(0, backups.length - keep))) {
     rmSync(join(dir, name));
@@ -43,11 +43,39 @@ export function backupVersions(
   return path;
 }
 
-/** Restores a backup into an empty store and returns the number of versions loaded. */
+function readBackup(file: string): Partial<BackupFile> | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<BackupFile>;
+    return parsed.format === "hephaestus-config-backup" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Only files Hephaestus wrote count toward retention, so others are never deleted. */
+function isBackup(file: string): boolean {
+  return readBackup(file) !== undefined;
+}
+
+/**
+ * Restores a backup into an empty store and returns the number of versions
+ * loaded. Each version's parent must be an earlier version in the backup.
+ */
 export function restoreVersions(store: ConfigStore, file: string): number {
-  const backup = JSON.parse(readFileSync(file, "utf8")) as Partial<BackupFile>;
-  if (backup.format !== "hephaestus-config-backup" || !Array.isArray(backup.versions)) {
-    throw new Error(`${file} is not a Hephaestus config backup.`);
+  const backup = readBackup(file);
+  if (backup === undefined || backup.version !== 1 || !Array.isArray(backup.versions)) {
+    throw new Error(`${file} is not a Hephaestus config backup this version can read.`);
+  }
+  const seen = new Set<number>();
+  for (const [index, version] of backup.versions.entries()) {
+    const parentOk =
+      index === 0
+        ? version.parentId === null
+        : version.parentId !== null && seen.has(version.parentId);
+    if (!Number.isInteger(version.id) || seen.has(version.id) || !parentOk) {
+      throw new Error(`${file} has a broken version history at version ${String(version.id)}.`);
+    }
+    seen.add(version.id);
   }
   store.importVersions(backup.versions);
   return backup.versions.length;

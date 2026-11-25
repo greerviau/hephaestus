@@ -7,6 +7,17 @@ export interface Change {
   after: unknown;
 }
 
+/** An own property's value; inherited members such as `constructor` count as absent. */
+function own(object: Record<string, unknown>, key: string): unknown {
+  return Object.hasOwn(object, key) ? object[key] : undefined;
+}
+
+/** Whether `a` and `b` name the same path or one contains the other. */
+export function overlaps(a: string[], b: string[]): boolean {
+  const length = Math.min(a.length, b.length);
+  return a.slice(0, length).every((key, index) => key === b[index]);
+}
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -19,7 +30,7 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 export function diffValues(before: unknown, after: unknown, path: string[] = []): Change[] {
   if (isPlainObject(before) && isPlainObject(after)) {
     const keys = [...new Set([...Object.keys(before), ...Object.keys(after)])].sort();
-    return keys.flatMap((key) => diffValues(before[key], after[key], [...path, key]));
+    return keys.flatMap((key) => diffValues(own(before, key), own(after, key), [...path, key]));
   }
   return isDeepStrictEqual(before, after) ? [] : [{ path, before, after }];
 }
@@ -28,7 +39,7 @@ export function getAt(value: unknown, path: string[]): unknown {
   let current = value;
   for (const key of path) {
     if (!isPlainObject(current)) return undefined;
-    current = current[key];
+    current = own(current, key);
   }
   return current;
 }
@@ -37,7 +48,7 @@ export function getAt(value: unknown, path: string[]): unknown {
 export function setAt(root: Record<string, unknown>, path: string[], value: unknown): void {
   let current = root;
   for (const key of path.slice(0, -1)) {
-    const next = current[key];
+    const next = own(current, key);
     if (isPlainObject(next)) {
       current = next;
     } else {

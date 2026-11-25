@@ -59,7 +59,10 @@ export function settingsRoutes(store: ConfigStore): Route[] {
     }
   }
 
-  function list({ response }: RouteContext, problem?: { text: string; errors: string[] }): void {
+  function list(
+    { response }: RouteContext,
+    problem?: { text: string; errors: string[]; parentId: string; message: string },
+  ): void {
     const current = store.current();
     const rows = store
       .list()
@@ -74,6 +77,9 @@ export function settingsRoutes(store: ConfigStore): Route[] {
       )
       .join("\n");
     const text = problem?.text ?? JSON.stringify(current?.document ?? {}, null, 2);
+    // A refused edit keeps the version it was built from, so retrying cannot change its base.
+    const parentId = problem?.parentId ?? (current === undefined ? "" : String(current.id));
+    const message = problem?.message ?? "";
     const errors =
       problem === undefined
         ? ""
@@ -95,9 +101,9 @@ ${rows}
 <p>Saving creates a draft version built from version ${current === undefined ? "none" : String(current.id)}. Nothing changes until the draft is approved and deployed.</p>
 ${errors}
 <form method="post" action="/settings/versions">
-  <input type="hidden" name="parentId" value="${current === undefined ? "" : String(current.id)}">
+  <input type="hidden" name="parentId" value="${escapeHtml(parentId)}">
   <label for="message">What changed</label>
-  <input id="message" name="message" required>
+  <input id="message" name="message" value="${escapeHtml(message)}" required>
   <label for="document">Config</label>
   <textarea id="document" name="document" spellcheck="false">${escapeHtml(text)}</textarea>
   <button type="submit">Save as a draft</button>
@@ -118,7 +124,10 @@ ${errors}
     if (version.state === "draft") {
       actions.push(button(id, "approve", "Approve"), button(id, "reject", "Reject"));
     }
-    if (version.state === "deployed" || version.state === "superseded") {
+    if (
+      (version.state === "deployed" || version.state === "superseded") &&
+      version.parentId !== null
+    ) {
       actions.push(button(id, "revert", "Revert"));
     }
     sendHtml(
@@ -161,7 +170,12 @@ ${diffTable(store.diff(version.id))}
     try {
       document = JSON.parse(text);
     } catch (error) {
-      list(context, { text, errors: [`The config is not valid JSON: ${String(error)}`] });
+      list(context, {
+        text,
+        parentId: parent ?? "",
+        message: form.get("message") ?? "",
+        errors: [`The config is not valid JSON: ${String(error)}`],
+      });
       return;
     }
     try {
@@ -173,8 +187,20 @@ ${diffTable(store.diff(version.id))}
       });
       redirect(response, `/settings/versions/${String(version.id)}`);
     } catch (error) {
-      if (error instanceof ConfigValidationError) list(context, { text, errors: error.problems });
-      else if (error instanceof Error) list(context, { text, errors: [error.message] });
+      if (error instanceof ConfigValidationError)
+        list(context, {
+          text,
+          parentId: parent ?? "",
+          message: form.get("message") ?? "",
+          errors: error.problems,
+        });
+      else if (error instanceof Error)
+        list(context, {
+          text,
+          parentId: parent ?? "",
+          message: form.get("message") ?? "",
+          errors: [error.message],
+        });
       else throw error;
     }
   }

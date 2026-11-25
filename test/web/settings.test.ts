@@ -110,6 +110,33 @@ describe("Settings page", () => {
     expect(store.count()).toBe(1);
   });
 
+  it("keeps the submitted parent and message when it refuses an edit", async () => {
+    const second = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "",
+      parentId: 1,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+
+    const response = await post("/settings/versions", {
+      document: '{"projects": 5}',
+      message: "Keep me",
+      parentId: "1",
+    });
+    const html = await response.text();
+
+    expect(html).toContain('name="parentId" value="1"');
+    expect(html).toContain('value="Keep me"');
+  });
+
+  it("offers no Revert for the first version", async () => {
+    const html = await (await get("/settings/versions/1")).text();
+
+    expect(html).not.toContain("/settings/versions/1/revert");
+  });
+
   it("approves and rejects drafts", async () => {
     const a = store.createVersion({
       document: sampleConfig(),

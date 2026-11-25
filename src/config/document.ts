@@ -33,7 +33,40 @@ export class ConfigValidationError extends Error {
 
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-const RELATIVE_PATH = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[^\0]+$/;
+/** The largest config, in UTF-8 bytes of JSON, that a version may hold; the Settings editor can save any config up to this size. */
+export const MAX_CONFIG_BYTES = 2 * 1024 * 1024;
+
+// eslint-disable-next-line no-control-regex
+const UNSAFE_SEGMENT = /[\\\u0000-\u001f\u007f]/;
+
+/** A path inside a skill folder: `/`-separated, with no empty, `.`, or `..` segments, backslashes, or control characters. */
+export function isSafeRelativePath(path: string): boolean {
+  return path
+    .split("/")
+    .every(
+      (segment) =>
+        segment !== "" && segment !== "." && segment !== ".." && !UNSAFE_SEGMENT.test(segment),
+    );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Fills in what a project may leave out: the `standard` preset and an empty overrides map. */
+export function normalizeConfig(value: unknown): unknown {
+  if (!isRecord(value) || !isRecord(value.projects)) return value;
+  const projects: Record<string, unknown> = {};
+  for (const [repo, project] of Object.entries(value.projects)) {
+    if (!isRecord(project)) {
+      projects[repo] = project;
+      continue;
+    }
+    const policy = isRecord(project.policy) ? project.policy : {};
+    projects[repo] = { ...project, policy: { preset: "standard", overrides: {}, ...policy } };
+  }
+  return { ...value, projects };
+}
 
 /** Checks that a value is a FactoryConfig and returns it typed. */
 export function validateConfig(value: unknown): FactoryConfig {
@@ -50,6 +83,11 @@ export function validateConfig(value: unknown): FactoryConfig {
 
   const root = object("config", value);
   if (root === undefined) throw new ConfigValidationError(problems);
+  if (Buffer.byteLength(JSON.stringify(value)) > MAX_CONFIG_BYTES) {
+    throw new ConfigValidationError([
+      `the config is too large: at most ${String(MAX_CONFIG_BYTES / 1024 / 1024)} MB as JSON`,
+    ]);
+  }
   for (const key of Object.keys(root)) {
     if (!["projects", "roles", "instructions", "skills"].includes(key)) {
       problems.push(`config.${key} is not a config section`);
@@ -104,16 +142,21 @@ export function validateConfig(value: unknown): FactoryConfig {
   const skills = object("skills", root.skills) ?? {};
   for (const [name, files] of Object.entries(skills)) {
     if (!NAME.test(name)) problems.push(`skills.${name} has an invalid name`);
-    for (const [path, text] of Object.entries(object(`skills.${name}`, files) ?? {})) {
-      if (!RELATIVE_PATH.test(path))
-        problems.push(`skills.${name}.${path} must be a relative path`);
+    const contents = object(`skills.${name}`, files) ?? {};
+    if (!Object.hasOwn(contents, "SKILL.md")) problems.push(`skills.${name} has no SKILL.md`);
+    for (const [path, text] of Object.entries(contents)) {
+      if (!isSafeRelativePath(path)) {
+        problems.push(`skills.${name}.${JSON.stringify(path)} must be a relative path`);
+      }
       string(`skills.${name}.${path}`, text);
     }
   }
   for (const name of ROLE_NAMES) {
     const role = roles[name] as RoleConfig | undefined;
     for (const skill of Array.isArray(role?.skills) ? role.skills : []) {
-      if (!(skill in skills)) problems.push(`roles.${name}.skills names unknown skill ${skill}`);
+      if (!Object.hasOwn(skills, skill)) {
+        problems.push(`roles.${name}.skills names unknown skill ${skill}`);
+      }
     }
   }
 

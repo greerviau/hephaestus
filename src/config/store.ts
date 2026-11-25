@@ -1,6 +1,12 @@
 import type { Database } from "better-sqlite3";
-import { diffValues, getAt, setAt, type Change } from "./diff.js";
-import { emptyConfig, validateConfig, type FactoryConfig } from "./document.js";
+import { diffValues, getAt, overlaps, setAt, type Change } from "./diff.js";
+import {
+  ConfigValidationError,
+  emptyConfig,
+  normalizeConfig,
+  validateConfig,
+  type FactoryConfig,
+} from "./document.js";
 import { isDeepStrictEqual } from "node:util";
 
 export type VersionState = "draft" | "approved" | "deployed" | "rejected" | "superseded";
@@ -65,18 +71,28 @@ export class ConfigStore {
   ) {}
 
   createVersion({ document, author, message, parentId }: NewVersion): ConfigVersion {
-    validateConfig(document);
-    if (parentId === undefined) {
-      if (this.count() > 0) throw new Error("A new version needs the parent it was built from.");
-    } else {
-      this.get(parentId);
-    }
-    const result = this.db
-      .prepare(
-        `INSERT INTO config_versions (parent_id, state, author, message, created_at, document)
-         VALUES (?, 'draft', ?, ?, ?, ?)`,
-      )
-      .run(parentId ?? null, author, message, this.now().toISOString(), JSON.stringify(document));
+    const normalized = validateConfig(normalizeConfig(document));
+    // One write transaction, so two writers cannot both create a first version.
+    const insert = this.db.transaction(() => {
+      if (parentId === undefined) {
+        if (this.count() > 0) throw new Error("A new version needs the parent it was built from.");
+      } else {
+        this.get(parentId);
+      }
+      return this.db
+        .prepare(
+          `INSERT INTO config_versions (parent_id, state, author, message, created_at, document)
+           VALUES (?, 'draft', ?, ?, ?, ?)`,
+        )
+        .run(
+          parentId ?? null,
+          author,
+          message,
+          this.now().toISOString(),
+          JSON.stringify(normalized),
+        );
+    });
+    const result = insert.immediate();
     return this.get(Number(result.lastInsertRowid));
   }
 
@@ -98,11 +114,18 @@ export class ConfigStore {
     return (this.db.prepare("SELECT COUNT(*) AS n FROM config_versions").get() as { n: number }).n;
   }
 
-  /** The deployed version, or the newest version when none is deployed yet. */
+  /**
+   * The version new edits build on: the deployed version, else the newest
+   * approved one, else the newest version that was not rejected.
+   */
   current(): ConfigVersion | undefined {
     const row = (this.db.prepare("SELECT * FROM config_versions WHERE state = 'deployed'").get() ??
-      this.db.prepare("SELECT * FROM config_versions ORDER BY id DESC LIMIT 1").get()) as
-      Row | undefined;
+      this.db
+        .prepare("SELECT * FROM config_versions WHERE state = 'approved' ORDER BY id DESC LIMIT 1")
+        .get() ??
+      this.db
+        .prepare("SELECT * FROM config_versions WHERE state != 'rejected' ORDER BY id DESC LIMIT 1")
+        .get()) as Row | undefined;
     return row === undefined ? undefined : toVersion(row);
   }
 
@@ -121,10 +144,23 @@ export class ConfigStore {
     this.transition(id, "draft", "rejected");
   }
 
-  /** Marks an approved version as deployed and the previously deployed one as superseded. */
+  /**
+   * Marks an approved version as deployed and the previously deployed one as
+   * superseded. The version must be built from the deployed version, so
+   * deploying it cannot silently drop changes made in between.
+   */
   markDeployed(id: number): void {
     this.db.transaction(() => {
       this.assertState(id, "approved");
+      const deployed = this.db
+        .prepare("SELECT id FROM config_versions WHERE state = 'deployed'")
+        .get() as { id: number } | undefined;
+      const { parentId } = this.get(id);
+      if (deployed !== undefined && parentId !== deployed.id) {
+        throw new Error(
+          `Version ${String(id)} was built from version ${String(parentId)}, but version ${String(deployed.id)} is deployed. Build it again from version ${String(deployed.id)}.`,
+        );
+      }
       this.db
         .prepare("UPDATE config_versions SET state = 'superseded' WHERE state = 'deployed'")
         .run();
@@ -133,8 +169,10 @@ export class ConfigStore {
   }
 
   /**
-   * Builds a draft on the current version that undoes what `id` changed. A path
-   * that a later version changed again keeps its later value and is reported.
+   * Builds a draft on the current version that undoes what `id` changed. A
+   * change is left as it is, and reported as a conflict, when a later version
+   * changed the same path, when the value has changed since, or when undoing it
+   * alone would make the config invalid.
    */
   revert(id: number, author: string): RevertResult {
     const target = this.get(id);
@@ -143,14 +181,27 @@ export class ConfigStore {
         `Only a version that was deployed can be reverted; ${String(id)} is ${target.state}.`,
       );
     }
+    if (target.parentId === null) {
+      throw new Error("The first version has nothing before it to revert to.");
+    }
     const base = this.current();
     if (base === undefined) throw new VersionNotFoundError(id);
-    const document = structuredClone(base.document) as unknown as Record<string, unknown>;
+    const later = this.laterChanges(base, id);
+    let document = structuredClone(base.document) as unknown as Record<string, unknown>;
     const conflicts: Change[] = [];
     for (const change of this.diff(id)) {
-      if (isDeepStrictEqual(getAt(document, change.path), change.after)) {
-        setAt(document, change.path, change.before);
-      } else {
+      const touchedLater = later.some((path) => overlaps(path, change.path));
+      if (touchedLater || !isDeepStrictEqual(getAt(document, change.path), change.after)) {
+        conflicts.push(change);
+        continue;
+      }
+      const attempt = structuredClone(document);
+      setAt(attempt, change.path, change.before);
+      try {
+        validateConfig(attempt);
+        document = attempt;
+      } catch (error) {
+        if (!(error instanceof ConfigValidationError)) throw error;
         conflicts.push(change);
       }
     }
@@ -161,6 +212,17 @@ export class ConfigStore {
       parentId: base.id,
     });
     return { version, conflicts };
+  }
+
+  /** Paths changed by the versions from `base` back to, but not including, version `id`. */
+  private laterChanges(base: ConfigVersion, id: number): string[][] {
+    const paths: string[][] = [];
+    let version: ConfigVersion | undefined = base;
+    while (version !== undefined && version.id !== id) {
+      paths.push(...this.diff(version.id).map((change) => change.path));
+      version = version.parentId === null ? undefined : this.get(version.parentId);
+    }
+    return paths;
   }
 
   /** Every version as stored, oldest first, for backups. */
