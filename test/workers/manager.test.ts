@@ -135,7 +135,12 @@ describe("WorkerManager", () => {
 
     expect(repo.published).toEqual([1]);
     expect(store.get(1).state).toBe("deployed");
-    expect(manager.desired()).toEqual({ version: 1, sha: SHA, tag: "p-v1" });
+    expect(manager.desired()).toEqual({
+      version: 1,
+      sha: SHA,
+      tag: "p-v1",
+      url: "https://github.com/octo/config.git",
+    });
     expect(synced).toBe(1);
     expect(t3.launches.map((launch) => launch.environmentId)).toEqual(["env-1"]);
     expect(t3.launches[0]?.providerInstanceId).toBe("claudeAgent");
@@ -282,25 +287,66 @@ describe("WorkerManager", () => {
     expect(t3.launches).toHaveLength(2);
   });
 
-  it("recovers a task whose launch reply was lost, and gives up on one that never started", async () => {
+  it("replays a lost launch with the same request id, and gives up after three tries", async () => {
     await manager.deployVersion(1);
     t3.hang = true;
     const task = await manager.startClaudeSignIn("env-1");
     expect(task).toMatchObject({ status: "running", threadId: null });
-    // The launch record says T3 answered after all.
-    db.prepare(
-      "UPDATE factory_launches SET status = 'launched', thread_id = 'late' WHERE client_request_id = ?",
-    ).run(task.clientRequestId);
+    clock += 3 * 60_000;
+    t3.hang = false;
     await manager.tick();
-    expect(manager.task(task.id)?.threadId).toBe("late");
+    expect(t3.launches.at(-1)?.clientRequestId).toBe(task.clientRequestId);
+    expect(manager.task(task.id)?.threadId).toBe(`t${String(t3.launches.length)}`);
 
+    t3.hang = true;
     const other = await manager.startCodexSignIn("env-1");
-    clock += 6 * 60_000;
-    await manager.tick();
-    expect(manager.task(other.id)).toMatchObject({
-      status: "failed",
-      detail: { reason: "the thread did not start" },
+    for (let i = 0; i < 3; i++) {
+      clock += 3 * 60_000;
+      await manager.tick();
+    }
+    expect(manager.task(other.id)).toMatchObject({ status: "failed" });
+    expect(String(manager.task(other.id)?.detail.reason)).toMatch(/did not answer/);
+  });
+
+  it("counts a factory launch T3 has not answered as a running thread", () => {
+    events.recordLaunch("x", {
+      environmentId: "env-1",
+      title: "Implement",
+      providerInstanceId: FACTORY_CLAUDE,
+      model: "m",
+      configVersion: 1,
+      cardId: "1",
+      kind: "implement",
     });
+    expect(manager.runningFactoryThreads("env-1")).toBe(1);
+  });
+
+  it("does not accept a test turn that started before the latest sign-in", async () => {
+    await makeReady();
+    expect(viewOf("env-1").claude).toBe("signed-in");
+    await manager.startClaudeSignIn("env-1");
+    finishThread("t4", "TOKEN-SET length=108");
+    await manager.tick();
+    expect(viewOf("env-1").claude).toBe("checking");
+    finishThread("t5", "FACTORY-READY");
+    await manager.tick();
+    expect(viewOf("env-1").claude).toBe("signed-in");
+  });
+
+  it("asks for the periodic redeploy, and blocks new threads until it ran", async () => {
+    await makeReady();
+    events.recordThread({
+      environmentId: "env-1",
+      threadId: "busy",
+      title: "Implement",
+      providerInstanceId: FACTORY_CLAUDE,
+      model: "m",
+      configVersion: 1,
+      cardId: "1",
+      kind: "implement",
+    });
+    clock += 7 * 60 * 60_000;
+    expect(viewOf("env-1").blocker).toMatch(/periodic redeploy/);
   });
 
   it("times out a task whose thread never ends", async () => {

@@ -13,6 +13,8 @@ export interface ServiceManager {
   remove(): void;
   /** Enables and starts a unit that is already installed. */
   start?(): void;
+  /** Stops the service and leaves its unit in place. */
+  stop?(): void;
 }
 
 export class UnitExistsError extends Error {
@@ -111,6 +113,12 @@ export class SystemdUserService implements ServiceManager {
       throw new Error(`${this.unitPath} is not a unit Hephaestus wrote.`);
     }
     this.systemctl("enable", "--now", this.name);
+  }
+
+  stop(): void {
+    if (!this.unitExists()) return;
+    this.systemctl("stop", this.name);
+    this.assertStopped();
   }
 
   private assertStopped(): void {

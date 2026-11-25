@@ -87,6 +87,7 @@ const MIGRATIONS = [
      kind TEXT NOT NULL CHECK (kind IN
        ('deploy', 'claude-sign-in', 'codex-sign-in', 'test-claude', 'test-codex', 'cleanup')),
      client_request_id TEXT NOT NULL UNIQUE,
+     message TEXT NOT NULL DEFAULT '',
      thread_id TEXT,
      version INTEGER,
      sha TEXT,

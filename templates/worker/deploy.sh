@@ -33,7 +33,11 @@ if [ "$head" != "$sha" ]; then
 fi
 if [ ! -d "$cfg/versions/$sha" ]; then
   tmp=$(mktemp -d "$cfg/versions/.tmp.XXXXXX")
-  git -C "$cfg/repo" archive "$sha" | tar -x -C "$tmp"
+  # checkout-index writes the commit's tree as it is; git archive would honour export-ignore.
+  index=$(mktemp "$cfg/.index.XXXXXX")
+  GIT_INDEX_FILE=$index git -C "$cfg/repo" read-tree "$sha"
+  GIT_INDEX_FILE=$index git -C "$cfg/repo" checkout-index -a --prefix="$tmp/"
+  rm -f "$index"
   mv -T "$tmp" "$cfg/versions/$sha"
 fi
 installed=$(cat "$cfg/versions/$sha/VERSION" 2>/dev/null || true)
@@ -83,7 +87,8 @@ text = open(path).read() if os.path.exists(path) else ""
 if begin in text and end in text:
     text = text[:text.index(begin)] + text[text.index(end) + len(end):].lstrip("\n")
 block = [begin]
-for skill in sorted(glob.glob(os.path.join(home, ".agents", "skills", "*", "SKILL.md"))):
+# Codex finds skills at any depth under the folder.
+for skill in sorted(glob.glob(os.path.join(home, ".agents", "skills", "**", "SKILL.md"), recursive=True)):
     block += ["[[skills.config]]", "path = %s" % json.dumps(skill), "enabled = false", ""]
 block.append(end)
 with open(path + ".tmp", "w") as f:

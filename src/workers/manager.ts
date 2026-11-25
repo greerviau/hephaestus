@@ -52,7 +52,7 @@ export interface Worker {
   instanceProblem: string | null;
 }
 
-export type InstanceState = "signed-in" | "signed-out" | "checking" | "unknown";
+export type InstanceState = "signed-in" | "signed-out" | "checking" | "missing" | "unknown";
 
 export interface WorkerView extends Worker {
   /** The latest task of each kind. */
@@ -69,6 +69,8 @@ export interface DesiredDeploy {
   version: number;
   sha: string;
   tag: string;
+  /** The repo the tag was published to; a change of repo applies from the next publish. */
+  url: string;
 }
 
 interface TaskRow {
@@ -76,6 +78,7 @@ interface TaskRow {
   environment_id: string;
   kind: TaskKind;
   client_request_id: string;
+  message: string;
   thread_id: string | null;
   version: number | null;
   sha: string | null;
@@ -164,8 +167,9 @@ const TIMEOUTS: Record<TaskKind, number> = {
   "test-codex": 15 * MINUTE,
   cleanup: 15 * MINUTE,
 };
-/** A launch whose reply never came is given up after this. */
-const LAUNCH_GRACE_MS = 5 * MINUTE;
+/** A launch whose reply never came is replayed, with the same request id, after this. */
+const LAUNCH_GRACE_MS = 2 * MINUTE;
+const LAUNCH_ATTEMPTS = 3;
 /** A failed deploy is retried automatically after this. */
 const DEPLOY_RETRY_MS = 30 * MINUTE;
 /** Each worker is deployed again this often, so owner skills added since are disabled for Factory Codex. */
@@ -255,10 +259,10 @@ export class WorkerManager {
     ).map(toTask);
   }
 
-  /** Factory threads, not setup threads, still running on a worker. */
+  /** Factory threads, not setup threads, running on a worker or with a launch T3 has not answered. */
   runningFactoryThreads(environmentId: string): number {
     const ended = [...ENDED_STATUSES];
-    return (
+    const running = (
       this.db
         .prepare(
           `SELECT COUNT(*) AS n FROM factory_threads WHERE environment_id = ? AND kind != 'setup'
@@ -266,6 +270,14 @@ export class WorkerManager {
         )
         .get(environmentId, ...ended) as { n: number }
     ).n;
+    const pending = (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS n FROM factory_launches WHERE environment_id = ? AND kind != 'setup' AND status = 'pending'",
+        )
+        .get(environmentId) as { n: number }
+    ).n;
+    return running + pending;
   }
 
   /** Each worker with its latest tasks and whether it can take factory threads. */
@@ -280,29 +292,34 @@ export class WorkerManager {
       const task = this.latestTask(id, kind);
       if (task !== undefined) tasks[kind] = task;
     }
-    // A test proves a sign-in only if it ran after the deploy now installed.
+    // A test proves a sign-in only if it started after the deploy and the sign-in now in place.
     const deployedAt = this.latestTask(id, "deploy", "succeeded")?.id ?? 0;
-    const state = (signIn: TaskKind, test: TaskKind): InstanceState => {
-      if (tasks[signIn]?.status === "running" || tasks[test]?.status === "running")
+    const state = (signIn: TaskKind, test: TaskKind, name: string): InstanceState => {
+      if (worker.instanceProblem?.startsWith(name) === true) return "missing";
+      if (tasks[signIn]?.status === "running" || tasks[test]?.status === "running") {
         return "checking";
+      }
+      const signedInAt = this.latestTask(id, signIn, "succeeded")?.id ?? 0;
       const result = tasks[test];
-      if (result === undefined || result.id < deployedAt) return "unknown";
+      if (result === undefined || result.id < Math.max(deployedAt, signedInAt)) return "unknown";
       return result.status === "succeeded" ? "signed-in" : "signed-out";
     };
-    const claude = state("claude-sign-in", "test-claude");
-    const codex = state("codex-sign-in", "test-codex");
+    const claude = state("claude-sign-in", "test-claude", "Factory Claude");
+    const codex = state("codex-sign-in", "test-codex", "Factory Codex");
     const desired = this.desired();
     let blocker: string | undefined;
     if (!worker.enabled) blocker = "Not marked as a worker.";
     else if (desired === undefined) blocker = "No config version is deployed yet.";
     else if (tasks.deploy?.status === "running") blocker = "A deploy is running.";
-    else if (tasks.deploy?.status === "failed")
+    else if (tasks.deploy?.status === "failed") {
       blocker = `The last deploy failed: ${taskReason(tasks.deploy)}`;
-    else if (worker.deployedVersion !== desired.version || worker.deployedSha !== desired.sha) {
+    } else if (worker.deployedVersion !== desired.version || worker.deployedSha !== desired.sha) {
       blocker =
         this.runningFactoryThreads(id) > 0
           ? `Waiting for running factory threads to finish before deploying version ${String(desired.version)}.`
           : `Deploy version ${String(desired.version)}.`;
+    } else if (this.redeployDue(worker)) {
+      blocker = "Due for its periodic redeploy, which refreshes the factory skill settings.";
     } else if (worker.instanceProblem !== null) blocker = worker.instanceProblem;
     else if (claude !== "signed-in") blocker = "Sign in Factory Claude.";
     else if (codex !== "signed-in") blocker = "Sign in Factory Codex.";
@@ -318,10 +335,9 @@ export class WorkerManager {
    * Publishes a version to the config repo, marks it deployed, applies it to
    * the factory Hermes root, and deploys it to every worker that is not
    * running factory threads; the others follow when their threads finish.
-   * Deploys run one at a time.
    */
   deployVersion(id: number): Promise<{ sha: string; hermesError?: string }> {
-    const run = async (): Promise<{ sha: string; hermesError?: string }> => {
+    return this.serialized(async () => {
       const repo = this.options.configRepo();
       if (repo === undefined) throw new Error("Name the private config repo first.");
       const version = this.options.store.get(id);
@@ -333,11 +349,15 @@ export class WorkerManager {
       }
       await repo.ensureRemote();
       const sha = await repo.publish(id, version.document);
-      if (version.state === "approved") this.options.store.markDeployed(id);
-      const desired = this.desired();
-      if (desired === undefined || id >= desired.version) {
-        setMeta(this.db, DESIRED_KEY, JSON.stringify({ version: id, sha, tag: repo.tagFor(id) }));
-      }
+      // The version's state and the rollout target change together, so a crash cannot split them.
+      this.db.transaction(() => {
+        if (this.options.store.get(id).state === "approved") this.options.store.markDeployed(id);
+        const desired = this.desired();
+        if (desired === undefined || id >= desired.version) {
+          const target: DesiredDeploy = { version: id, sha, tag: repo.tagFor(id), url: repo.url };
+          setMeta(this.db, DESIRED_KEY, JSON.stringify(target));
+        }
+      })();
       let hermesError: string | undefined;
       try {
         await this.options.syncHermes?.();
@@ -345,36 +365,45 @@ export class WorkerManager {
         hermesError = errorText(error);
         console.error("Applying the version to the factory Hermes root failed", error);
       }
-      await this.reconcile(true);
+      await this.reconcileNow(true);
       return hermesError === undefined ? { sha } : { sha, hermesError };
-    };
-    const next = this.deploying.then(run, run);
+    });
+  }
+
+  /** Publishing, rollouts, and reconciliation run one at a time, so none acts on a stale target. */
+  private serialized<T>(work: () => Promise<T>): Promise<T> {
+    const next = this.deploying.then(work, work);
     this.deploying = next.catch(() => undefined);
     return next;
   }
 
+  private redeployDue(worker: Worker): boolean {
+    const last = this.latestTask(worker.environmentId, "deploy", "succeeded");
+    return last !== undefined && this.now().getTime() - Date.parse(last.updatedAt) >= REDEPLOY_MS;
+  }
+
   /** Starts a deploy of the desired version on one worker, at the owner's request. */
-  async deploy(environmentId: string): Promise<WorkerTask> {
-    const desired = this.desired();
-    if (desired === undefined) throw new Error("Deploy a version from Settings first.");
-    const running = this.latestTask(environmentId, "deploy");
-    if (running?.status === "running") return running;
-    const threads = this.runningFactoryThreads(environmentId);
-    if (threads > 0) {
-      throw new Error(
-        `${String(threads)} factory threads are running on this worker. It deploys when they finish, so they keep the version they started with.`,
-      );
-    }
-    return this.startDeploy(environmentId, desired);
+  deploy(environmentId: string): Promise<WorkerTask> {
+    return this.serialized(async () => {
+      const desired = this.desired();
+      if (desired === undefined) throw new Error("Deploy a version from Settings first.");
+      const running = this.latestTask(environmentId, "deploy");
+      if (running?.status === "running") return running;
+      const threads = this.runningFactoryThreads(environmentId);
+      if (threads > 0) {
+        throw new Error(
+          `${String(threads)} factory threads are running on this worker. It deploys when they finish, so they keep the version they started with.`,
+        );
+      }
+      return this.startDeploy(environmentId, desired);
+    });
   }
 
   private startDeploy(environmentId: string, desired: DesiredDeploy): Promise<WorkerTask> {
-    const repo = this.options.configRepo();
-    if (repo === undefined) throw new Error("Name the private config repo first.");
     return this.start(
       environmentId,
       "deploy",
-      deployMessage(desired.version, desired.sha, repo.url, desired.tag),
+      deployMessage(desired.version, desired.sha, desired.url, desired.tag),
       { version: desired.version, sha: desired.sha },
     );
   }
@@ -384,21 +413,25 @@ export class WorkerManager {
    * once its factory threads have finished. A failed deploy is retried after
    * a pause, and a worker is deployed again every few hours.
    */
-  private async reconcile(now = false): Promise<void> {
-    const desired = this.desired();
-    if (desired === undefined || this.options.configRepo() === undefined) return;
-    const at = this.now().getTime();
-    for (const worker of this.workers()) {
-      if (!worker.enabled) continue;
-      const last = this.latestTask(worker.environmentId, "deploy");
+  private reconcile(): Promise<void> {
+    return this.serialized(() => this.reconcileNow(false));
+  }
+
+  private async reconcileNow(now: boolean): Promise<void> {
+    for (const { environmentId } of this.workers()) {
+      // The target and the worker are read again for each launch.
+      const desired = this.desired();
+      const worker = this.worker(environmentId);
+      if (desired === undefined || worker === undefined || !worker.enabled) continue;
+      const last = this.latestTask(environmentId, "deploy");
       if (last?.status === "running") continue;
-      if (this.runningFactoryThreads(worker.environmentId) > 0) continue;
+      if (this.runningFactoryThreads(environmentId) > 0) continue;
       const current =
         worker.deployedVersion === desired.version && worker.deployedSha === desired.sha;
-      const age = last === undefined ? Infinity : at - Date.parse(last.updatedAt);
+      const age = last === undefined ? Infinity : this.now().getTime() - Date.parse(last.updatedAt);
       if (current && last?.status === "succeeded" && age < REDEPLOY_MS) continue;
       if (!now && last?.status === "failed" && age < DEPLOY_RETRY_MS) continue;
-      await this.startDeploy(worker.environmentId, desired);
+      await this.startDeploy(environmentId, desired);
     }
   }
 
@@ -437,20 +470,42 @@ export class WorkerManager {
     message: string,
     extra: { version?: number; sha?: string },
   ): Promise<WorkerTask> {
-    const config = this.config();
     const at = this.now().toISOString();
-    // The id goes in before T3 is called, so a crash in between leaves a launch to reconcile.
-    const clientRequestId = `hephaestus-${kind}-${randomUUID()}`;
+    // The task and its request id go in before T3 is called, so a lost reply can be replayed.
     const id = Number(
       this.db
         .prepare(
-          `INSERT INTO worker_tasks (environment_id, kind, client_request_id, version, sha, status,
-             created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, 'running', ?, ?)`,
+          `INSERT INTO worker_tasks (environment_id, kind, client_request_id, message, version, sha,
+             status, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?)`,
         )
-        .run(environmentId, kind, clientRequestId, extra.version ?? null, extra.sha ?? null, at, at)
-        .lastInsertRowid,
+        .run(
+          environmentId,
+          kind,
+          `hephaestus-${kind}-${randomUUID()}`,
+          message,
+          extra.version ?? null,
+          extra.sha ?? null,
+          at,
+          at,
+        ).lastInsertRowid,
     );
+    await this.launch(id);
+    const task = this.task(id);
+    if (task === undefined) throw new Error(`Worker task ${String(id)} vanished.`);
+    return task;
+  }
+
+  /**
+   * Launches the task's thread. A replay uses the same request id, which T3
+   * answers with the thread it already started, if any.
+   */
+  private async launch(id: number): Promise<void> {
+    const row = this.db.prepare("SELECT * FROM worker_tasks WHERE id = ?").get(id) as
+      TaskRow | undefined;
+    if (row === undefined) return;
+    const { environment_id: environmentId, kind, client_request_id: clientRequestId } = row;
+    const config = this.config();
     const choice =
       kind === "test-claude"
         ? { providerInstanceId: FACTORY_CLAUDE, ...config.factory.models.claude }
@@ -479,18 +534,18 @@ export class WorkerManager {
                 })),
               }),
           runtimeMode: "full-access",
-          message,
+          message: row.message,
           clientRequestId,
         },
         {
-          configVersion: extra.version ?? this.desired()?.version ?? 0,
+          configVersion: row.version ?? this.desired()?.version ?? 0,
           cardId: null,
           kind: "setup",
         },
       );
       this.update(id, { threadId });
     } catch (error) {
-      // A refused launch is final; a lost reply is reconciled later from the launch record.
+      // A refused launch is final; a lost reply is replayed on a later tick.
       if (this.options.events.launch(clientRequestId)?.status === "failed") {
         this.update(id, {
           status: "failed",
@@ -500,9 +555,6 @@ export class WorkerManager {
         console.error(`Starting ${kind} on ${environmentId} got no reply from T3`, error);
       }
     }
-    const task = this.task(id);
-    if (task === undefined) throw new Error(`Worker task ${String(id)} vanished.`);
-    return task;
   }
 
   private config(): FactoryConfig {
@@ -552,13 +604,24 @@ export class WorkerManager {
       const launch = this.options.events.launch(task.clientRequestId);
       if (launch?.status === "launched" && launch.threadId !== null) {
         this.update(task.id, { threadId: launch.threadId });
-      } else if (launch?.status === "failed" || age > LAUNCH_GRACE_MS) {
-        this.fail(task, "the thread did not start");
+      } else if (launch?.status === "failed") {
+        this.fail(task, "T3 would not start the thread");
+      } else if (this.now().getTime() - Date.parse(task.updatedAt) > LAUNCH_GRACE_MS) {
+        const attempts = typeof task.detail.attempts === "number" ? task.detail.attempts : 1;
+        if (attempts >= LAUNCH_ATTEMPTS) {
+          this.fail(task, "T3 did not answer the launch; check the worker's link");
+        } else {
+          this.update(task.id, { detail: { ...task.detail, attempts: attempts + 1 } });
+          await this.launch(task.id);
+        }
       }
       return;
     }
     const thread = this.options.events.thread(task.environmentId, task.threadId);
-    if (thread === undefined) return;
+    if (thread === undefined) {
+      if (age > TIMEOUTS[task.kind]) this.fail(task, "it took too long; try again");
+      return;
+    }
     const items = this.options.events.items(task.environmentId, task.threadId);
     if (task.kind === "codex-sign-in" && task.detail.code === undefined) {
       const device = parseDeviceCode(items);
@@ -676,8 +739,10 @@ export class WorkerManager {
         console.error(`Checking the provider instances on ${row.label} failed`, error);
         continue;
       }
+      // A worker whose T3 does not offer the provider list keeps what the last check found.
+      if (reports === undefined) continue;
       let problem: string | null = null;
-      if (reports !== undefined) {
+      {
         for (const [id, name] of [
           [FACTORY_CLAUDE, "Factory Claude"],
           [FACTORY_CODEX, "Factory Codex"],

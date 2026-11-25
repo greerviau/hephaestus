@@ -136,6 +136,55 @@ describe("worker scripts", () => {
     );
   });
 
+  it("deploy.sh installs files that .gitattributes marks export-ignore, and disables nested owner skills", () => {
+    writeFileSync(join(remote, ".gitattributes"), "claude/skills/probe/SKILL.md export-ignore\n");
+    execFileSync("git", ["-C", remote, "add", "-A"]);
+    execFileSync("git", [
+      "-C",
+      remote,
+      "-c",
+      "user.name=t",
+      "-c",
+      "user.email=t@t",
+      "commit",
+      "-qm",
+      "attrs",
+    ]);
+    execFileSync("git", ["-C", remote, "tag", "-f", "p-v1"]);
+    const head = execFileSync("git", ["-C", remote, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+    }).trim();
+    mkdirSync(join(home, ".agents/skills/group/deep"), { recursive: true });
+    writeFileSync(join(home, ".agents/skills/group/deep/SKILL.md"), "# Deep\n");
+
+    run(scriptOf(deployMessage(1, head, remote, "p-v1")), "1", head, remote, "p-v1");
+
+    expect(readFileSync(join(home, ".hephaestus/claude/skills/probe/SKILL.md"), "utf8")).toBe(
+      "# Probe\n",
+    );
+    expect(readFileSync(join(home, ".hephaestus/codex/config.toml"), "utf8")).toContain(
+      join(home, ".agents/skills/group/deep/SKILL.md"),
+    );
+  });
+
+  it("cleanup.sh fails and keeps ~/.hephaestus when the factory Codex logout fails", () => {
+    run(scriptOf(deployMessage(1, sha, remote, "p-v1")), "1", sha, remote, "p-v1");
+    writeFileSync(join(home, ".hephaestus/codex/auth.json"), "{}");
+    const bin = join(home, "bin");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
+    const path = join(home, "cleanup.sh");
+    writeFileSync(path, scriptOf(cleanupMessage()));
+    expect(() =>
+      execFileSync("bash", [path], {
+        encoding: "utf8",
+        env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home },
+        stdio: ["ignore", "pipe", "pipe"],
+      }),
+    ).toThrow();
+    expect(readFileSync(join(home, ".hephaestus/codex/auth.json"), "utf8")).toBe("{}");
+  });
+
   it("deploy.sh stops when the tag points at another commit", () => {
     const script = scriptOf(deployMessage(1, "d".repeat(40), remote, "p-v1"));
     expect(() => run(script, "1", "d".repeat(40), remote, "p-v1")).toThrow(/DEPLOY-FAILED tag/);

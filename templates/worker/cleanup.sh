@@ -4,8 +4,11 @@
 # cannot be removed, ~/.hephaestus stays, so the cleanup can run again.
 set -euo pipefail
 settings=${T3CODE_HOME:-$HOME/.t3}/userdata/settings.json
-if [ -d "$HOME/.hephaestus/codex" ]; then
-  CODEX_HOME=$HOME/.hephaestus/codex codex logout >/dev/null 2>&1 || true
+if [ -f "$HOME/.hephaestus/codex/auth.json" ]; then
+  if ! CODEX_HOME=$HOME/.hephaestus/codex codex logout >/dev/null 2>&1; then
+    echo "CLEANUP-FAILED codex logout failed for the factory login; run the cleanup again"
+    exit 1
+  fi
 fi
 if [ -e "$settings" ]; then
   removed=$(python3 - "$settings" <<'PY'

@@ -86,18 +86,27 @@ async function cleanUpWorkers(paths: Paths, config: Config): Promise<void> {
     const workers = manager
       .workers()
       .filter((worker) => worker.enabled || worker.deployedVersion !== null);
+    const waitFor = async (environmentId: string, threadId: string): Promise<string> => {
+      const deadline = Date.now() + CLEANUP_WAIT_MS;
+      let status = "running";
+      while (Date.now() < deadline) {
+        const wait = await t3.wait(environmentId, threadId, 60_000);
+        status = wait.status;
+        if (!wait.timedOut) break;
+      }
+      return status;
+    };
     for (const worker of workers) {
+      // A deploy or sign-in still running could set the worker up again after the cleanup.
+      for (const running of manager.runningTasks()) {
+        if (running.environmentId !== worker.environmentId || running.threadId === null) continue;
+        await waitFor(worker.environmentId, running.threadId).catch(() => undefined);
+      }
       let task = await manager.startCleanup(worker.environmentId);
       const threadId = task.threadId;
       if (threadId !== null) {
         try {
-          const deadline = Date.now() + CLEANUP_WAIT_MS;
-          let status = "running";
-          while (Date.now() < deadline) {
-            const wait = await t3.wait(worker.environmentId, threadId, 60_000);
-            status = wait.status;
-            if (!wait.timedOut) break;
-          }
+          const status = await waitFor(worker.environmentId, threadId);
           const items = [];
           let after = -1;
           for (;;) {
@@ -220,6 +229,8 @@ async function main(argv: string[]): Promise<number> {
       parseArgs({ args: rest, options: {} });
       const installed = existsSync(paths.config) ? readConfig(paths.config) : undefined;
       if (installed !== undefined && existsSync(paths.state)) {
+        // The service stops first, so it starts nothing on a worker while the cleanup runs.
+        new SystemdUserService(installedUnitPath(paths)).stop();
         try {
           await cleanUpWorkers(paths, installed);
         } catch (error) {
