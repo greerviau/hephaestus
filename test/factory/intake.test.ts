@@ -84,6 +84,20 @@ describe("Intake", () => {
     await expect(h.intake.approve("octo/app", 8)).rejects.toThrow(/closed/);
   });
 
+  it("frees the cap when an unstarted issue is closed", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: { openIssueCap: 1 } },
+      };
+    });
+    const first = await h.intake.fileIssue("planner", "octo/app", "one", "");
+    const issue = h.github.issues.get(first.number);
+    if (issue !== undefined) issue.state = "CLOSED";
+    await h.intake.poll();
+    expect(h.cards.get(first.cardId ?? 0).stage).toBe("Abandoned");
+    expect((await h.intake.fileIssue("planner", "octo/app", "two", "")).state).toBe("admitted");
+  });
+
   it("refuses a repo that is not a factory project", async () => {
     const h = harness();
     await expect(h.intake.fileIssue("planner", "octo/other", "x", "")).rejects.toThrow(

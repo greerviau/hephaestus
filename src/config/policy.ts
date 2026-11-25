@@ -15,6 +15,8 @@ export interface PolicySettings {
   openIssueCap: number;
   /** Hephaestus reverts a factory merge whose checks fail on the default branch. */
   autoRevert: boolean;
+  /** A PR may merge with no checks at all, for a repo without CI. */
+  allowNoChecks: boolean;
 }
 
 export const POLICY_SETTING_NAMES = [
@@ -25,6 +27,7 @@ export const POLICY_SETTING_NAMES = [
   "maxReviewRounds",
   "openIssueCap",
   "autoRevert",
+  "allowNoChecks",
 ] as const satisfies readonly (keyof PolicySettings)[];
 
 export interface Policy {
@@ -32,7 +35,12 @@ export interface Policy {
   overrides: Partial<PolicySettings>;
 }
 
-const COMMON = { maxReviewRounds: 2, openIssueCap: 5, autoRevert: true } as const;
+const COMMON = {
+  maxReviewRounds: 2,
+  openIssueCap: 5,
+  autoRevert: true,
+  allowNoChecks: false,
+} as const;
 
 export const PRESETS: Record<PresetName, PolicySettings> = {
   yolo: {

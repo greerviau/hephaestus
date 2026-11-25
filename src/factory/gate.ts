@@ -105,6 +105,9 @@ export type GateDecision =
 export function decideMerge(input: GateInput): GateDecision {
   const { policy } = input;
   if (input.checks === "pending") return { action: "wait", reason: "checks are running" };
+  if (input.checks === "none" && !policy.allowNoChecks) {
+    return { action: "wait", reason: "no checks have run on the head commit yet" };
+  }
   if (input.checks === "failure") {
     return {
       action: "escalate",

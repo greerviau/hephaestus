@@ -157,8 +157,38 @@ export class Intake {
             filedBy: null,
           });
         }
+        this.closeUnstarted(repo, new Set(open.map((issue) => issue.number)));
       }
     });
+  }
+
+  /**
+   * Abandons the cards of admitted issues that were closed before any thread
+   * started on them, so a closed issue holds no place under the cap.
+   */
+  private closeUnstarted(repo: string, open: Set<number>): void {
+    const rows = this.db
+      .prepare(
+        `SELECT i.number, c.id AS cardId FROM issues i JOIN cards c ON c.id = i.card_id
+         WHERE i.repo = ? AND i.state = 'admitted' AND c.started_at IS NULL
+         AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
+      )
+      .all(repo) as { number: number; cardId: number }[];
+    for (const row of rows) {
+      if (open.has(row.number)) continue;
+      this.options.cards.transition(
+        row.cardId,
+        "Abandoned",
+        "the issue was closed before work started",
+        {
+          reason: "the issue was closed",
+        },
+      );
+    }
+    const held = this.issues(["held-cap", "awaiting-owner"]).filter(
+      (issue) => issue.repo === repo && !open.has(issue.number),
+    );
+    for (const issue of held) this.setState(repo, issue.number, "rejected");
   }
 
   /** The owner's approval on the Work items page: the issue is admitted whatever the cap. */

@@ -1,7 +1,13 @@
 import type { Database } from "better-sqlite3";
 import type { FactoryConfig } from "../../src/config/document.js";
 import { CardStore } from "../../src/factory/cards.js";
-import type { CheckState, Issue, PullRequest } from "../../src/factory/github.js";
+import {
+  AlreadyMergedError,
+  type CheckState,
+  type CheckSummary,
+  type Issue,
+  type PullRequest,
+} from "../../src/factory/github.js";
 import { Intake } from "../../src/factory/intake.js";
 import { Pipeline } from "../../src/factory/pipeline.js";
 import { openStore } from "../../src/store.js";
@@ -18,7 +24,7 @@ export const MERGE = "9".repeat(40);
 export class FakeGitHub {
   issues = new Map<number, Issue>();
   prs = new Map<number, PullRequest>();
-  commits = new Map<string, { state: CheckState; failed: string[] }>();
+  commits = new Map<string, CheckSummary>();
   merged: number[] = [];
   reverted: number[] = [];
   reopened: number[] = [];
@@ -51,14 +57,15 @@ export class FakeGitHub {
   }
   merge(_repo: string, number: number, headSha: string): Promise<string> {
     const pr = this.prs.get(number);
+    if (pr?.state === "MERGED") return Promise.reject(new AlreadyMergedError(number, pr.mergeSha));
     if (pr === undefined || pr.headSha !== headSha) return Promise.reject(new Error("head moved"));
     this.merged.push(number);
     pr.state = "MERGED";
     pr.mergeSha = number === 9 ? "8".repeat(40) : MERGE;
     return Promise.resolve(pr.mergeSha);
   }
-  commitChecks(_repo: string, sha: string): Promise<{ state: CheckState; failed: string[] }> {
-    return Promise.resolve(this.commits.get(sha) ?? { state: "pending", failed: [] });
+  commitChecks(_repo: string, sha: string): Promise<CheckSummary> {
+    return Promise.resolve(this.commits.get(sha) ?? checks("pending"));
   }
   revertPullRequest(_repo: string, number: number): Promise<number> {
     this.reverted.push(number);
@@ -85,6 +92,7 @@ export function pr(
     filesComplete: true,
     checks: "success",
     failedChecks: [],
+    checkNames: ["ci"],
     ...fields,
   };
 }
@@ -201,4 +209,13 @@ export function reviewResult(
   findings = "",
 ): string {
   return `\`\`\`hephaestus-result\n${JSON.stringify({ verdict, headSha, findings })}\n\`\`\``;
+}
+
+/** A check summary: `names` ran, and every one finished unless the state is pending or none. */
+export function checks(
+  state: CheckState,
+  names = state === "none" ? [] : ["ci"],
+  failed: string[] = [],
+): CheckSummary {
+  return { state, failed, names, finished: state === "pending" ? [] : names };
 }

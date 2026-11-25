@@ -33,7 +33,7 @@ All factory config lives as numbered versions in `~/.hephaestus/state.db`: facto
 
 - Every edit creates a draft version with a diff against the version it was built from: the deployed version, or before the first deploy the newest approved one. A draft becomes approved or rejected, an approved version becomes deployed, and the version it replaces becomes superseded. Only a version built from the deployed version can be deployed, so deploying never drops changes made in between.
 - Reverting a deployed version creates a draft that restores what that version changed. A change stays as it is when a later version changed the same value, or when undoing it alone would make the config invalid, and the page says how many such changes it left. The first version cannot be reverted.
-- A project's policy starts from a preset, `standard` when none is given, and can override any setting. `yolo` merges when checks pass, with no review and no escalation paths. `standard`, the default, also needs an approving review from a different provider on the head commit and stops for changes under `.github/workflows/`. `strict` makes every merge wait for the owner. All three revert a factory merge whose checks fail, allow 2 review rounds, and cap open factory-filed issues at 5.
+- A project's policy starts from a preset, `standard` when none is given, and can override any setting. `yolo` merges when checks pass, with no review and no escalation paths. `standard`, the default, also needs an approving review from a different provider on the head commit and stops for changes under `.github/workflows/`. `strict` makes every merge wait for the owner. All three revert a factory merge whose checks fail, allow 2 review rounds, cap open factory-filed issues at 5, and need checks to run on a PR; `allowNoChecks` lets a repo without CI merge without them.
 - The Settings page lists versions with their author and diff, and edits create versions. It can approve, reject, revert, and deploy. Deploying publishes the version to the config repo, applies it to the factory Hermes root, and starts a deploy thread on every worker (see Workers).
 - The `factory` section sets which skills factory threads load (`threadSkills`), the model for each factory instance, the owner's own instance and model that run setup threads on a worker, and the thread limits.
 - Every night at 03:00, Hephaestus writes all versions to `~/.hephaestus/backups/` and keeps the newest 14 backups.
@@ -104,16 +104,16 @@ Every two minutes Hephaestus lists each factory project's open issues with `gh`.
 
 Hephaestus merges a PR itself, squashing it, only when the project's policy allows it:
 
-- Every check on the head commit passed. Hephaestus reads the check runs and statuses through `gh`, so the gate works without branch protection.
+- Every check on the head commit passed, and at least one ran unless the policy sets `allowNoChecks`. Hephaestus reads every check run and status through `gh`'s paginated API, so the gate works without branch protection. A head with no checks after an hour goes to the owner.
 - Unless the policy is `yolo`, the other provider's review approved exactly that head commit.
 - No changed file, including the old name of a renamed one, matches an escalation path, unless the owner approved that head on the dashboard.
 - The policy allows auto-merge and does not have the owner approve every merge.
 
-Otherwise the card is escalated with the reason: to the lead for failing checks or a missing review, and to the owner for escalation paths and owner approval. Agents are told never to merge. A factory PR merged by anything else ends its card, flagged, and Hephaestus never validates or reverts that merge.
+Otherwise the card is escalated with the reason: to the lead for failing checks or a missing review, and to the owner for escalation paths and owner approval. Hephaestus merges through GitHub's merge API, which answers with the merge commit, so a PR someone else merged first is never taken for its own. Agents are told never to merge. A factory PR merged by anything else ends its card, flagged, and Hephaestus never validates or reverts that merge.
 
 ### Validation and revert
 
-After a merge, Hephaestus watches the merge commit's checks on the default branch, and gives them 10 minutes to appear. When they pass, the card is done. When they fail and the policy has `autoRevert`, Hephaestus opens GitHub's revert PR and merges it under the same gate, with its own review. It then reopens the issue, notifies the owner, and starts the card again from a new implement thread that is told about the revert.
+After a merge, Hephaestus watches the merge commit's checks on the default branch. Every check that ran on the PR's head must run and finish there too; when one has not after an hour, the card goes to the owner. When they pass, the card is done. When they fail and the policy has `autoRevert`, Hephaestus opens GitHub's revert PR and merges it under the same gate, with its own review. It then reopens the issue, notifies the owner, and starts the card again from a new implement thread that is told about the revert.
 
 ### MCP server
 

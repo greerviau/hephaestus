@@ -35,6 +35,37 @@ type Tool =
   | "read_thread"
   | "get_config";
 
+/** Each tool's argument schema, shared by its handler and the check at the request boundary. */
+const TOOL_SHAPES = {
+  file_issue: {
+    repo: z.string().describe("owner/repo of a factory project"),
+    title: z.string().min(1),
+    body: z.string(),
+  },
+  start_work: { card_id: z.number().int(), brief: z.string().min(1) },
+  escalate: { card_id: z.number().int(), reason: z.string().min(1) },
+  get_status: { card_id: z.number().int().optional() },
+  list_cards: { stage: z.string().optional() },
+  list_threads: { since: z.string().describe("ISO 8601 time") },
+  read_thread: { environment_id: z.string(), thread_id: z.string() },
+  get_config: {},
+  propose_version: {
+    message: z.string().min(1).describe("the problem and the change"),
+    config: z
+      .record(z.string(), z.unknown())
+      .describe("the whole config, as get_config returns it, edited"),
+    evidence: z
+      .array(
+        z.object({
+          environment_id: z.string(),
+          thread_id: z.string(),
+          note: z.string().optional(),
+        }),
+      )
+      .min(1),
+  },
+} satisfies Record<Tool, z.ZodRawShape>;
+
 /** The tools each role may call. Factory threads never call this server. */
 export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
   planner: ["file_issue", "get_status", "list_cards", "read_thread"],
@@ -166,6 +197,15 @@ export class FactoryMcp {
         this.record(role, name as Tool, call.params?.arguments ?? {}, false, {
           error: `${role} may not call ${name}`,
         });
+        continue;
+      }
+      // The SDK refuses arguments that do not fit the tool's schema before the handler runs.
+      const shape = TOOL_SHAPES[name as Tool];
+      const parsed = z.object(shape).safeParse(call.params?.arguments ?? {});
+      if (!parsed.success) {
+        this.record(role, name as Tool, call.params?.arguments ?? {}, false, {
+          error: `invalid arguments: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`,
+        });
       }
     }
     // Stateless: a server and transport per request, so no session state outlives a call.
@@ -221,18 +261,18 @@ export class FactoryMcp {
     const server = new McpServer({ name: "hephaestus", version: "1.0.0" });
     const allowed = new Set(ROLE_TOOLS[role]);
     const { cards, intake, pipeline, store, events } = this.options;
-    const register = <Shape extends z.ZodRawShape>(
-      tool: Tool,
+    const register = <T extends Tool>(
+      tool: T,
       description: string,
-      shape: Shape,
-      run: (args: z.infer<z.ZodObject<Shape>>) => unknown,
+      run: (args: z.infer<z.ZodObject<(typeof TOOL_SHAPES)[T]>>) => unknown,
     ): void => {
+      const shape = TOOL_SHAPES[tool];
       if (!allowed.has(tool)) return;
       const handler = async (
         args: unknown,
       ): Promise<ReturnType<typeof text> & { isError?: boolean }> => {
         try {
-          const result = await run(args as z.infer<z.ZodObject<Shape>>);
+          const result = await run(args as z.infer<z.ZodObject<(typeof TOOL_SHAPES)[T]>>);
           this.record(role, tool, args, true, result);
           return text(result);
         } catch (error) {
@@ -247,11 +287,6 @@ export class FactoryMcp {
     register(
       "file_issue",
       "File a GitHub issue on a factory project. Hephaestus admits it and creates a card unless the project's cap on open factory issues is reached; then it waits for the owner.",
-      {
-        repo: z.string().describe("owner/repo of a factory project"),
-        title: z.string().min(1),
-        body: z.string(),
-      },
       async ({ repo, title, body }) => {
         const issue = await intake.fileIssue(role, repo, title, body);
         return {
@@ -265,19 +300,16 @@ export class FactoryMcp {
     register(
       "start_work",
       "Start work on an admitted card, or restart a card escalated to you, with a brief for the engineer.",
-      { card_id: z.number().int(), brief: z.string().min(1) },
       async ({ card_id, brief }) => cardSummary(await pipeline.startWork(card_id, brief)),
     );
     register(
       "escalate",
       "Hand a card to the owner with the reason. Use it when the decision belongs to the owner.",
-      { card_id: z.number().int(), reason: z.string().min(1) },
       async ({ card_id, reason }) => cardSummary(await pipeline.escalateToOwner(card_id, reason)),
     );
     register(
       "get_status",
       "One card's stage, PR, and threads, or with no card_id a summary of every factory project.",
-      { card_id: z.number().int().optional() },
       ({ card_id }) => {
         if (card_id !== undefined) {
           return { ...cardSummary(cards.get(card_id)), events: cards.events(card_id).slice(-20) };
@@ -306,20 +338,15 @@ export class FactoryMcp {
         return { paused: pipeline.paused(), projects };
       },
     );
-    register(
-      "list_cards",
-      "Cards, newest first, optionally in one stage.",
-      { stage: z.string().optional() },
-      ({ stage }) =>
-        cards
-          .list(stage === undefined ? undefined : [stage as Card["stage"]])
-          .slice(0, 100)
-          .map(cardSummary),
+    register("list_cards", "Cards, newest first, optionally in one stage.", ({ stage }) =>
+      cards
+        .list(stage === undefined ? undefined : [stage as Card["stage"]])
+        .slice(0, 100)
+        .map(cardSummary),
     );
     register(
       "list_threads",
       "Factory threads (implement and review) started since a time, with their card and status.",
-      { since: z.string().describe("ISO 8601 time") },
       ({ since }) =>
         this.options.db
           .prepare(
@@ -331,7 +358,6 @@ export class FactoryMcp {
     register(
       "read_thread",
       "A factory thread's final message and its activity, as Hephaestus recorded it.",
-      { environment_id: z.string(), thread_id: z.string() },
       ({ environment_id, thread_id }) => {
         const thread = events.thread(environment_id, thread_id);
         if (thread === undefined || thread.kind === "setup")
@@ -354,7 +380,7 @@ export class FactoryMcp {
         };
       },
     );
-    register("get_config", "The deployed config version, which a proposal edits.", {}, () => {
+    register("get_config", "The deployed config version, which a proposal edits.", () => {
       const deployed = store.list().find((version) => version.state === "deployed");
       if (deployed === undefined) throw new Error("No config version is deployed.");
       return { version: deployed.id, config: deployed.document };
@@ -362,21 +388,6 @@ export class FactoryMcp {
     register(
       "propose_version",
       "Propose a new config version: the whole config, edited, with the factory threads that motivated the change. Nothing changes until the owner approves it.",
-      {
-        message: z.string().min(1).describe("the problem and the change"),
-        config: z
-          .record(z.string(), z.unknown())
-          .describe("the whole config, as get_config returns it, edited"),
-        evidence: z
-          .array(
-            z.object({
-              environment_id: z.string(),
-              thread_id: z.string(),
-              note: z.string().optional(),
-            }),
-          )
-          .min(1),
-      },
       ({ message, config, evidence }) => {
         for (const item of evidence) {
           const thread = events.thread(item.environment_id, item.thread_id);

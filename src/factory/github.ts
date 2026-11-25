@@ -2,6 +2,16 @@ import { commandRunner, type CommandRun } from "../workers/config-repo.js";
 
 export type CheckState = "success" | "pending" | "failure" | "none";
 
+/** The PR was merged, but not by this merge call. */
+export class AlreadyMergedError extends Error {
+  constructor(
+    readonly number: number,
+    readonly mergeSha: string | null,
+  ) {
+    super(`PR #${String(number)} was already merged.`);
+  }
+}
+
 export interface Issue {
   number: number;
   title: string;
@@ -27,6 +37,8 @@ export interface PullRequest {
   checks: CheckState;
   /** Names of checks that failed, for the escalation reason. */
   failedChecks: string[];
+  /** Names of every check on the head commit, which the merge commit is expected to run too. */
+  checkNames: string[];
 }
 
 interface RollupEntry {
@@ -41,8 +53,19 @@ interface RollupEntry {
 const PASSING = new Set(["SUCCESS", "NEUTRAL", "SKIPPED"]);
 
 /** Folds GitHub check runs and commit statuses into one state. No checks at all is `none`. */
-export function foldChecks(entries: RollupEntry[]): { state: CheckState; failed: string[] } {
-  if (entries.length === 0) return { state: "none", failed: [] };
+export interface CheckSummary {
+  state: CheckState;
+  failed: string[];
+  /** Every check's name, finished or not. */
+  names: string[];
+  /** Names of checks that have finished. */
+  finished: string[];
+}
+
+export function foldChecks(entries: RollupEntry[]): CheckSummary {
+  const names = [...new Set(entries.map((entry) => entry.name ?? entry.context ?? "check"))];
+  const finished: string[] = [];
+  if (entries.length === 0) return { state: "none", failed: [], names, finished };
   const failed: string[] = [];
   let pending = false;
   for (const entry of entries) {
@@ -50,17 +73,21 @@ export function foldChecks(entries: RollupEntry[]): { state: CheckState; failed:
     if (entry.__typename === "StatusContext" || entry.state !== undefined) {
       const state = (entry.state ?? "").toUpperCase();
       if (state === "PENDING" || state === "EXPECTED") pending = true;
-      else if (state !== "SUCCESS") failed.push(name);
+      else {
+        finished.push(name);
+        if (state !== "SUCCESS") failed.push(name);
+      }
       continue;
     }
     if ((entry.status ?? "").toUpperCase() !== "COMPLETED") {
       pending = true;
       continue;
     }
+    finished.push(name);
     if (!PASSING.has((entry.conclusion ?? "").toUpperCase())) failed.push(name);
   }
-  if (failed.length > 0) return { state: "failure", failed };
-  return { state: pending ? "pending" : "success", failed };
+  if (failed.length > 0) return { state: "failure", failed, names, finished };
+  return { state: pending ? "pending" : "success", failed, names, finished };
 }
 
 /**
@@ -185,28 +212,43 @@ export class GitHub {
       filesComplete: files.length < 3000,
       checks: checks.state,
       failedChecks: checks.failed,
+      checkNames: checks.names,
     };
   }
 
   /** Squash-merges the PR only if its head is still `headSha`, and returns the merge commit. */
+  /**
+   * Squash-merges the PR only if its head is still `headSha`, and returns the
+   * merge commit from GitHub's answer to the merge itself. A PR someone else
+   * already merged raises {@link AlreadyMergedError}, so that merge is never
+   * taken for Hephaestus's own.
+   */
   async merge(repo: string, number: number, headSha: string): Promise<string> {
-    await this.gh([
-      "pr",
-      "merge",
-      String(number),
-      "-R",
-      repo,
-      "--squash",
-      "--match-head-commit",
-      headSha,
-    ]);
-    const merged = await this.pullRequest(repo, number);
-    if (merged.mergeSha === null) throw new Error(`PR #${String(number)} has no merge commit.`);
-    return merged.mergeSha;
+    let answer: { merged?: boolean; sha?: string };
+    try {
+      answer = await this.json<{ merged?: boolean; sha?: string }>([
+        "api",
+        "-X",
+        "PUT",
+        `repos/${repo}/pulls/${String(number)}/merge`,
+        "-f",
+        "merge_method=squash",
+        "-f",
+        `sha=${headSha}`,
+      ]);
+    } catch (error) {
+      const current = await this.pullRequest(repo, number).catch(() => undefined);
+      if (current?.state === "MERGED") throw new AlreadyMergedError(number, current.mergeSha);
+      throw error;
+    }
+    if (answer.merged !== true || typeof answer.sha !== "string") {
+      throw new Error(`GitHub did not merge PR #${String(number)}.`);
+    }
+    return answer.sha;
   }
 
   /** Every check run and the latest status of each context on a commit, all pages. */
-  async commitChecks(repo: string, sha: string): Promise<{ state: CheckState; failed: string[] }> {
+  async commitChecks(repo: string, sha: string): Promise<CheckSummary> {
     const runs = (
       await this.gh([
         "api",

@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { GitHub, foldChecks } from "../../src/factory/github.js";
+import { AlreadyMergedError, GitHub, foldChecks } from "../../src/factory/github.js";
 import type { CommandRun } from "../../src/workers/config-repo.js";
 
 describe("foldChecks", () => {
   it("combines check runs and commit statuses", () => {
-    expect(foldChecks([])).toEqual({ state: "none", failed: [] });
+    expect(foldChecks([])).toEqual({ state: "none", failed: [], names: [], finished: [] });
     expect(
       foldChecks([
         { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
         { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SKIPPED" },
       ]),
-    ).toEqual({ state: "success", failed: [] });
+    ).toMatchObject({ state: "success", failed: [], finished: ["test", "lint"] });
     expect(
       foldChecks([
         { __typename: "CheckRun", name: "test", status: "IN_PROGRESS", conclusion: null },
@@ -23,16 +23,35 @@ describe("foldChecks", () => {
         { __typename: "StatusContext", context: "deploy", state: "FAILURE" },
         { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "TIMED_OUT" },
       ]),
-    ).toEqual({ state: "failure", failed: ["deploy", "build"] });
+    ).toMatchObject({ state: "failure", failed: ["deploy", "build"] });
   });
 });
 
 describe("GitHub", () => {
-  it("merges only at the expected head and returns the merge commit", async () => {
+  it("merges only at the expected head and returns the merge commit from the merge call", async () => {
     const calls: string[][] = [];
     const exec: CommandRun = (_file, args) => {
       calls.push(args);
-      if (args[0] === "pr" && args[1] === "view") {
+      return Promise.resolve(JSON.stringify({ merged: true, sha: "m" }));
+    };
+    expect(await new GitHub("gh", exec).merge("octo/app", 5, "h")).toBe("m");
+    expect(calls[0]).toEqual([
+      "api",
+      "-X",
+      "PUT",
+      "repos/octo/app/pulls/5/merge",
+      "-f",
+      "merge_method=squash",
+      "-f",
+      "sha=h",
+    ]);
+  });
+
+  it("reports a PR someone else merged instead of taking the merge as its own", async () => {
+    const exec: CommandRun = (_file, args) => {
+      if (args[0] === "api" && args[1] === "-X")
+        return Promise.reject(new Error("405 not mergeable"));
+      if (args[0] === "pr") {
         return Promise.resolve(
           JSON.stringify({
             number: 5,
@@ -41,25 +60,16 @@ describe("GitHub", () => {
             headRefOid: "h",
             headRefName: "b",
             baseRefName: "main",
-            mergeCommit: { oid: "m" },
-            files: [],
-            statusCheckRollup: [],
+            isCrossRepository: false,
+            mergeCommit: { oid: "theirs" },
           }),
         );
       }
       return Promise.resolve("");
     };
-    expect(await new GitHub("gh", exec).merge("octo/app", 5, "h")).toBe("m");
-    expect(calls[0]).toEqual([
-      "pr",
-      "merge",
-      "5",
-      "-R",
-      "octo/app",
-      "--squash",
-      "--match-head-commit",
-      "h",
-    ]);
+    await expect(new GitHub("gh", exec).merge("octo/app", 5, "h")).rejects.toThrow(
+      AlreadyMergedError,
+    );
   });
 
   it("reads the issue number from gh issue create", async () => {

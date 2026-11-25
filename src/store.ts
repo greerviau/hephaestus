@@ -139,6 +139,8 @@ const MIGRATIONS = [
      pending_message TEXT,
      owner_action TEXT CHECK (owner_action IN ('merge', 'revert-merge')),
      branch TEXT,
+     head_at TEXT,
+     expected_checks TEXT,
      started_at TEXT,
      foreign_merge INTEGER NOT NULL DEFAULT 0,
      created_at TEXT NOT NULL,

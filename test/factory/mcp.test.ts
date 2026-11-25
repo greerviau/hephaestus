@@ -90,6 +90,14 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
+  it("records a call whose arguments do not fit the tool", async () => {
+    const { url, mcp } = await start();
+    const c = await client(url, TOKENS.lead);
+    await c.callTool({ name: "start_work", arguments: { card_id: "one" } }).catch(() => undefined);
+    expect(mcp.calls()[0]).toMatchObject({ role: "lead", tool: "start_work", ok: false });
+    await c.close();
+  });
+
   it("files an issue for the planner and records the call with the role", async () => {
     const { h, url, mcp } = await start();
     const c = await client(url, TOKENS.planner);

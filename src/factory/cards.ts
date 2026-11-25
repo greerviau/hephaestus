@@ -38,6 +38,10 @@ export interface Card {
   ownerAction: "merge" | "revert-merge" | null;
   /** The branch the implement thread works on; only a PR from it counts. */
   branch: string | null;
+  /** When the pipeline first saw the current head commit. */
+  headAt: string | null;
+  /** The checks that ran on the merged head, which the merge commit must run too. */
+  expectedChecks: string[] | null;
   /** When the first implement thread started, for cycle time. */
   startedAt: string | null;
   foreignMerge: boolean;
@@ -93,6 +97,8 @@ interface Row {
   handled_item: string | null;
   owner_action: "merge" | "revert-merge" | null;
   branch: string | null;
+  head_at: string | null;
+  expected_checks: string | null;
   pr_number: number | null;
   head_sha: string | null;
   rounds: number;
@@ -125,6 +131,8 @@ const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt">, string
   handled: "handled_item",
   ownerAction: "owner_action",
   branch: "branch",
+  headAt: "head_at",
+  expectedChecks: "expected_checks",
   prNumber: "pr_number",
   headSha: "head_sha",
   rounds: "rounds",
@@ -158,6 +166,9 @@ function toCard(row: Row): Card {
       row.handled_item === null ? {} : (JSON.parse(row.handled_item) as Record<string, string>),
     ownerAction: row.owner_action,
     branch: row.branch,
+    headAt: row.head_at,
+    expectedChecks:
+      row.expected_checks === null ? null : (JSON.parse(row.expected_checks) as string[]),
     prNumber: row.pr_number,
     headSha: row.head_sha,
     rounds: row.rounds,
@@ -242,7 +253,7 @@ export class CardStore {
           ? value === true
             ? 1
             : 0
-          : key === "handled"
+          : key === "handled" || (key === "expectedChecks" && value !== null && value !== undefined)
             ? JSON.stringify(value ?? {})
             : (value ?? null),
       );

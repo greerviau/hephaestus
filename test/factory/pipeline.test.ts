@@ -4,6 +4,7 @@ import {
   MERGE,
   SHA,
   SHA2,
+  checks,
   harness,
   implementResult,
   pr,
@@ -60,7 +61,7 @@ describe("Pipeline", () => {
     expect(h.github.merged).toEqual([5]);
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", mergeSha: MERGE });
 
-    h.github.commits.set(MERGE, { state: "success", failed: [] });
+    h.github.commits.set(MERGE, checks("success"));
     await h.pipeline.tick();
     expect(h.cards.get(id).stage).toBe("Done");
 
@@ -216,7 +217,7 @@ describe("Pipeline", () => {
     await toReview(h, id);
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    h.github.commits.set(MERGE, { state: "failure", failed: ["build"] });
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
     await h.pipeline.tick();
     expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
     expect(h.github.reverted).toEqual([5]);
@@ -250,7 +251,7 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
-    h.github.commits.set(MERGE, { state: "failure", failed: ["build"] });
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
     await h.pipeline.tick();
     h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5", files: ["ci/build.yml"] }));
     await h.pipeline.tick();
@@ -281,18 +282,82 @@ describe("Pipeline", () => {
     expect(other.github.reverted).toEqual([]);
   });
 
-  it("waits for checks to appear on a new merge commit before calling it done", async () => {
+  it("waits for every check that ran on the PR to finish on the merge commit", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
+    h.github.prs.set(5, pr(5, SHA, { checkNames: ["ci", "lint"] }));
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    h.github.commits.set(MERGE, { state: "none", failed: [] });
+    h.github.commits.set(MERGE, checks("success", ["ci"]));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Validating" });
+    expect(h.cards.get(id).waiting).toMatch(/lint/);
+
+    h.github.commits.set(MERGE, checks("success", ["ci", "lint"]));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Done");
+  });
+
+  it("merges a repo without CI only when the policy allows no checks", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: { allowNoChecks: true } },
+      };
+    });
+    const id = admitted(h);
+    await toReview(h, id);
+    h.github.prs.set(5, pr(5, SHA, { checks: "none", checkNames: [] }));
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([5]);
+    h.github.commits.set(MERGE, checks("none"));
     await h.pipeline.tick();
     expect(h.cards.get(id).stage).toBe("Validating");
     h.setClock(Date.parse("2026-11-25T12:11:00Z"));
     await h.pipeline.tick();
     expect(h.cards.get(id).stage).toBe("Done");
+
+    const strict = harness();
+    const card = admitted(strict);
+    await toReview(strict, card);
+    strict.github.prs.set(5, pr(5, SHA, { checks: "none", checkNames: [] }));
+    strict.finish("t2", reviewResult("approve", SHA));
+    await strict.pipeline.tick();
+    expect(strict.github.merged).toEqual([]);
+    strict.setClock(Date.parse("2026-11-25T13:01:00Z"));
+    await strict.pipeline.tick();
+    expect(strict.cards.get(card)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+  });
+
+  it("retries a launch whose reply was lost without its pending launch blocking it", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threadsPerWorker = 1;
+      config.factory.limits.threads = 1;
+    });
+    const id = admitted(h);
+    // A launch was recorded, and its reply never came.
+    h.events.recordLaunch(`hephaestus-implement-${String(id)}-0`, {
+      environmentId: "w1",
+      title: "Card",
+      providerInstanceId: FACTORY_CLAUDE,
+      model: "m",
+      configVersion: 3,
+      cardId: String(id),
+      kind: "implement",
+    });
+    await h.pipeline.startWork(id, "brief");
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.t3.launches[0]?.clientRequestId).toBe(`hephaestus-implement-${String(id)}-0`);
+  });
+
+  it("does not start work for a repo that left the factory projects", async () => {
+    const h = harness();
+    const id = admitted(h);
+    delete h.config.projects["octo/app"];
+    await h.pipeline.startWork(id, "brief");
+    expect(h.t3.launches).toHaveLength(0);
+    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
   });
 
   it("lets a thread waiting on the lead resume within a cap of one", async () => {
