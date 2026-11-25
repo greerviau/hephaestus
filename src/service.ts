@@ -11,6 +11,8 @@ export interface ServiceManager {
   install(unit: string): void;
   /** Stops and disables the service, then deletes the unit. Succeeds when there is no unit. */
   remove(): void;
+  /** Enables and starts a unit that is already installed. */
+  start?(): void;
 }
 
 export class UnitExistsError extends Error {
@@ -102,6 +104,13 @@ export class SystemdUserService implements ServiceManager {
     this.assertStopped();
     rmSync(this.unitPath);
     this.systemctl("daemon-reload");
+  }
+
+  start(): void {
+    if (!this.unitExists() || !readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
+      throw new Error(`${this.unitPath} is not a unit Hephaestus wrote.`);
+    }
+    this.systemctl("enable", "--now", this.name);
   }
 
   private assertStopped(): void {

@@ -54,7 +54,11 @@ function taskOf(value: unknown): { id?: unknown; status?: unknown } {
   return record.task ?? record;
 }
 
-/** The factory kanban board in the factory Hermes root, driven through `hermes kanban`. */
+/**
+ * The factory kanban board in the factory Hermes root, driven through
+ * `hermes kanban`. Option values use `--option=value` and free text comes
+ * after `--`, so text that starts with a dash is never read as a flag.
+ */
 export class FactoryBoard {
   constructor(
     private readonly hermes: FactoryHermes,
@@ -63,20 +67,18 @@ export class FactoryBoard {
 
   /** Creates the board; Hermes answers "already exists" and succeeds when it is there. */
   async ensure(): Promise<void> {
-    await this.hermes.run(["kanban", "boards", "create", this.slug, "--name", "Factory"]);
+    await this.hermes.run(["kanban", "boards", "create", `--name=Factory`, "--", this.slug]);
   }
 
   async createCard(card: NewCard): Promise<string> {
     const output = await this.kanban(
       "create",
-      card.title,
-      "--body",
-      card.body,
-      "--assignee",
-      card.assignee ?? "lead",
-      "--idempotency-key",
-      card.idempotencyKey,
+      `--body=${card.body}`,
+      `--assignee=${card.assignee ?? "lead"}`,
+      `--idempotency-key=${card.idempotencyKey}`,
       "--json",
+      "--",
+      card.title,
     );
     const id = taskOf(parseJson(output)).id;
     if (typeof id !== "string") throw new Error(`hermes kanban create returned no id: ${output}`);
@@ -84,31 +86,39 @@ export class FactoryBoard {
   }
 
   async status(id: string): Promise<string> {
-    const status = taskOf(parseJson(await this.kanban("show", id, "--json"))).status;
+    const status = taskOf(parseJson(await this.kanban("show", "--json", "--", id))).status;
     return typeof status === "string" ? status : "unknown";
   }
 
-  /** Moves a card to the kanban state for `stage` and records the stage in a comment. */
+  /**
+   * Moves a card to the kanban state for `stage`, checks that it got there,
+   * and only then records the stage in a comment.
+   */
   async setStage(id: string, stage: Stage, threadId?: string): Promise<void> {
     const target = kanbanStateFor(stage);
     const note = threadId === undefined ? `stage=${stage}` : `stage=${stage} thread=${threadId}`;
+    const current = await this.status(id);
     if (target === "blocked") {
-      if ((await this.status(id)) !== "blocked") await this.kanban("block", id, `stage=${stage}`);
-      await this.comment(id, note);
+      if (current !== "blocked") await this.kanban("block", "--", id, `stage=${stage}`);
     } else if (target === "done") {
-      await this.comment(id, note);
-      await this.kanban("complete", id, "--result", "Validated and merged.");
+      if (current !== "done")
+        await this.kanban("complete", "--result=Validated and merged.", "--", id);
     } else if (target === "archived") {
-      await this.comment(id, note);
-      await this.kanban("archive", id);
-    } else {
-      if ((await this.status(id)) === "blocked") await this.kanban("unblock", id);
-      await this.comment(id, note);
+      if (current !== "archived") await this.kanban("archive", "--", id);
+    } else if (current === "blocked" || current === "scheduled") {
+      await this.kanban("unblock", "--", id);
+    } else if (current !== "ready") {
+      throw new Error(`Card ${id} is ${current}; it cannot move back to ready.`);
     }
+    const reached = await this.status(id);
+    if (reached !== target) {
+      throw new Error(`Card ${id} is still ${reached}; expected ${target} for ${stage}.`);
+    }
+    await this.comment(id, note);
   }
 
   async comment(id: string, text: string): Promise<void> {
-    await this.kanban("comment", id, text, "--author", "hephaestus");
+    await this.kanban("comment", "--author=hephaestus", "--", id, text);
   }
 
   private kanban(...args: string[]): Promise<string> {

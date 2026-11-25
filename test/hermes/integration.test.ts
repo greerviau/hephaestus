@@ -11,7 +11,8 @@ import { sampleConfig } from "../config/fixtures.js";
  * Runs against a real `hermes` CLI. Set HEPHAESTUS_HERMES_INTEGRATION=1,
  * HEPHAESTUS_HERMES_BIN to the executable, and HEPHAESTUS_HERMES_ROOT to an
  * empty directory to use as the factory root. Run it only where a stray
- * write could not reach anyone's real Hermes home, such as a container.
+ * write could not reach anyone's real Hermes home, such as a container, and
+ * run hermes as the same user as the test, as Hephaestus does in production.
  */
 const bin = process.env.HEPHAESTUS_HERMES_BIN;
 const root = process.env.HEPHAESTUS_HERMES_ROOT;
@@ -42,6 +43,9 @@ describe.runIf(enabled)("Hermes integration", () => {
       );
       const settings = readFileSync(join(factoryRoot, "profiles", role, "config.yaml"), "utf8");
       expect(settings).toContain("http://127.0.0.1:7701/mcp");
+      expect(settings).toMatch(
+        /disabled_toolsets:\s*\n(\s*- (terminal|code_execution|cronjob)\n){3}/,
+      );
       expect(readFileSync(join(factoryRoot, "profiles", role, ".env"), "utf8")).toContain(
         "HEPHAESTUS_MCP_TOKEN=test-token",
       );

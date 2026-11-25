@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -16,6 +24,10 @@ let paths: Paths;
 
 class FakeService implements ServiceManager {
   units: string[] = [];
+  starts = 0;
+  start(): void {
+    this.starts += 1;
+  }
   install(unit: string): void {
     this.units.push(unit);
     mkdirSync(join(paths.gatewayUnit, ".."), { recursive: true });
@@ -53,6 +65,7 @@ describe("syncFactoryHermes", () => {
       run: hermes.run,
       service,
       mcpUrl: "http://127.0.0.1:7701/mcp",
+      gatewayUnitPath: paths.gatewayUnit,
     };
 
     await syncFactoryHermes(options);
@@ -63,14 +76,17 @@ describe("syncFactoryHermes", () => {
       expect.arrayContaining([
         "config set kanban.auto_decompose false",
         "config set kanban.review_dispatch false",
-        "kanban boards create factory --name Factory",
+        "kanban boards create --name=Factory -- factory",
       ]),
     );
     expect(service.units).toHaveLength(1);
     expect(service.units[0]).toContain(`HERMES_HOME=${paths.hermes}`);
     const token = new SecretsFile(paths.secrets).get("hermes-mcp-token");
     expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(hermes.lines()).toContain(`-p lead config set HEPHAESTUS_MCP_TOKEN ${token ?? ""}`);
+    expect(readFileSync(join(paths.hermes, "profiles", "lead", ".env"), "utf8")).toContain(
+      `HEPHAESTUS_MCP_TOKEN=${token ?? ""}`,
+    );
+    expect(service.starts).toBe(1);
     expect(existsSync(paths.gatewayUnit)).toBe(true);
     db.close();
   });

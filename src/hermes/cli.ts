@@ -19,8 +19,10 @@ export function stripAnsi(text: string): string {
 }
 
 /**
- * Runs `hermes` with HERMES_HOME set to the factory root, so no command can
- * reach the owner's Hermes home. Output comes back without colour codes.
+ * Runs `hermes` with HERMES_HOME (and HERMES_KANBAN_HOME) set to the factory
+ * root, so no command can reach the owner's Hermes home. It must run as the
+ * same user as Hephaestus: Hermes writes `.env` files and skill folders that
+ * Hephaestus later reads and prunes. Output comes back without colour codes.
  */
 export function hermesRunner(executable: string, root: string): HermesRun {
   return (args, options) =>
@@ -29,7 +31,8 @@ export function hermesRunner(executable: string, root: string): HermesRun {
         executable,
         args,
         {
-          env: { ...process.env, HERMES_HOME: root, NO_COLOR: "1" },
+          // HERMES_KANBAN_HOME would otherwise point board commands at another home's boards.
+          env: { ...process.env, HERMES_HOME: root, HERMES_KANBAN_HOME: root, NO_COLOR: "1" },
           timeout: 120_000,
           maxBuffer: 16 * 1024 * 1024,
         },
@@ -50,6 +53,9 @@ export function hermesRunner(executable: string, root: string): HermesRun {
           }
         },
       );
-      child.stdin?.end(options?.input ?? "");
+      // A child that exits before reading stdin must not raise an unhandled EPIPE.
+      child.stdin?.on("error", () => undefined);
+      if (options?.input === undefined) child.stdin?.end();
+      else child.stdin?.end(options.input);
     });
 }

@@ -1,4 +1,13 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
@@ -86,7 +95,7 @@ describe("FactoryProfiles.sync", () => {
     for (const entry of installed) expect(existsSync(entry.dir)).toBe(false);
   });
 
-  it("disables terminal, code execution and cron tools, enables kanban, and adds the Hephaestus MCP entry", async () => {
+  it("turns off terminal, code execution and cron tools on every platform, and adds the MCP entry", async () => {
     await profiles.sync(sampleConfig(), 1, mcp);
 
     const lead = hermes.lines().filter((line) => line.startsWith("-p lead "));
@@ -94,31 +103,101 @@ describe("FactoryProfiles.sync", () => {
       expect.arrayContaining([
         "-p lead tools disable terminal code_execution cronjob",
         "-p lead tools enable kanban",
+        "-p lead config set agent.disabled_toolsets [terminal, code_execution, cronjob]",
         "-p lead config set mcp_servers.hephaestus.url http://127.0.0.1:7701/mcp",
         "-p lead config set mcp_servers.hephaestus.headers.Authorization Bearer ${HEPHAESTUS_MCP_TOKEN}",
-        "-p lead config set HEPHAESTUS_MCP_TOKEN secret-token",
       ]),
     );
+  });
+
+  it("writes the MCP token to the profile's .env without passing it as an argument", async () => {
+    mkdirSync(join(root, "profiles", "lead"), { recursive: true });
+    writeFileSync(join(root, "profiles", "lead", ".env"), "OTHER=1\nHEPHAESTUS_MCP_TOKEN=old\n");
+
+    await profiles.sync(sampleConfig(), 1, mcp);
+
+    expect(hermes.calls.some((call) => call.args.some((arg) => arg.includes("secret-token")))).toBe(
+      false,
+    );
+    const env = join(root, "profiles", "lead", ".env");
+    expect(readFileSync(env, "utf8")).toBe("OTHER=1\nHEPHAESTUS_MCP_TOKEN=secret-token\n");
+    expect(statSync(env).mode & 0o777).toBe(0o600);
+  });
+
+  it("passes config text after -- and option values with =, so a leading dash stays text", async () => {
+    const config = sampleConfig();
+    config.roles.improver.cron = [
+      { name: "nightly", schedule: "30 2 * * *", prompt: "--check everything" },
+    ];
+
+    await profiles.sync(config, 1, mcp);
+
+    expect(
+      hermes.calls.map((call) => call.args).filter((args) => args.includes("cron")),
+    ).toContainEqual([
+      "-p",
+      "improver",
+      "cron",
+      "create",
+      "--name=hephaestus-nightly",
+      "--",
+      "30 2 * * *",
+      "--check everything",
+    ]);
   });
 
   it("creates, edits and removes cron jobs by the ids it recorded", async () => {
     const config = sampleConfig();
     config.roles.improver.cron = [{ name: "nightly", schedule: "30 2 * * *", prompt: "Improve." }];
     await profiles.sync(config, 1, mcp);
-
     config.roles.improver.cron = [
       { name: "nightly", schedule: "0 3 * * *", prompt: "Improve more." },
     ];
     await profiles.sync(config, 2, mcp);
-
     config.roles.improver.cron = [];
     await profiles.sync(config, 3, mcp);
 
-    expect(hermes.lines().filter((line) => line.includes(" cron "))).toEqual([
-      "-p improver cron create 30 2 * * * Improve. --name hephaestus-nightly",
-      "-p improver cron edit job-1 --schedule 0 3 * * * --prompt Improve more. --name hephaestus-nightly",
-      "-p improver cron remove job-1",
+    expect(
+      hermes.lines().filter((line) => line.includes(" cron ") && !line.endsWith("cron list")),
+    ).toEqual([
+      "-p improver cron create --name=hephaestus-nightly -- 30 2 * * * Improve.",
+      "-p improver cron edit --schedule=0 3 * * * --prompt=Improve more. --name=hephaestus-nightly -- job-1",
+      "-p improver cron remove -- job-1",
     ]);
+  });
+
+  it("adopts a job Hermes already has under the managed name instead of creating another", async () => {
+    hermes.answer(
+      (args) => args.includes("cron") && args.includes("list"),
+      "  lost123 [active]\n    Name:      hephaestus-nightly\n    Schedule:  30 2 * * *\n",
+    );
+    const config = sampleConfig();
+    config.roles.improver.cron = [{ name: "nightly", schedule: "30 2 * * *", prompt: "Improve." }];
+
+    await profiles.sync(config, 1, mcp);
+
+    const cron = hermes
+      .lines()
+      .filter((line) => line.includes("improver cron ") && !line.endsWith("cron list"));
+    expect(cron).toEqual([
+      "-p improver cron edit --schedule=30 2 * * * --prompt=Improve. --name=hephaestus-nightly -- lost123",
+    ]);
+  });
+
+  it("treats removing a job Hermes no longer has as done", async () => {
+    const config = sampleConfig();
+    config.roles.improver.cron = [{ name: "nightly", schedule: "30 2 * * *", prompt: "Improve." }];
+    await profiles.sync(config, 1, mcp);
+    hermes.answer(
+      (args) => args.includes("remove"),
+      () => {
+        throw new Error("hermes -p improver cron failed: Job not found: job-1");
+      },
+    );
+    config.roles.improver.cron = [];
+
+    await expect(profiles.sync(config, 2, mcp)).resolves.toBeUndefined();
+    await expect(profiles.sync(config, 3, mcp)).resolves.toBeUndefined();
   });
 
   it("removes a skill directory that the config no longer lists", async () => {
@@ -130,6 +209,44 @@ describe("FactoryProfiles.sync", () => {
     await profiles.sync(config, 2, mcp);
 
     expect(existsSync(join(root, "profiles", "planner", "skills", "triage"))).toBe(false);
+  });
+
+  it("does not claim a skill whose install failed", async () => {
+    const failing = new FakeHermes();
+    failing.answer(
+      (args) => args[1] === "install",
+      () => {
+        throw new Error("install failed");
+      },
+    );
+    const broken = new FactoryProfiles({ root, run: failing.run }, db);
+    await expect(broken.sync(sampleConfig(), 1, mcp)).rejects.toThrow(/install failed/);
+    mkdirSync(join(root, "profiles", "planner", "skills", "triage"), { recursive: true });
+    const config = sampleConfig();
+    config.roles.planner.skills = [];
+
+    await profiles.sync(config, 2, mcp);
+
+    expect(existsSync(join(root, "profiles", "planner", "skills", "triage"))).toBe(true);
+  });
+
+  it("refuses to delete a skill through a symlink that leaves the factory root", async () => {
+    await profiles.sync(sampleConfig(), 1, mcp);
+    const outside = mkdtempSync(join(tmpdir(), "hephaestus-outside-"));
+    try {
+      mkdirSync(join(outside, "triage"));
+      rmSync(join(root, "profiles", "planner", "skills"), { recursive: true, force: true });
+      symlinkSync(outside, join(root, "profiles", "planner", "skills"));
+      const config = sampleConfig();
+      config.roles.planner.skills = [];
+
+      await expect(profiles.sync(config, 2, mcp)).rejects.toThrow(
+        /outside the factory root|symlink/,
+      );
+      expect(existsSync(join(outside, "triage"))).toBe(true);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it("runs every command against the factory root only", () => {

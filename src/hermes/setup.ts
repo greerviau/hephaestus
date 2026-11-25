@@ -21,8 +21,9 @@ export interface SyncOptions {
   hermesPath: string;
   /** Runs `hermes` against the factory root. */
   run: HermesRun;
-  /** The factory gateway's unit. */
+  /** The factory gateway's unit, and the path its file lives at. */
   service: ServiceManager;
+  gatewayUnitPath: string;
   /** Where the factory profiles reach Hephaestus's MCP server. */
   mcpUrl: string;
 }
@@ -56,7 +57,10 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
     token,
   });
 
-  if (!existsSync(paths.gatewayUnit)) {
+  if (existsSync(options.gatewayUnitPath)) {
+    // A start that failed after the unit was written is retried here.
+    options.service.start?.();
+  } else {
     options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
   }
 }

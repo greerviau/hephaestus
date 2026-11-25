@@ -1,7 +1,18 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join, relative, sep } from "node:path";
 import type { Database } from "better-sqlite3";
-import { ROLE_NAMES, type FactoryConfig, type RoleName } from "../config/document.js";
+import { ROLE_NAMES, type CronJob, type FactoryConfig, type RoleName } from "../config/document.js";
 import { stripAnsi, type FactoryHermes } from "./cli.js";
 
 export interface McpEntry {
@@ -14,16 +25,35 @@ export interface McpEntry {
 /** Toolsets a factory profile never gets. `cronjob` can schedule scripts, which would bring the shell back. */
 export const DISABLED_TOOLSETS = ["terminal", "code_execution", "cronjob"];
 export const MCP_SERVER_NAME = "hephaestus";
+const CRON_PREFIX = "hephaestus-";
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
+}
+
+/** Parses `hermes cron list` into job names and ids. */
+function listedJobs(output: string): Map<string, string> {
+  const jobs = new Map<string, string>();
+  let id: string | undefined;
+  for (const line of stripAnsi(output).split("\n")) {
+    const header = /^\s{2}(\S+)\s+\[/.exec(line);
+    if (header !== null) {
+      id = header[1];
+      continue;
+    }
+    const name = /^\s+Name:\s+(\S+)/.exec(line)?.[1];
+    if (name !== undefined && id !== undefined) jobs.set(name, id);
+  }
+  return jobs;
 }
 
 /**
  * Keeps the planner, lead, and improver profiles in the factory Hermes root
  * in line with a config version. The persona and skills arrive as a profile
  * distribution; toolsets, the MCP entry, and cron jobs go through the CLI,
- * because `config.yaml` also holds the model settings the owner chose.
+ * because `config.yaml` also holds the model settings the owner chose. The
+ * MCP token is written straight to the profile's `.env`, so it never appears
+ * in a command line.
  */
 export class FactoryProfiles {
   constructor(
@@ -59,9 +89,19 @@ export class FactoryProfiles {
     } finally {
       rmSync(distribution, { recursive: true, force: true });
     }
+    this.recordSkills(role, skills);
 
     await run(["-p", role, "tools", "disable", ...DISABLED_TOOLSETS]);
     await run(["-p", role, "tools", "enable", "kanban"]);
+    // `tools disable` covers only the cli platform; this covers every platform.
+    await run([
+      "-p",
+      role,
+      "config",
+      "set",
+      "agent.disabled_toolsets",
+      `[${DISABLED_TOOLSETS.join(", ")}]`,
+    ]);
     await run(["-p", role, "config", "set", `mcp_servers.${MCP_SERVER_NAME}.url`, mcp.url]);
     await run([
       "-p",
@@ -71,16 +111,11 @@ export class FactoryProfiles {
       `mcp_servers.${MCP_SERVER_NAME}.headers.Authorization`,
       `Bearer \${${mcp.tokenEnv}}`,
     ]);
-    await run(["-p", role, "config", "set", mcp.tokenEnv, mcp.token]);
+    this.writeEnv(profileDir, mcp.tokenEnv, mcp.token);
     await this.syncCron(role, config.roles[role].cron ?? []);
   }
 
-  /**
-   * A profile distribution with the role's persona and skills, in a new
-   * directory inside the factory root. The factory root is private to its
-   * owner, so the distribution can be readable by `hermes` even when it runs
-   * as another user, as in a container.
-   */
+  /** A profile distribution with the role's persona and skills, in a new directory inside the factory root. */
   private writeDistribution(config: FactoryConfig, role: RoleName, version: number): string {
     const dir = mkdtempSync(join(this.hermes.root, `.hephaestus-${role}-`));
     chmodSync(dir, 0o755);
@@ -109,6 +144,22 @@ export class FactoryProfiles {
     return dir;
   }
 
+  /** Sets one variable in the profile's `.env`, keeping the other lines, with mode 600. */
+  private writeEnv(profileDir: string, key: string, value: string): void {
+    const path = join(profileDir, ".env");
+    this.assertInsideRoot(path);
+    mkdirSync(profileDir, { recursive: true, mode: 0o700 });
+    const lines = existsSync(path)
+      ? readFileSync(path, "utf8")
+          .split("\n")
+          .filter((line) => line !== "" && !line.startsWith(`${key}=`))
+      : [];
+    lines.push(`${key}=${value}`);
+    const temporary = `${path}.hephaestus-tmp`;
+    writeFileSync(temporary, `${lines.join("\n")}\n`, { mode: 0o600 });
+    renameSync(temporary, path);
+  }
+
   /** Deletes skill folders Hephaestus installed before that the role no longer lists. */
   private removeDroppedSkills(role: RoleName, profileDir: string, skills: string[]): void {
     const keep = new Set(skills);
@@ -117,20 +168,50 @@ export class FactoryProfiles {
     }[];
     for (const { name } of rows) {
       if (keep.has(name)) continue;
-      rmSync(join(profileDir, "skills", name), { recursive: true, force: true });
+      const target = join(profileDir, "skills", name);
+      this.assertInsideRoot(target);
+      rmSync(target, { recursive: true, force: true });
       this.db.prepare("DELETE FROM hermes_skills WHERE role = ? AND name = ?").run(role, name);
     }
+  }
+
+  /** Records the skills a successful install put in place, so a later sync may prune them. */
+  private recordSkills(role: RoleName, skills: string[]): void {
     const insert = this.db.prepare(
       "INSERT INTO hermes_skills (role, name) VALUES (?, ?) ON CONFLICT DO NOTHING",
     );
     for (const name of skills) insert.run(role, name);
   }
 
-  /** Creates, edits, and removes the role's cron jobs by the Hermes job ids recorded at creation. */
-  private async syncCron(
-    role: RoleName,
-    jobs: { name: string; schedule: string; prompt: string }[],
-  ): Promise<void> {
+  /**
+   * Refuses a path that a symlink could carry out of the factory root: every
+   * existing component below the root must be a real directory or file.
+   */
+  private assertInsideRoot(path: string): void {
+    const root = realpathSync(this.hermes.root);
+    const rel = relative(this.hermes.root, path);
+    if (rel.startsWith("..") || rel === "") {
+      throw new Error(`${path} is outside the factory root.`);
+    }
+    let current = this.hermes.root;
+    for (const part of rel.split(sep)) {
+      current = join(current, part);
+      if (!existsSync(current)) return;
+      if (lstatSync(current).isSymbolicLink()) {
+        throw new Error(`${current} is a symlink; Hephaestus will not write or delete through it.`);
+      }
+      if (!realpathSync(current).startsWith(root + sep)) {
+        throw new Error(`${current} is outside the factory root.`);
+      }
+    }
+  }
+
+  /**
+   * Creates, edits, and removes the role's cron jobs. Jobs are matched by the
+   * id Hephaestus recorded, else by their managed name in `cron list`, so a
+   * job whose creation reply was lost is adopted instead of duplicated.
+   */
+  private async syncCron(role: RoleName, jobs: CronJob[]): Promise<void> {
     const { run } = this.hermes;
     const recorded = new Map(
       (
@@ -140,44 +221,56 @@ export class FactoryProfiles {
         }[]
       ).map((row) => [row.name, row.job_id]),
     );
+    const listed = listedJobs(await run(["-p", role, "cron", "list"]));
+    const record = this.db.prepare(
+      `INSERT INTO hermes_cron_jobs (role, name, job_id) VALUES (?, ?, ?)
+       ON CONFLICT (role, name) DO UPDATE SET job_id = excluded.job_id`,
+    );
     for (const job of jobs) {
-      const label = `hephaestus-${job.name}`;
-      const id = recorded.get(job.name);
+      const label = `${CRON_PREFIX}${job.name}`;
+      const id = recorded.get(job.name) ?? listed.get(label);
       if (id === undefined) {
         const output = await run([
           "-p",
           role,
           "cron",
           "create",
+          `--name=${label}`,
+          "--",
           job.schedule,
           job.prompt,
-          "--name",
-          label,
         ]);
         const created = /Created job:\s*(\S+)/.exec(stripAnsi(output))?.[1];
         if (created === undefined) throw new Error(`hermes cron create gave no job id: ${output}`);
-        this.db
-          .prepare("INSERT INTO hermes_cron_jobs (role, name, job_id) VALUES (?, ?, ?)")
-          .run(role, job.name, created);
+        record.run(role, job.name, created);
       } else {
         await run([
           "-p",
           role,
           "cron",
           "edit",
+          `--schedule=${job.schedule}`,
+          `--prompt=${job.prompt}`,
+          `--name=${label}`,
+          "--",
           id,
-          "--schedule",
-          job.schedule,
-          "--prompt",
-          job.prompt,
-          "--name",
-          label,
         ]);
-        recorded.delete(job.name);
+        record.run(role, job.name, id);
       }
+      recorded.delete(job.name);
+      listed.delete(label);
     }
-    for (const [name, id] of recorded) {
-      await run(["-p", role, "cron", "remove", id]);
+    // Jobs Hephaestus recorded, or that carry its name prefix, and that the config no longer lists.
+    const stale = new Map(recorded);
+    for (const [label, id] of listed) {
+      if (label.startsWith(CRON_PREFIX)) stale.set(label.slice(CRON_PREFIX.length), id);
+    }
+    for (const [name, id] of stale) {
+      try {
+        await run(["-p", role, "cron", "remove", "--", id]);
+      } catch (error) {
+        if (!/not found/i.test(String(error))) throw error;
+      }
       this.db.prepare("DELETE FROM hermes_cron_jobs WHERE role = ? AND name = ?").run(role, name);
     }
   }

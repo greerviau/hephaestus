@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -134,10 +134,12 @@ async function main(argv: string[]): Promise<number> {
         return 64;
       }
       const config = readConfig(paths.config);
-      const hermesPath = values.hermes ?? config.hermesPath;
+      const hermesPath =
+        values.hermes === undefined ? config.hermesPath : executablePath(values.hermes);
       if (hermesPath === undefined) {
         throw new Error("The hermes CLI was not on PATH at install. Pass --hermes <path>.");
       }
+      const gatewayUnitPath = join(dirname(config.unitPath), GATEWAY_SERVICE_NAME);
       const db = openStore(paths.state);
       try {
         await syncFactoryHermes({
@@ -147,7 +149,8 @@ async function main(argv: string[]): Promise<number> {
           secrets: new SecretsFile(paths.secrets),
           hermesPath,
           run: hermesRunner(hermesPath, paths.hermes),
-          service: new SystemdUserService(join(dirname(config.unitPath), GATEWAY_SERVICE_NAME)),
+          service: new SystemdUserService(gatewayUnitPath),
+          gatewayUnitPath,
           // The Hephaestus MCP server (issue #10) listens on the port after the dashboard's.
           mcpUrl: `http://127.0.0.1:${String(config.port + 1)}/mcp`,
         });
@@ -227,4 +230,15 @@ function t3HomeOption(home: string | undefined): { t3Home?: string } {
 
 function hermesPathOption(path: string | undefined): { hermesPath?: string } {
   return path === undefined ? {} : { hermesPath: path };
+}
+
+/** An absolute path to an executable file, since systemd needs one for ExecStart. */
+function executablePath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    accessSync(absolute, constants.X_OK);
+  } catch {
+    throw new Error(`${absolute} is not an executable file.`);
+  }
+  return absolute;
 }

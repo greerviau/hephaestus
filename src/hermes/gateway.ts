@@ -20,6 +20,7 @@ export function gatewayUnitFile(hermesPath: string, root: string): string {
     "",
     "[Service]",
     `Environment=${environmentValue(`HERMES_HOME=${root}`)}`,
+    `Environment=${environmentValue(`HERMES_KANBAN_HOME=${root}`)}`,
     `ExecStart=:${[hermesPath, "gateway", "run"].map(quoteArgument).join(" ")}`,
     "Restart=on-failure",
     "RestartSec=10",

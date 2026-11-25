@@ -76,7 +76,7 @@ node dist/cli.js hermes sync
 - It brings each role's profile in line with the current config version: the persona and skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script.
 - It installs and starts `hephaestus-hermes-gateway.service`, the factory's own gateway, which serves only the factory profiles and the factory board.
 
-Install records the `hermes` CLI's path; `--hermes <path>` overrides it. Hephaestus does not set a model: configure one for the factory root with `HERMES_HOME=~/.hephaestus/hermes hermes model`. The MCP entry points at the port after the dashboard's, where the Hephaestus MCP server (issue #10) will listen.
+Install records the `hermes` CLI's path; `--hermes <path>` overrides it. Hermes must run as the same user as Hephaestus, because Hephaestus reads and prunes files Hermes writes in the factory root. Hermes commands also get `HERMES_KANBAN_HOME` set to the factory root, so an inherited value cannot point the factory board at the owner's boards. Hephaestus does not set a model: configure one for the factory root with `HERMES_HOME=~/.hephaestus/hermes hermes model`. The MCP entry points at the port after the dashboard's, where the Hephaestus MCP server (issue #10) will listen.
 
 Card stages map onto the board as the prototype proposed: Admitted is `ready` for the lead, the stages that run in T3 threads are `blocked` with the stage in a comment, Done is `done`, and Abandoned is archived. Cards complete without Hermes PR completion contracts, which need branch protection; Hephaestus checks CI itself.
 
