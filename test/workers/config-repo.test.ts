@@ -67,6 +67,33 @@ describe("ConfigRepo", () => {
     ).toBe("# Changed\n");
   });
 
+  it("commits a skill file that the skill's own .gitignore matches", async () => {
+    const remote = join(dir, "remote.git");
+    execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);
+    const exec: CommandRun = (file, args, cwd) =>
+      commandRunner(
+        file,
+        args.map((arg) => (arg === "https://github.com/octo/config.git" ? remote : arg)),
+        cwd,
+      );
+    const config = sampleConfig();
+    config.skills.triage = { "SKILL.md": "# Triage\n", ".gitignore": "*.txt\n", "notes.txt": "x" };
+    config.factory.threadSkills = ["triage"];
+    const sha = await new ConfigRepo(
+      join(dir, "clone"),
+      "octo/config",
+      "git",
+      "true",
+      "p-",
+      exec,
+    ).publish(1, config);
+    expect(
+      execFileSync("git", ["-C", remote, "show", `${sha}:codex/skills/triage/notes.txt`], {
+        encoding: "utf8",
+      }),
+    ).toBe("x");
+  });
+
   it("refuses a version whose tag already holds other files", async () => {
     const remote = join(dir, "remote.git");
     execFileSync("git", ["init", "-q", "--bare", "-b", "main", remote]);

@@ -158,6 +158,27 @@ describe("SystemdUserService.remove", () => {
     expect(calls).toEqual([]);
   });
 
+  it("stops only a unit Hephaestus wrote, and leaves it in place", () => {
+    mkdirSync(join(dir, "systemd/user"), { recursive: true });
+    writeFileSync(unitPath, "[Unit]\nDescription=the owner's own unit\n");
+    expect(() => {
+      service().stop();
+    }).toThrow(/not written by Hephaestus/);
+    expect(calls).toEqual([]);
+
+    writeFileSync(unitPath, unitFile("/usr/bin/node", "/opt/cli.js"));
+    responses["systemctl --user is-active hephaestus.service"] = {
+      status: 3,
+      stdout: "inactive\n",
+    };
+    service().stop();
+    expect(calls).toEqual([
+      "systemctl --user stop hephaestus.service",
+      "systemctl --user is-active hephaestus.service",
+    ]);
+    expect(existsSync(unitPath)).toBe(true);
+  });
+
   it("keeps the unit when systemd cannot be reached", () => {
     service().install(unitFile("/usr/bin/node", "/opt/cli.js"));
     responses["systemctl --user disable --now hephaestus.service"] = { status: 1, stdout: "" };

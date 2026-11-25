@@ -48,11 +48,24 @@ export interface Worker {
   home: string | null;
   deployedVersion: number | null;
   deployedSha: string | null;
-  /** What the last check of T3's provider list found wrong with a factory instance. */
-  instanceProblem: string | null;
+  /** What the last check of T3's provider list found for each factory instance. */
+  instances: Partial<Record<Provider, InstanceCheck>>;
 }
 
-export type InstanceState = "signed-in" | "signed-out" | "checking" | "missing" | "unknown";
+export type Provider = "claude" | "codex";
+
+export interface InstanceCheck {
+  exists: boolean;
+  enabled: boolean;
+  /** False when T3 said the instance is not signed in. */
+  authenticated: boolean;
+  /** Anything else T3 reported that stops the instance from running. */
+  problem: string | null;
+  at: string;
+}
+
+export type InstanceState =
+  "signed-in" | "signed-out" | "checking" | "missing" | "disabled" | "unknown";
 
 export interface WorkerView extends Worker {
   /** The latest task of each kind. */
@@ -123,7 +136,10 @@ function toWorker(row: WorkerRow): Worker {
     home: row.home,
     deployedVersion: row.deployed_version,
     deployedSha: row.deployed_sha,
-    instanceProblem: row.instance_problem,
+    instances:
+      row.instance_problem === null
+        ? {}
+        : (JSON.parse(row.instance_problem) as Partial<Record<Provider, InstanceCheck>>),
   };
 }
 
@@ -293,25 +309,50 @@ export class WorkerManager {
       if (task !== undefined) tasks[kind] = task;
     }
     // A test proves a sign-in only if it started after the deploy and the sign-in now in place.
-    const deployedAt = this.latestTask(id, "deploy", "succeeded")?.id ?? 0;
-    const state = (signIn: TaskKind, test: TaskKind, name: string): InstanceState => {
-      if (worker.instanceProblem?.startsWith(name) === true) return "missing";
+    const deployed = this.latestTask(id, "deploy", "succeeded");
+    const state = (provider: Provider): InstanceState => {
+      const [signIn, test]: [TaskKind, TaskKind] =
+        provider === "claude" ? ["claude-sign-in", "test-claude"] : ["codex-sign-in", "test-codex"];
+      const check = worker.instances[provider];
+      if (check?.exists === false) return "missing";
+      if (check?.enabled === false) return "disabled";
       if (tasks[signIn]?.status === "running" || tasks[test]?.status === "running") {
         return "checking";
       }
-      const signedInAt = this.latestTask(id, signIn, "succeeded")?.id ?? 0;
+      const signedIn = this.latestTask(id, signIn, "succeeded");
       const result = tasks[test];
-      if (result === undefined || result.id < Math.max(deployedAt, signedInAt)) return "unknown";
-      return result.status === "succeeded" ? "signed-in" : "signed-out";
+      if (result === undefined) return "unknown";
+      for (const after of [deployed, signedIn]) {
+        if (after === undefined) continue;
+        if (result.id < after.id || Date.parse(result.createdAt) < Date.parse(after.updatedAt)) {
+          return "unknown";
+        }
+      }
+      if (result.status !== "succeeded") return "signed-out";
+      // T3 saying the instance lost its sign-in after the test outranks the test.
+      if (check?.authenticated === false && Date.parse(check.at) > Date.parse(result.updatedAt)) {
+        return "signed-out";
+      }
+      return "signed-in";
     };
-    const claude = state("claude-sign-in", "test-claude", "Factory Claude");
-    const codex = state("codex-sign-in", "test-codex", "Factory Codex");
+    const claude = state("claude");
+    const codex = state("codex");
+    const problems = (["claude", "codex"] as const).flatMap((provider) => {
+      const check = worker.instances[provider];
+      const name = provider === "claude" ? "Factory Claude" : "Factory Codex";
+      if (check === undefined) return [];
+      if (!check.exists) return [`${name} is missing on this worker; deploy again.`];
+      if (!check.enabled) return [`${name} is disabled on this worker; deploy again.`];
+      return check.problem === null ? [] : [`${name}: ${check.problem}`];
+    });
     const desired = this.desired();
     let blocker: string | undefined;
     if (!worker.enabled) blocker = "Not marked as a worker.";
     else if (desired === undefined) blocker = "No config version is deployed yet.";
     else if (tasks.deploy?.status === "running") blocker = "A deploy is running.";
-    else if (tasks.deploy?.status === "failed") {
+    else if (this.deployThreadRunning(id)) {
+      blocker = "An earlier deploy thread is still running; waiting for it to end.";
+    } else if (tasks.deploy?.status === "failed") {
       blocker = `The last deploy failed: ${taskReason(tasks.deploy)}`;
     } else if (worker.deployedVersion !== desired.version || worker.deployedSha !== desired.sha) {
       blocker =
@@ -320,7 +361,7 @@ export class WorkerManager {
           : `Deploy version ${String(desired.version)}.`;
     } else if (this.redeployDue(worker)) {
       blocker = "Due for its periodic redeploy, which refreshes the factory skill settings.";
-    } else if (worker.instanceProblem !== null) blocker = worker.instanceProblem;
+    } else if (problems.length > 0) blocker = problems.join(" ");
     else if (claude !== "signed-in") blocker = "Sign in Factory Claude.";
     else if (codex !== "signed-in") blocker = "Sign in Factory Codex.";
     return { ...worker, tasks, claude, codex, ready: blocker === undefined, blocker };
@@ -347,13 +388,19 @@ export class WorkerManager {
       } else if (version.state !== "deployed") {
         throw new Error(`Version ${String(id)} is ${version.state}; approve it first.`);
       }
+      const desired = this.desired();
+      if (version.state === "deployed" && desired?.version === id) {
+        // Deploying the current version again sends its saved target, even if the repo setting changed.
+        await this.reconcileNow(true);
+        return { sha: desired.sha };
+      }
       await repo.ensureRemote();
       const sha = await repo.publish(id, version.document);
       // The version's state and the rollout target change together, so a crash cannot split them.
       this.db.transaction(() => {
         if (this.options.store.get(id).state === "approved") this.options.store.markDeployed(id);
-        const desired = this.desired();
-        if (desired === undefined || id >= desired.version) {
+        const current = this.desired();
+        if (current === undefined || id >= current.version) {
           const target: DesiredDeploy = { version: id, sha, tag: repo.tagFor(id), url: repo.url };
           setMeta(this.db, DESIRED_KEY, JSON.stringify(target));
         }
@@ -377,6 +424,19 @@ export class WorkerManager {
     return next;
   }
 
+  /** Whether a deploy thread T3 is still running exists on the worker, such as one that timed out here. */
+  private deployThreadRunning(environmentId: string): boolean {
+    const ended = [...ENDED_STATUSES];
+    return (
+      this.db
+        .prepare(
+          `SELECT 1 FROM factory_threads WHERE environment_id = ? AND kind = 'setup' AND title = ?
+           AND status NOT IN (${ended.map(() => "?").join(", ")}) LIMIT 1`,
+        )
+        .get(environmentId, KIND_TITLES.deploy, ...ended) !== undefined
+    );
+  }
+
   private redeployDue(worker: Worker): boolean {
     const last = this.latestTask(worker.environmentId, "deploy", "succeeded");
     return last !== undefined && this.now().getTime() - Date.parse(last.updatedAt) >= REDEPLOY_MS;
@@ -389,6 +449,11 @@ export class WorkerManager {
       if (desired === undefined) throw new Error("Deploy a version from Settings first.");
       const running = this.latestTask(environmentId, "deploy");
       if (running?.status === "running") return running;
+      if (this.deployThreadRunning(environmentId)) {
+        throw new Error(
+          "An earlier deploy thread is still running on this worker; wait for it to end.",
+        );
+      }
       const threads = this.runningFactoryThreads(environmentId);
       if (threads > 0) {
         throw new Error(
@@ -424,7 +489,7 @@ export class WorkerManager {
       const worker = this.worker(environmentId);
       if (desired === undefined || worker === undefined || !worker.enabled) continue;
       const last = this.latestTask(environmentId, "deploy");
-      if (last?.status === "running") continue;
+      if (last?.status === "running" || this.deployThreadRunning(environmentId)) continue;
       if (this.runningFactoryThreads(environmentId) > 0) continue;
       const current =
         worker.deployedVersion === desired.version && worker.deployedSha === desired.sha;
@@ -661,7 +726,7 @@ export class WorkerManager {
         }
         this.db
           .prepare(
-            "UPDATE workers SET deployed_version = ?, deployed_sha = ?, home = ?, instance_problem = NULL, updated_at = ? WHERE environment_id = ?",
+            "UPDATE workers SET deployed_version = ?, deployed_sha = ?, home = ?, instance_problem = NULL, checked_at = NULL, updated_at = ? WHERE environment_id = ?",
           )
           .run(
             result.version,
@@ -741,21 +806,27 @@ export class WorkerManager {
       }
       // A worker whose T3 does not offer the provider list keeps what the last check found.
       if (reports === undefined) continue;
-      let problem: string | null = null;
-      {
-        for (const [id, name] of [
-          [FACTORY_CLAUDE, "Factory Claude"],
-          [FACTORY_CODEX, "Factory Codex"],
-        ] as const) {
-          const report = reports.find((candidate) => candidate.providerInstanceId === id);
-          if (report === undefined) problem ??= `${name} is missing on this worker; deploy again.`;
-          else {
-            // Sign-in is judged by the test turns; anything else T3 reports is a problem.
-            const other = report.constraints.filter((text) => !/authenticat|log ?in/i.test(text));
-            if (other.length > 0) problem ??= `${name}: ${other.join(" ")}`;
-          }
-        }
+      const checks: Partial<Record<Provider, InstanceCheck>> = {};
+      for (const [provider, id] of [
+        ["claude", FACTORY_CLAUDE],
+        ["codex", FACTORY_CODEX],
+      ] as const) {
+        const report = reports.find((candidate) => candidate.providerInstanceId === id);
+        const constraints = report?.constraints ?? [];
+        const auth = constraints.filter((text) => /authenticat|log ?in/i.test(text));
+        const disabled = constraints.filter((text) => /disabled/i.test(text));
+        const other = constraints.filter(
+          (text) => !auth.includes(text) && !disabled.includes(text),
+        );
+        checks[provider] = {
+          exists: report !== undefined,
+          enabled: disabled.length === 0,
+          authenticated: auth.length === 0,
+          problem: other.length === 0 ? null : other.join(" "),
+          at: at.toISOString(),
+        };
       }
+      const problem = JSON.stringify(checks);
       this.db
         .prepare("UPDATE workers SET instance_problem = ?, checked_at = ? WHERE environment_id = ?")
         .run(problem, at.toISOString(), row.environment_id);

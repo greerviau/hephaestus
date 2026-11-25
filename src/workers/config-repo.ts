@@ -136,8 +136,18 @@ export class ConfigRepo {
         mkdirSync(dirname(target), { recursive: true });
         writeFileSync(target, text);
       }
-      await this.git(["add", "-A"]);
+      // -f: a skill's own .gitignore must not keep its files out of the version.
+      await this.git(["add", "-A", "-f"]);
       const tree = (await this.git(["write-tree"])).trim();
+      const staged = (await this.git(["ls-tree", "-r", "--name-only", tree])).trim().split("\n");
+      const expected = Object.keys(versionFiles(version, config)).sort();
+      if (
+        JSON.stringify(staged.filter((path) => path !== "").sort()) !== JSON.stringify(expected)
+      ) {
+        throw new Error(
+          `The commit for version ${String(version)} would not hold exactly its files.`,
+        );
+      }
       const existing = await this.revParse(`refs/tags/${tag}^{commit}`);
       if (existing !== undefined) {
         const tagged = await this.revParse(`refs/tags/${tag}^{tree}`);

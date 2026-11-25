@@ -61,9 +61,9 @@ A worker is a linked T3 environment that the owner marked on the Environments pa
 4. Click Sign in Codex. The page shows a link and a code; approve the code in a browser within 15 minutes.
 5. After each deploy and sign-in, Hephaestus runs a one-line test turn on each factory instance. The worker is ready once it runs the deployed version and commit, its last deploy succeeded, both test turns since that deploy passed, and T3 reports no problem with either instance.
 
-A worker that is running factory threads gets a new version only after they finish, so a thread never sees instructions or skills change under it; it takes no new threads meanwhile. A failed deploy is retried after 30 minutes, and every worker is deployed again every 6 hours so owner skills added since stay out of Factory Codex. A launch whose reply from T3 was lost is replayed with the same request id, and a task that stalls is given up after a timeout. T3 writes its `settings.json` with its own writer, which Hephaestus cannot lock: the deploy script checks the file just before replacing it, so only a T3 write in the moment between that check and the rename could be lost.
+A worker that is running factory threads gets a new version only after they finish, so a thread never sees instructions or skills change under it; it takes no new threads meanwhile. A failed deploy is retried after 30 minutes, and every worker is deployed again every 6 hours so owner skills added since stay out of Factory Codex. A launch whose reply from T3 was lost is replayed with the same request id (T3 scopes that id to Hephaestus's T3 session, so a replay after a sign-in change can start a second thread; see issue #21), and a task that stalls is given up after a timeout. T3 writes its `settings.json` with its own writer, which Hephaestus cannot lock: the deploy script checks the file just before replacing it, so only a T3 write in the moment between that check and the rename could be lost.
 
-Uninstall stops the service, waits for setup threads still running on each worker, and then runs a cleanup thread there that signs the factory Codex out, removes both instances, and deletes `~/.hephaestus/`. If the logout or the instance removal fails, `~/.hephaestus/` stays so the cleanup can run again. Revoke the Claude setup token in your Claude account afterwards.
+Uninstall stops the service, waits until T3 lists no Hephaestus setup thread as running on each worker, and then runs a cleanup thread there that signs the factory Codex out, removes both instances, and deletes `~/.hephaestus/`. If the logout or the instance removal fails, `~/.hephaestus/` stays on the worker so the cleanup can run again. If any worker cannot be cleaned up, uninstall changes nothing on this host, starts the service again, and names the workers; `uninstall --skip-workers` removes Hephaestus anyway. Revoke the Claude setup token in your Claude account afterwards.
 
 ## Factory Hermes
 
@@ -90,7 +90,7 @@ Card stages map onto the board as the prototype proposed: Admitted is `ready` fo
 node dist/cli.js uninstall
 ```
 
-`uninstall` removes the factory setup from each worker, stops and removes the service and the factory Hermes gateway, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
+`uninstall` removes the factory setup from each worker (see Workers), stops and removes the service and the factory Hermes gateway, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
 
 ## Development
 

@@ -51,7 +51,11 @@ const USAGE = `Usage:
   hephaestus hermes sync [--hermes <path>]
                                        Set up or update the factory Hermes root, board, and profiles from
                                        the current config version, and start the factory gateway.
-  hephaestus uninstall                 Remove the services and ~/.hephaestus, then report baseline changes.
+  hephaestus uninstall [--skip-workers]
+                                       Remove the factory setup from each worker, the services, and
+                                       ~/.hephaestus, then report baseline changes. Stops without
+                                       removing anything if a worker cannot be cleaned up, unless
+                                       --skip-workers is given.
   hephaestus serve                     Run the dashboard in the foreground (the service runs this).`;
 
 const CONFIG_REPO_KEY = "config_repo";
@@ -77,15 +81,29 @@ const CLEANUP_WAIT_MS = 5 * 60_000;
  * Runs the cleanup thread on every worker Hephaestus set up and reports each
  * outcome. A worker that cannot be reached keeps its setup, and the report says so.
  */
-async function cleanUpWorkers(paths: Paths, config: Config): Promise<void> {
+/** Returns the labels of the workers it could not clean up. */
+async function cleanUpWorkers(paths: Paths, config: Config): Promise<string[]> {
+  const failed: string[] = [];
   const db = openStore(paths.state);
   const { connection, t3 } = t3Client(paths, config);
   try {
     const events = new ThreadEvents(db);
     const manager = workerManager(db, paths, config, new ConfigStore(db), t3, events);
+    // Every worker Hephaestus started anything on, even a first deploy that failed.
+    const touched = new Set(
+      (
+        db.prepare("SELECT DISTINCT environment_id AS id FROM worker_tasks").all() as {
+          id: string;
+        }[]
+      ).map((row) => row.id),
+    );
     const workers = manager
       .workers()
-      .filter((worker) => worker.enabled || worker.deployedVersion !== null);
+      .filter(
+        (worker) =>
+          worker.enabled || worker.deployedVersion !== null || touched.has(worker.environmentId),
+      );
+
     const waitFor = async (environmentId: string, threadId: string): Promise<string> => {
       const deadline = Date.now() + CLEANUP_WAIT_MS;
       let status = "running";
@@ -97,10 +115,25 @@ async function cleanUpWorkers(paths: Paths, config: Config): Promise<void> {
       return status;
     };
     for (const worker of workers) {
-      // A deploy or sign-in still running could set the worker up again after the cleanup.
-      for (const running of manager.runningTasks()) {
-        if (running.environmentId !== worker.environmentId || running.threadId === null) continue;
-        await waitFor(worker.environmentId, running.threadId).catch(() => undefined);
+      // A deploy or sign-in still running could set the worker up again after the cleanup,
+      // so the cleanup waits for every Hephaestus setup thread T3 lists as active there,
+      // including ones whose launch reply never reached Hephaestus.
+      let active: string[];
+      try {
+        active = await t3.activeThreads(worker.environmentId, "Hephaestus:");
+        for (const threadId of active) await waitFor(worker.environmentId, threadId);
+        active = await t3.activeThreads(worker.environmentId, "Hephaestus:");
+      } catch (error) {
+        console.log(`Could not reach ${worker.label} to clean it up: ${String(error)}`);
+        failed.push(worker.label);
+        continue;
+      }
+      if (active.length > 0) {
+        console.log(
+          `Did not clean up ${worker.label}: ${String(active.length)} Hephaestus setup threads are still running there.`,
+        );
+        failed.push(worker.label);
+        continue;
       }
       let task = await manager.startCleanup(worker.environmentId);
       const threadId = task.threadId;
@@ -121,6 +154,7 @@ async function cleanUpWorkers(paths: Paths, config: Config): Promise<void> {
         }
         task = manager.task(task.id) ?? task;
       }
+      if (task.status !== "succeeded") failed.push(worker.label);
       console.log(
         task.status === "succeeded"
           ? `Removed the factory setup from ${worker.label}.`
@@ -131,6 +165,7 @@ async function cleanUpWorkers(paths: Paths, config: Config): Promise<void> {
     await connection.close();
     db.close();
   }
+  return failed;
 }
 
 /** The worker manager the service and uninstall share. */
@@ -156,7 +191,8 @@ function workerManager(
       return slug === undefined
         ? undefined
         : new ConfigRepo(
-            join(paths.root, "config-repo"),
+            // One clone per repo, so a new repo never gets another repo's history.
+            join(paths.root, "config-repo", slug.replace("/", "__")),
             slug,
             gitPath,
             ghPath,
@@ -226,15 +262,28 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
     case "uninstall": {
-      parseArgs({ args: rest, options: {} });
+      const { values } = parseArgs({
+        args: rest,
+        options: { "skip-workers": { type: "boolean" } },
+      });
       const installed = existsSync(paths.config) ? readConfig(paths.config) : undefined;
       if (installed !== undefined && existsSync(paths.state)) {
         // The service stops first, so it starts nothing on a worker while the cleanup runs.
-        new SystemdUserService(installedUnitPath(paths)).stop();
+        const service = new SystemdUserService(installedUnitPath(paths));
+        service.stop();
+        let failed: string[];
         try {
-          await cleanUpWorkers(paths, installed);
+          failed = await cleanUpWorkers(paths, installed);
         } catch (error) {
           console.log(`Could not reach the workers to remove the factory setup: ${String(error)}`);
+          failed = ["all workers"];
+        }
+        if (failed.length > 0 && values["skip-workers"] !== true) {
+          service.start();
+          console.log(
+            `Uninstall stopped, and Hephaestus is running again, because the factory setup is still on ${failed.join(", ")}. Run uninstall again later, or pass --skip-workers to uninstall anyway and remove the hephaestus-claude and hephaestus-codex provider instances and ~/.hephaestus there by hand.`,
+          );
+          return 1;
         }
       }
       const { drift } = uninstall({

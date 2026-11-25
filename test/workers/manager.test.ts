@@ -386,7 +386,7 @@ describe("WorkerManager", () => {
     expect(t3.launches).toHaveLength(2);
   });
 
-  it("is not ready when T3 reports a factory instance missing or disabled", async () => {
+  it("is not ready when T3 reports a factory instance missing, disabled, or signed out", async () => {
     await makeReady();
     reports = [
       { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
@@ -394,14 +394,70 @@ describe("WorkerManager", () => {
     ];
     clock += 11 * 60_000;
     await manager.tick();
-    expect(viewOf("env-1").blocker).toBe("Factory Codex: Provider instance is disabled.");
+    expect(viewOf("env-1")).toMatchObject({ claude: "signed-in", codex: "disabled" });
+    expect(viewOf("env-1").blocker).toBe("Factory Codex is disabled on this worker; deploy again.");
+
+    reports = [];
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1")).toMatchObject({ claude: "missing", codex: "missing" });
+
+    // A T3 that stops offering the list keeps the last finding.
+    reports = undefined;
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1").codex).toBe("missing");
 
     reports = [
-      { providerInstanceId: FACTORY_CODEX, constraints: ["Provider is not authenticated."] },
+      { providerInstanceId: FACTORY_CLAUDE, constraints: ["Provider is not authenticated."] },
+      { providerInstanceId: FACTORY_CODEX, constraints: [] },
     ];
     clock += 11 * 60_000;
     await manager.tick();
-    expect(viewOf("env-1").blocker).toBe("Factory Claude is missing on this worker; deploy again.");
+    expect(viewOf("env-1")).toMatchObject({
+      claude: "signed-out",
+      codex: "signed-in",
+      ready: false,
+    });
+  });
+
+  it("does not accept a test that started before the new token was stored", async () => {
+    await makeReady();
+    await manager.startClaudeSignIn("env-1");
+    clock += 1000;
+    // A manual check starts while the sign-in waits for the token.
+    db.prepare("UPDATE worker_tasks SET status = 'succeeded' WHERE kind = 'test-claude'").run();
+    await manager.startTests("env-1");
+    clock += 1000;
+    finishThread("t4", "TOKEN-SET length=108");
+    finishThread("t5", "FACTORY-READY");
+    await manager.tick();
+    expect(viewOf("env-1").claude).not.toBe("signed-in");
+  });
+
+  it("deploys the current version again from its saved target without publishing", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", "DEPLOY-FAILED network");
+    await manager.tick();
+    await manager.deployVersion(1);
+    expect(repo.published).toEqual([1]);
+    expect(t3.launches.at(-1)?.message).toContain(`bash deploy.sh 1 ${SHA}`);
+  });
+
+  it("holds new deploys while an earlier deploy thread still runs on T3", async () => {
+    await manager.deployVersion(1);
+    clock += 31 * 60_000;
+    await manager.tick();
+    expect(manager.latestTask("env-1", "deploy")?.status).toBe("failed");
+    expect(viewOf("env-1").blocker).toMatch(/earlier deploy thread is still running/);
+    clock += 31 * 60_000;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(1);
+    await expect(manager.deploy("env-1")).rejects.toThrow(/still running/);
+
+    events.setStatus("env-1", "t1", "completed");
+    await manager.tick();
+    expect(t3.launches).toHaveLength(2);
   });
 
   it("accepts a cleanup only when the thread completed and reported removal", async () => {

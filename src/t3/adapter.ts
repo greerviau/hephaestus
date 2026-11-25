@@ -249,6 +249,20 @@ export class T3Adapter {
     );
   }
 
+  /** Threads on an environment whose title contains `title` and that have not ended, as T3 lists them. */
+  async activeThreads(environmentId: string, title: string): Promise<string[]> {
+    const result = (await this.connection.call("t3_thread_list", {
+      environmentId,
+      allProjects: true,
+      titleContains: title,
+      statuses: ["preparing", "queued", "starting", "running", "waiting"],
+      limit: 100,
+    })) as { threads?: { threadId?: string }[] };
+    return (result.threads ?? []).flatMap((thread) =>
+      thread.threadId === undefined ? [] : [thread.threadId],
+    );
+  }
+
   async archive(environmentId: string, threadId: string): Promise<void> {
     await this.connection.call("t3_thread_organize", {
       environmentId,

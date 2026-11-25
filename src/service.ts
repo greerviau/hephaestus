@@ -116,7 +116,13 @@ export class SystemdUserService implements ServiceManager {
   }
 
   stop(): void {
-    if (!this.unitExists()) return;
+    if (!this.unitExists()) {
+      this.assertStopped();
+      return;
+    }
+    if (!readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
+      throw new Error(`${this.unitPath} was not written by Hephaestus; leaving it running.`);
+    }
     this.systemctl("stop", this.name);
     this.assertStopped();
   }
