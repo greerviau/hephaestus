@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import { openStore } from "../../src/store.js";
 import { T3Adapter } from "../../src/t3/adapter.js";
-import { mintPairingCode, revokeSessions, runT3, signIn } from "../../src/t3/auth.js";
+import { mintPairingCode, revokeSessions, signIn, t3Runner } from "../../src/t3/auth.js";
 import { T3Connection } from "../../src/t3/connection.js";
 import { ThreadEvents } from "../../src/t3/events.js";
 import { ThreadFollower } from "../../src/t3/follower.js";
+import { FactoryThreads } from "../../src/t3/threads.js";
 import { resolveT3Origin } from "../../src/t3/origin.js";
 
 /**
@@ -23,6 +24,7 @@ describe.runIf(enabled)("T3 integration", () => {
     async () => {
       const environmentId = worker ?? "";
       const clientName = `Hephaestus (integration ${String(process.pid)})`;
+      const runT3 = t3Runner();
       const origin = resolveT3Origin(process.env, process.env.HOME ?? "");
       const token = await signIn(origin, clientName, await mintPairingCode(runT3, clientName));
       const connection = new T3Connection(`${origin}/mcp`, {
@@ -39,29 +41,22 @@ describe.runIf(enabled)("T3 integration", () => {
           reachable: true,
         });
 
-        const launched = await t3.launchThread({
-          environmentId,
-          title: "Hephaestus integration test",
-          providerInstanceId: "claudeAgent",
-          model: "claude-sonnet-5-5",
-          options: [{ id: "effort", value: "low" }],
-          runtimeMode: "full-access",
-          message:
-            'Run `echo hephaestus` as a shell command, then end your reply with exactly:\n```hephaestus-result\n{"ok": true}\n```',
-          clientRequestId: `hephaestus-integration-${String(process.pid)}`,
-        });
-        threadId = launched.threadId;
-
         const events = new ThreadEvents(openStore(":memory:"));
-        events.recordThread({
-          environmentId,
-          threadId,
-          title: "Hephaestus integration test",
-          providerInstanceId: "claudeAgent",
-          model: "claude-sonnet-5-5",
-          configVersion: 0,
-          cardId: null,
-        });
+        threadId = await new FactoryThreads(t3, events).launch(
+          {
+            environmentId,
+            title: "Hephaestus integration test",
+            providerInstanceId: "claudeAgent",
+            model: "claude-sonnet-5-5",
+            options: [{ id: "effort", value: "low" }],
+            runtimeMode: "full-access",
+            message:
+              'Run `echo hephaestus` as a shell command, then end your reply with exactly:\n```hephaestus-result\n{"ok": true}\n```',
+            clientRequestId: `hephaestus-integration-${String(process.pid)}`,
+          },
+          { configVersion: 0, cardId: null },
+        );
+        expect(events.thread(environmentId, threadId)?.status).toBe("starting");
         const follower = new ThreadFollower(t3, events, { waitMs: 15_000 });
         for (let round = 0; round < 20 && events.following().length > 0; round += 1) {
           await follower.followAll();

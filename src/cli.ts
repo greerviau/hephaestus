@@ -20,14 +20,14 @@ import {
   T3Credentials,
   mintPairingCode,
   revokeSessions,
-  runT3,
+  t3Runner,
   signIn,
   t3ClientName,
 } from "./t3/auth.js";
 import { T3Connection } from "./t3/connection.js";
 import { ThreadEvents } from "./t3/events.js";
 import { ThreadFollower } from "./t3/follower.js";
-import { cachedEnvironments, resolveT3Origin } from "./t3/origin.js";
+import { cachedEnvironments, findExecutable, resolveT3Origin } from "./t3/origin.js";
 import { environmentRoutes, linkExpiryWarnings } from "./web/environments.js";
 import { SecretsFile } from "./config/secrets.js";
 import { settingsRoutes } from "./web/settings.js";
@@ -70,6 +70,7 @@ async function main(argv: string[]): Promise<number> {
         nodePath: process.execPath,
         cliPath: realpathSync(fileURLToPath(import.meta.url)),
         roots: resolveRoots(process.env, paths.home),
+        ...t3PathOption(findExecutable("t3", process.env.PATH)),
         skills,
         waitForReady: (config) => waitForDashboard(config),
       });
@@ -78,15 +79,18 @@ async function main(argv: string[]): Promise<number> {
     }
     case "uninstall": {
       parseArgs({ args: rest, options: {} });
-      const instanceId = existsSync(paths.config) ? readConfig(paths.config).instanceId : undefined;
+      const installed = existsSync(paths.config) ? readConfig(paths.config) : undefined;
       const { drift } = uninstall({
         paths,
         service: new SystemdUserService(installedUnitPath(paths)),
       });
       console.log("Uninstalled.");
-      if (instanceId !== undefined) {
+      if (installed !== undefined) {
         try {
-          const revoked = await revokeSessions(runT3, t3ClientName(instanceId));
+          const revoked = await revokeSessions(
+            t3Runner(installed.t3Path),
+            t3ClientName(installed.instanceId),
+          );
           console.log(
             `Revoked ${String(revoked.length)} T3 MCP session(s) that Hephaestus signed in.`,
           );
@@ -117,13 +121,15 @@ async function main(argv: string[]): Promise<number> {
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
       const clientName = t3ClientName(config.instanceId);
-      const origin = resolveT3Origin(process.env, paths.home);
+      const runT3 = t3Runner(config.t3Path);
+      // Resolved on every connect, so a T3 restart on another port is picked up.
+      const origin = (): string => resolveT3Origin(process.env, paths.home);
       const credentials = new T3Credentials(new SecretsFile(paths.secrets), async () => {
         // Each sign-in replaces the last one, so old sessions do not pile up in T3.
         await revokeSessions(runT3, clientName);
-        return signIn(origin, clientName, await mintPairingCode(runT3, clientName));
+        return signIn(origin(), clientName, await mintPairingCode(runT3, clientName));
       });
-      const connection = new T3Connection(`${origin}/mcp`, credentials);
+      const connection = new T3Connection(() => `${origin()}/mcp`, credentials);
       const t3 = new T3Adapter(connection);
       const environments = cachedEnvironments(t3, 30_000);
       const following = new AbortController();
@@ -143,9 +149,11 @@ async function main(argv: string[]): Promise<number> {
       });
       stopBackups();
       following.abort();
-      await new Promise((resolve) => server.close(resolve));
-      await follower;
+      // Closing the connection fails calls still waiting on T3, so shutdown does not wait for them.
       await connection.close();
+      await follower;
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
       db.close();
       return 0;
     }
@@ -164,3 +172,7 @@ main(process.argv.slice(2)).then(
     process.exitCode = 1;
   },
 );
+
+function t3PathOption(path: string | undefined): { t3Path?: string } {
+  return path === undefined ? {} : { t3Path: path };
+}

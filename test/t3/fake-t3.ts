@@ -6,6 +6,11 @@ import { CallToolRequestSchema, ListToolsRequestSchema } from "@modelcontextprot
 
 export type ToolHandler = (args: Record<string, unknown>) => unknown;
 
+/** Resolves after `ms`, for handlers that simulate a slow worker. */
+export function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * A stand-in for T3's outside MCP server. It answers the tools a test
  * registers, returns results as `structuredContent` the way T3 does, and
@@ -41,14 +46,14 @@ export class FakeT3 {
           inputSchema: { type: "object" as const },
         })),
       }));
-      server.setRequestHandler(CallToolRequestSchema, (request) => {
+      server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const args = request.params.arguments ?? {};
         this.calls.push({ name: request.params.name, args });
         const handler = this.tools.get(request.params.name);
         try {
           if (handler === undefined)
             throw new FakeFailure("unknown_tool", `No tool ${request.params.name}`);
-          const result = handler(args) as Record<string, unknown>;
+          const result = (await handler(args)) as Record<string, unknown>;
           return {
             content: [{ type: "text", text: JSON.stringify(result) }],
             structuredContent: result,

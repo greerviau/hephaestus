@@ -7,6 +7,8 @@ export interface Config {
   instanceId: string;
   /** The unit file install wrote; uninstall removes this one even if XDG_CONFIG_HOME changed since. */
   unitPath: string;
+  /** The absolute path of the `t3` CLI at install, when it was on PATH. */
+  t3Path?: string;
 }
 
 export const DEFAULT_PORT = 7700;

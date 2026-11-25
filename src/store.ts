@@ -42,6 +42,20 @@ const MIGRATIONS = [
      PRIMARY KEY (environment_id, thread_id, item_id),
      FOREIGN KEY (environment_id, thread_id) REFERENCES factory_threads (environment_id, thread_id)
    );`,
+  `CREATE TABLE factory_launches (
+     client_request_id TEXT PRIMARY KEY,
+     environment_id TEXT NOT NULL,
+     title TEXT NOT NULL,
+     provider_instance_id TEXT NOT NULL,
+     model TEXT NOT NULL,
+     config_version INTEGER NOT NULL,
+     card_id TEXT,
+     status TEXT NOT NULL CHECK (status IN ('pending', 'launched', 'failed')),
+     thread_id TEXT,
+     error TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

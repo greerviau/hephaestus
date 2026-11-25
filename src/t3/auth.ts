@@ -121,16 +121,21 @@ export class T3Credentials implements Credential {
 /** Runs the `t3` CLI with arguments and resolves with its stdout. */
 export type CliRun = (args: string[]) => Promise<string>;
 
-export const runT3: CliRun = (args) =>
-  new Promise((resolve, reject) => {
-    execFile("t3", args, { timeout: 30_000 }, (error, stdout) => {
-      if (error)
-        reject(
-          new Error(`t3 ${args.slice(0, 3).join(" ")} failed: ${error.message}`, { cause: error }),
-        );
-      else resolve(stdout);
+/** Runs the `t3` CLI at `executable`: the absolute path install recorded, or `t3` on PATH. */
+export const t3Runner =
+  (executable = "t3"): CliRun =>
+  (args) =>
+    new Promise((resolve, reject) => {
+      execFile(executable, args, { timeout: 30_000 }, (error, stdout) => {
+        if (error)
+          reject(
+            new Error(`t3 ${args.slice(0, 3).join(" ")} failed: ${error.message}`, {
+              cause: error,
+            }),
+          );
+        else resolve(stdout);
+      });
     });
-  });
 
 /** Mints a 5-minute pairing code on the local T3 server for one sign-in. */
 export async function mintPairingCode(run: CliRun, label: string): Promise<string> {
@@ -166,5 +171,5 @@ export async function revokeSessions(run: CliRun, clientName: string): Promise<s
 
 /** The client name Hephaestus signs in under, unique to one install. */
 export function t3ClientName(instanceId: string): string {
-  return `Hephaestus (${instanceId.slice(0, 8)})`;
+  return `Hephaestus (${instanceId})`;
 }

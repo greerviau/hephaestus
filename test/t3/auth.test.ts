@@ -10,6 +10,7 @@ import {
   mintPairingCode,
   revokeSessions,
   signIn,
+  t3ClientName,
   type CliRun,
 } from "../../src/t3/auth.js";
 
@@ -178,5 +179,13 @@ describe("T3 CLI helpers", () => {
       ["auth", "session", "list", "--json"],
       ["auth", "session", "revoke", "s1"],
     ]);
+  });
+});
+
+describe("t3ClientName", () => {
+  it("carries the whole install id, so two installs never share a name", () => {
+    expect(t3ClientName("12345678-aaaa-bbbb-cccc-000000000001")).toBe(
+      "Hephaestus (12345678-aaaa-bbbb-cccc-000000000001)",
+    );
   });
 });

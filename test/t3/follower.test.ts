@@ -4,7 +4,7 @@ import { T3Adapter } from "../../src/t3/adapter.js";
 import { T3Connection } from "../../src/t3/connection.js";
 import { ThreadEvents } from "../../src/t3/events.js";
 import { ThreadFollower } from "../../src/t3/follower.js";
-import { FakeT3 } from "./fake-t3.js";
+import { FakeFailure, FakeT3, delay } from "./fake-t3.js";
 
 let fake: FakeT3;
 let connection: T3Connection;
@@ -125,5 +125,115 @@ describe("ThreadFollower", () => {
 
     expect(errors).toHaveLength(1);
     expect(events.items("w1", "t1").length).toBeGreaterThan(0);
+  });
+});
+
+describe("ThreadFollower edge cases", () => {
+  const base = { title: "t", providerInstanceId: "i", model: "m", configVersion: 1, cardId: null };
+
+  it("reads once more after the thread ends, so an item from an earlier page gets its final status", async () => {
+    let reads = 0;
+    fake.tools.set("t3_thread_wait", () => ({ status: "completed", timedOut: false }));
+    fake.tools.set("t3_thread_read", (args) => {
+      reads += 1;
+      const after = Number(args.afterPosition);
+      const final = reads > 2;
+      const all = [
+        {
+          itemId: "a",
+          position: 0,
+          type: "command_execution",
+          status: final ? "completed" : "running",
+          text: "",
+        },
+        { itemId: "b", position: 1, type: "assistant_message", status: "completed", text: "Done" },
+      ].filter((item) => item.position > after);
+      return {
+        thread: { status: reads === 1 ? "running" : "completed" },
+        items: reads === 1 ? all.slice(0, 1) : all,
+        nextPosition: reads === 1 ? 0 : 1,
+        hasMore: reads === 1,
+      };
+    });
+    const events = new ThreadEvents(openStore(":memory:"));
+    events.recordThread({ ...base, environmentId: "w1", threadId: "t1" });
+    const follower = new ThreadFollower(new T3Adapter(connection), events, { waitMs: 10 });
+
+    await follower.followAll();
+
+    expect(events.items("w1", "t1").map((item) => item.status)).toEqual(["completed", "completed"]);
+    expect(events.thread("w1", "t1")?.status).toBe("completed");
+  });
+
+  it("stops following a thread that T3 no longer has, and keeps its history", async () => {
+    fake.tools.set("t3_thread_wait", () => {
+      throw new FakeFailure("thread_not_found", "The thread was not found.");
+    });
+    const events = new ThreadEvents(openStore(":memory:"));
+    events.recordThread({ ...base, environmentId: "w1", threadId: "gone" });
+    events.upsertItems("w1", "gone", [
+      { itemId: "a", position: 0, type: "user_message", status: "completed", text: "x" },
+    ]);
+    const follower = new ThreadFollower(new T3Adapter(connection), events, {
+      waitMs: 10,
+      onError: () => undefined,
+    });
+
+    await follower.followAll();
+
+    expect(events.thread("w1", "gone")?.status).toBe("unavailable");
+    expect(events.following()).toEqual([]);
+    expect(events.items("w1", "gone")).toHaveLength(1);
+  });
+
+  it("backs off a thread whose environment keeps failing", async () => {
+    fake.tools.set("t3_thread_wait", () => {
+      throw new Error("unreachable");
+    });
+    const events = new ThreadEvents(openStore(":memory:"));
+    events.recordThread({ ...base, environmentId: "w1", threadId: "t1" });
+    let now = 0;
+    const follower = new ThreadFollower(new T3Adapter(connection), events, {
+      waitMs: 10,
+      onError: () => undefined,
+      now: () => now,
+    });
+
+    await follower.followAll();
+    await follower.followAll();
+    const waitsAfterTwoRounds = fake.calls.filter((call) => call.name === "t3_thread_wait").length;
+    now += 60_000;
+    await follower.followAll();
+
+    expect(waitsAfterTwoRounds).toBe(1);
+    expect(fake.calls.filter((call) => call.name === "t3_thread_wait")).toHaveLength(2);
+  });
+
+  it("keeps polling a healthy thread while another one stalls", async () => {
+    fake.tools.set("t3_thread_wait", async (args) => {
+      if (args.threadId === "slow") await delay(1_500);
+      return { status: "running", timedOut: true };
+    });
+    fake.tools.set("t3_thread_read", () => ({
+      thread: { status: "running" },
+      items: [],
+      nextPosition: -1,
+      hasMore: false,
+    }));
+    const events = new ThreadEvents(openStore(":memory:"));
+    events.recordThread({ ...base, environmentId: "w1", threadId: "slow" });
+    events.recordThread({ ...base, environmentId: "w1", threadId: "fast" });
+    const follower = new ThreadFollower(new T3Adapter(connection), events, { waitMs: 10 });
+    const stop = new AbortController();
+
+    const running = follower.run(stop.signal, 10);
+    await delay(700);
+    const fastReads = fake.calls.filter(
+      (call) => call.name === "t3_thread_read" && call.args.threadId === "fast",
+    ).length;
+    stop.abort();
+    await running;
+
+    expect(fastReads).toBeGreaterThan(3);
   });
 });

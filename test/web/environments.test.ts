@@ -93,15 +93,22 @@ describe("Environments page", () => {
     expect(body.environments.map((environment) => environment.environmentId)).toEqual(["w1", "w2"]);
   });
 
-  it("says when T3 cannot be reached", async () => {
+  it("says when T3 cannot be reached, without repeating upstream error text", async () => {
     const { base, cookie } = await start({
-      environments: () => Promise.reject(new Error("ECONNREFUSED")),
+      environments: () => Promise.reject(new Error("401 body: Bearer secret-token-value")),
     });
 
     const response = await fetch(`${base}/environments`, { headers: { cookie } });
+    const html = await response.text();
 
     expect(response.status).toBe(502);
-    expect(await response.text()).toContain("ECONNREFUSED");
+    expect(html).toContain("T3 could not be reached");
+    expect(html).not.toContain("secret-token-value");
+    const overview = await (await fetch(`${base}/`, { headers: { cookie } })).text();
+    expect(overview).toContain("T3 could not be reached");
+    expect(overview).not.toContain("secret-token-value");
+    const api = await (await fetch(`${base}/api/environments`, { headers: { cookie } })).text();
+    expect(api).not.toContain("secret-token-value");
   });
 
   it("needs a session", async () => {

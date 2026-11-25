@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import type { EnvironmentSource } from "../web/environments.js";
 import type { Environments } from "./adapter.js";
@@ -42,4 +42,22 @@ export function cachedEnvironments(
       return value;
     },
   };
+}
+
+/**
+ * The absolute path of `name` on `path`. Install records it, because the
+ * systemd user manager's PATH is usually shorter than a login shell's.
+ */
+export function findExecutable(name: string, path: string | undefined): string | undefined {
+  for (const dir of (path ?? "").split(":")) {
+    if (dir === "" || !isAbsolute(dir)) continue;
+    const candidate = join(dir, name);
+    try {
+      accessSync(candidate, constants.X_OK);
+      if (statSync(candidate).isFile()) return candidate;
+    } catch {
+      // Not here.
+    }
+  }
+  return undefined;
 }

@@ -1,4 +1,5 @@
 import type { Environment, Environments } from "../t3/adapter.js";
+import { T3ToolError } from "../t3/connection.js";
 import { escapeHtml, layout } from "./html.js";
 import { sendHtml, sendJson, type Route } from "./http.js";
 
@@ -7,6 +8,21 @@ export interface EnvironmentSource {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * A short reason that is safe to show: T3's error code, or a system error
+ * code such as ECONNREFUSED. Upstream message text is left out, because it can
+ * carry response bodies. The full error goes to the service log.
+ */
+export function publicReason(error: unknown): string {
+  console.error("T3 request failed", error);
+  if (error instanceof T3ToolError) return error.code;
+  const code = (error as { code?: unknown } | null)?.code;
+  if (typeof code === "string" && /^[A-Z_]+$/.test(code)) return code;
+  const cause = (error as { cause?: { code?: unknown } } | null)?.cause?.code;
+  if (typeof cause === "string" && /^[A-Z_]+$/.test(cause)) return cause;
+  return "unknown error";
+}
 /** Overview warns this long before a link expires. */
 export const LINK_WARNING_MS = 7 * DAY_MS;
 
@@ -40,7 +56,7 @@ export function environmentRoutes(
             502,
             layout(
               "Environments",
-              `<h1>Environments</h1>\n<p class="error">T3 could not be reached: ${escapeHtml(String(error))}</p>`,
+              `<h1>Environments</h1>\n<p class="error">T3 could not be reached: ${escapeHtml(publicReason(error))}</p>`,
             ),
           );
           return;
@@ -80,7 +96,7 @@ ${rows}
         try {
           sendJson(response, 200, await source.environments());
         } catch (error) {
-          sendJson(response, 502, { error: String(error) });
+          sendJson(response, 502, { error: publicReason(error) });
         }
       },
     },
@@ -96,7 +112,7 @@ export async function linkExpiryWarnings(
   try {
     result = await source.environments();
   } catch (error) {
-    return `<p class="error">T3 could not be reached: ${escapeHtml(String(error))}</p>`;
+    return `<p class="error">T3 could not be reached: ${escapeHtml(publicReason(error))}</p>`;
   }
   const soon = result.environments.filter((environment) => expiringSoon(environment, now()));
   if (soon.length === 0) return "";

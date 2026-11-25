@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { cachedEnvironments, resolveT3Origin } from "../../src/t3/origin.js";
+import { cachedEnvironments, findExecutable, resolveT3Origin } from "../../src/t3/origin.js";
 
 let home: string;
 
@@ -62,5 +62,17 @@ describe("cachedEnvironments", () => {
     expect((await source.environments()).localEnvironmentId).toBe("1");
     now = 31_000;
     expect((await source.environments()).localEnvironmentId).toBe("2");
+  });
+});
+
+describe("findExecutable", () => {
+  it("finds an executable on PATH and returns its absolute path", () => {
+    mkdirSync(join(home, "bin"));
+    writeFileSync(join(home, "bin/t3"), "#!/bin/sh\n", { mode: 0o755 });
+    writeFileSync(join(home, "bin/notexec"), "", { mode: 0o644 });
+
+    expect(findExecutable("t3", `/nowhere:${join(home, "bin")}`)).toBe(join(home, "bin/t3"));
+    expect(findExecutable("notexec", join(home, "bin"))).toBeUndefined();
+    expect(findExecutable("t3", "")).toBeUndefined();
   });
 });

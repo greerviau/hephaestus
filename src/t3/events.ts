@@ -8,6 +8,8 @@ export const ENDED_STATUSES = new Set([
   "failed",
   "cancelled",
   "rolled_back",
+  // Set by Hephaestus when T3 no longer has the thread; its stored history stays.
+  "unavailable",
 ]);
 /** Item statuses that will not change again. */
 const FINAL_ITEM_STATUSES = new Set([
@@ -167,5 +169,56 @@ export class ThreadEvents {
     const open = items.find((item) => !FINAL_ITEM_STATUSES.has(item.status));
     if (open !== undefined) return open.position - 1;
     return items.at(-1)?.position ?? -1;
+  }
+
+  /** Records a launch before T3 is called, so a crash between the two leaves a trace. */
+  recordLaunch(clientRequestId: string, thread: Omit<FactoryThread, "threadId">): void {
+    const at = this.now().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id,
+           model, config_version, card_id, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+         ON CONFLICT (client_request_id) DO UPDATE SET status = 'pending', error = NULL, updated_at = excluded.updated_at`,
+      )
+      .run(
+        clientRequestId,
+        thread.environmentId,
+        thread.title,
+        thread.providerInstanceId,
+        thread.model,
+        thread.configVersion,
+        thread.cardId,
+        at,
+        at,
+      );
+  }
+
+  finishLaunch(clientRequestId: string, outcome: { threadId: string } | { error: string }): void {
+    const at = this.now().toISOString();
+    if ("threadId" in outcome) {
+      this.db
+        .prepare(
+          "UPDATE factory_launches SET status = 'launched', thread_id = ?, updated_at = ? WHERE client_request_id = ?",
+        )
+        .run(outcome.threadId, at, clientRequestId);
+    } else {
+      this.db
+        .prepare(
+          "UPDATE factory_launches SET status = 'failed', error = ?, updated_at = ? WHERE client_request_id = ?",
+        )
+        .run(outcome.error, at, clientRequestId);
+    }
+  }
+
+  launch(
+    clientRequestId: string,
+  ): { status: "pending" | "launched" | "failed"; threadId: string | null } | undefined {
+    return this.db
+      .prepare(
+        "SELECT status, thread_id AS threadId FROM factory_launches WHERE client_request_id = ?",
+      )
+      .get(clientRequestId) as
+      { status: "pending" | "launched" | "failed"; threadId: string | null } | undefined;
   }
 }

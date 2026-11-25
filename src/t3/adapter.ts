@@ -65,7 +65,12 @@ interface RawItem {
   status?: string | null;
   text?: string | null;
   title?: string | null;
+  textTruncated?: boolean;
+  nextTextOffset?: number | null;
 }
+
+/** Continuation reads allowed for one item's text: 50 x 20,000 characters. */
+const MAX_TEXT_PAGES = 50;
 
 /** Typed calls to the T3 tools Hephaestus uses. */
 export class T3Adapter {
@@ -135,7 +140,7 @@ export class T3Adapter {
     });
   }
 
-  /** Activity items after `afterPosition`, oldest first. */
+  /** Activity items after `afterPosition`, oldest first, each with its whole text. */
   async read(environmentId: string, threadId: string, afterPosition: number): Promise<ThreadPage> {
     const result = (await this.connection.call("t3_thread_read", {
       environmentId,
@@ -145,15 +150,35 @@ export class T3Adapter {
       limit: 100,
       maxCharsPerItem: 20000,
     })) as { thread: { status: string }; items: RawItem[]; nextPosition: number; hasMore: boolean };
-    return {
-      status: result.thread.status,
-      items: result.items.map((item) => ({
+    const items: ThreadItem[] = [];
+    for (const item of result.items) {
+      let text = item.text ?? item.title ?? "";
+      let next = item.textTruncated === true ? item.nextTextOffset : null;
+      for (let page = 0; typeof next === "number" && page < MAX_TEXT_PAGES; page += 1) {
+        const rest = (await this.connection.call("t3_thread_read", {
+          environmentId,
+          threadId,
+          view: "activity",
+          itemId: item.itemId,
+          textOffset: next,
+          maxCharsPerItem: 20000,
+        })) as { items: RawItem[] };
+        const part = rest.items.find((candidate) => candidate.itemId === item.itemId);
+        if (part === undefined) break;
+        text += part.text ?? "";
+        next = part.textTruncated === true ? part.nextTextOffset : null;
+      }
+      items.push({
         itemId: item.itemId,
         position: item.position,
         type: item.type,
         status: item.status ?? "completed",
-        text: item.text ?? item.title ?? "",
-      })),
+        text,
+      });
+    }
+    return {
+      status: result.thread.status,
+      items,
       nextPosition: result.nextPosition,
       hasMore: result.hasMore,
     };
