@@ -195,7 +195,9 @@ export class ThreadEvents {
         `INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id,
            model, config_version, card_id, kind, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-         ON CONFLICT (client_request_id) DO UPDATE SET status = 'pending', error = NULL, updated_at = excluded.updated_at`,
+         ON CONFLICT (client_request_id) DO UPDATE SET status = 'pending', error = NULL,
+           environment_id = CASE WHEN factory_launches.status = 'failed' THEN excluded.environment_id ELSE factory_launches.environment_id END,
+           updated_at = excluded.updated_at`,
       )
       .run(
         clientRequestId,

@@ -99,6 +99,107 @@ const MIGRATIONS = [
      updated_at TEXT NOT NULL
    );
    CREATE INDEX worker_tasks_by_worker ON worker_tasks (environment_id, kind, id);`,
+  `CREATE TABLE issues (
+     repo TEXT NOT NULL,
+     number INTEGER NOT NULL,
+     title TEXT NOT NULL,
+     author TEXT NOT NULL,
+     provenance TEXT NOT NULL CHECK (provenance IN ('factory', 'external')),
+     filed_by TEXT,
+     state TEXT NOT NULL CHECK (state IN ('admitted', 'awaiting-owner', 'held-cap', 'rejected')),
+     card_id INTEGER,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL,
+     PRIMARY KEY (repo, number)
+   );
+   CREATE TABLE cards (
+     id INTEGER PRIMARY KEY,
+     repo TEXT NOT NULL,
+     issue_number INTEGER,
+     title TEXT NOT NULL,
+     stage TEXT NOT NULL,
+     hermes_card_id TEXT,
+     brief TEXT,
+     worker_env TEXT,
+     project_id TEXT,
+     base_branch TEXT,
+     implementer TEXT,
+     implement_thread TEXT,
+     review_thread TEXT,
+     handled_item TEXT,
+     pr_number INTEGER,
+     head_sha TEXT,
+     rounds INTEGER NOT NULL DEFAULT 0,
+     escalated_to TEXT,
+     reason TEXT,
+     waiting TEXT,
+     merge_sha TEXT,
+     revert_pr INTEGER,
+     owner_approved_sha TEXT,
+     pending_message TEXT,
+     owner_action TEXT CHECK (owner_action IN ('merge', 'revert-merge')),
+     branch TEXT,
+     head_at TEXT,
+     expected_checks TEXT,
+     started_at TEXT,
+     foreign_merge INTEGER NOT NULL DEFAULT 0,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE card_events (
+     id INTEGER PRIMARY KEY,
+     card_id INTEGER NOT NULL REFERENCES cards (id),
+     at TEXT NOT NULL,
+     kind TEXT NOT NULL,
+     detail TEXT NOT NULL
+   );
+   CREATE INDEX card_events_by_card ON card_events (card_id, id);
+   CREATE TABLE review_results (
+     card_id INTEGER NOT NULL REFERENCES cards (id),
+     head_sha TEXT NOT NULL,
+     reviewer TEXT NOT NULL,
+     author TEXT NOT NULL,
+     verdict TEXT NOT NULL CHECK (verdict IN ('approve', 'changes')),
+     thread_id TEXT NOT NULL,
+     at TEXT NOT NULL
+   );
+   CREATE TABLE merges (
+     repo TEXT NOT NULL,
+     pr_number INTEGER NOT NULL,
+     merge_sha TEXT NOT NULL,
+     card_id INTEGER,
+     revert INTEGER NOT NULL DEFAULT 0,
+     at TEXT NOT NULL,
+     PRIMARY KEY (repo, pr_number)
+   );
+   CREATE TABLE worker_projects (
+     environment_id TEXT NOT NULL,
+     repo TEXT NOT NULL,
+     project_id TEXT NOT NULL,
+     PRIMARY KEY (environment_id, repo)
+   );
+   CREATE TABLE mcp_calls (
+     id INTEGER PRIMARY KEY,
+     role TEXT NOT NULL,
+     tool TEXT NOT NULL,
+     arguments TEXT NOT NULL,
+     ok INTEGER NOT NULL,
+     result TEXT NOT NULL,
+     at TEXT NOT NULL
+   );
+   CREATE TABLE notifications (
+     id INTEGER PRIMARY KEY,
+     at TEXT NOT NULL,
+     card_id INTEGER,
+     text TEXT NOT NULL,
+     dismissed INTEGER NOT NULL DEFAULT 0
+   );
+   CREATE TABLE version_evidence (
+     version_id INTEGER NOT NULL REFERENCES config_versions (id),
+     environment_id TEXT NOT NULL,
+     thread_id TEXT NOT NULL,
+     note TEXT NOT NULL DEFAULT ''
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

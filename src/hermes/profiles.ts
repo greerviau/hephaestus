@@ -65,9 +65,14 @@ export class FactoryProfiles {
     return this.hermes.root;
   }
 
-  async sync(config: FactoryConfig, version: number, mcp: McpEntry): Promise<void> {
+  /** `mcp` gives each role its own entry, so the MCP server knows which profile calls it. */
+  async sync(
+    config: FactoryConfig,
+    version: number,
+    mcp: McpEntry | ((role: RoleName) => McpEntry),
+  ): Promise<void> {
     for (const role of ROLE_NAMES) {
-      await this.syncRole(config, role, version, mcp);
+      await this.syncRole(config, role, version, typeof mcp === "function" ? mcp(role) : mcp);
     }
   }
 

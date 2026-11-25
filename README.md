@@ -1,88 +1,67 @@
+<p align="center"><img src="docs/images/banner.jpg" alt="Hephaestus" width="800"></p>
+
 # Hephaestus
 
-Hephaestus is a factory management layer on [T3 Code](https://github.com/pingdotgg/t3code) and [Hermes Agent](https://github.com/NousResearch/hermes-agent). It runs as a systemd user service on the Hermes host, keeps all of its state under `~/.hephaestus/`, and serves a dashboard behind a single password.
+Hephaestus turns your repos into a software factory. Requests become GitHub issues, AI agents implement them in [T3 Code](https://github.com/pingdotgg/t3code) threads on your machines, a second agent from another provider reviews each PR, and Hephaestus merges it only when your policy allows. A failing merge is reverted, everything is recorded, and every night the factory proposes improvements to its own instructions for you to approve.
 
-The MVP plan is in [issue #1](https://github.com/greerviau/hephaestus/issues/1).
+It runs as a service on one Linux host and serves a dashboard on your LAN.
+
+## How it works
+
+Three [Hermes Agent](https://github.com/NousResearch/hermes-agent) profiles manage the work: the planner turns requests into issues, the lead starts and unblocks work, and the improver proposes config changes. Each piece of work then runs as T3 threads on your worker machines, on two provider instances that Hephaestus sets up there: Factory Claude implements, and Factory Codex reviews.
+
+Hephaestus sits between them. It starts and watches every thread, enforces the thread limits and the merge gate, merges and reverts, keeps the record, and serves the dashboard. Nothing it adds changes your own Hermes profile, Claude and Codex config, or T3 settings, and uninstall removes it all.
 
 ## Requirements
 
-- Linux with a systemd user manager
-- Node.js 22.13 or newer and npm 11 or newer
+On the host that runs Hephaestus:
 
-## Install
+- Linux with a systemd user session
+- Node.js 22.13 or newer, and npm 11 or newer
+- T3 Code, with your worker machines linked to it
+- Hermes Agent
+- The GitHub CLI (`gh`), signed in
 
-```sh
-npm ci
-npm run build
-node dist/cli.js install --port 7700 --skill ~/skills/review
-```
+On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` signed in to an account that can read your factory repos.
 
-`install` asks for the dashboard password, or reads it from the first line of stdin when stdin is not a terminal. The password must be 12 to 256 characters. Install then does these steps:
+## Set up
 
-1. It records hashes of the owner's personal Hermes profiles, Claude and Codex config, and T3 settings in `~/.hephaestus/baseline.json`. `src/baseline.ts` lists the files it covers. It honours `HERMES_HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `T3CODE_HOME`, and records the folders it used so uninstall checks the same ones. It follows symlinks, so a linked skill's contents count too.
-2. It creates `~/.hephaestus/` with mode 700 and stores the password as a scrypt hash.
-3. It creates config version 1 from the role and instruction templates in `templates/`, plus each `--skill` folder (a folder with a `SKILL.md`), and approves it.
-4. It installs and starts `hephaestus.service` in `~/.config/systemd/user/` (or under `XDG_CONFIG_HOME`), and records the unit's path. It refuses to replace a unit file that is already there.
-5. It waits until its own dashboard answers on the port. If any step fails, it removes the service and `~/.hephaestus/` again.
+1. Install and start the service. It asks for a dashboard password of 12 or more characters.
 
-The dashboard listens on all interfaces on the chosen port, so other devices on the LAN can reach it. It uses plain HTTP, so the password and session cookie cross the LAN unencrypted. Sessions last 7 days. A client that sends 10 wrong passwords in 15 minutes is locked out for the rest of that window. The dashboard refuses any POST whose `Origin` is not the dashboard itself, so a page served from another port on the same host cannot act with the owner's session.
+   ```sh
+   git clone https://github.com/greerviau/hephaestus.git
+   cd hephaestus
+   npx -y npm@11 ci
+   npm run build
+   node dist/cli.js install
+   ```
 
-## Config versions
+2. Open `http://<host>:7700` and sign in.
+3. On **Workers**, name a private repo for config versions, such as `you/hephaestus-config`. Hephaestus creates it if it does not exist. Then click **Use as a worker** on each machine that should run factory threads.
+4. On **Settings**, add your factory repos under `projects` and save. Each repo takes a policy preset: `yolo`, `standard` (the default), or `strict`.
 
-All factory config lives as numbered versions in `~/.hephaestus/state.db`: factory projects and their policies, the planner, lead, and improver roles, the instructions for factory threads, and skills. No repo holds them.
+   ```json
+   "projects": {
+     "you/your-repo": { "policy": { "preset": "standard", "overrides": {} } }
+   }
+   ```
 
-- Every edit creates a draft version with a diff against the version it was built from: the deployed version, or before the first deploy the newest approved one. A draft becomes approved or rejected, an approved version becomes deployed, and the version it replaces becomes superseded. Only a version built from the deployed version can be deployed, so deploying never drops changes made in between.
-- Reverting a deployed version creates a draft that restores what that version changed. A change stays as it is when a later version changed the same value, or when undoing it alone would make the config invalid, and the page says how many such changes it left. The first version cannot be reverted.
-- A project's policy starts from a preset, `standard` when none is given, and can override any setting. `yolo` merges when checks pass, with no review and no escalation paths. `standard`, the default, also needs an approving review from a different provider on the head commit and stops for changes under `.github/workflows/`. `strict` makes every merge wait for the owner. All three revert a factory merge whose checks fail, allow 2 review rounds, and cap open factory-filed issues at 5.
-- The Settings page lists versions with their author and diff, and edits create versions. It can approve, reject, revert, and deploy. Deploying publishes the version to the config repo, applies it to the factory Hermes root, and starts a deploy thread on every worker (see Workers).
-- The `factory` section sets which skills factory threads load (`threadSkills`), the model for each factory instance, the owner's own instance and model that run setup threads on a worker, and the thread limits.
-- Every night at 03:00, Hephaestus writes all versions to `~/.hephaestus/backups/` and keeps the newest 14 backups.
-- `~/.hephaestus/secrets.json` (mode 600) holds named secrets that config versions refer to by name. Backups leave it out, so secrets must be entered again after a restore.
+   Approve the new version. Approving deploys it to every worker and to the factory's Hermes profiles.
 
-## T3
+5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret card that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
+6. Give the factory's Hermes profiles a model and a channel for the planner:
 
-Hephaestus drives this host's T3 server, and through it the linked worker environments, with T3's outside MCP server over loopback. It reads T3's port from `~/.t3/userdata/server-runtime.json` (or under `T3CODE_HOME`).
+   ```sh
+   HERMES_HOME=~/.hephaestus/hermes hermes model
+   ```
 
-- Install records the absolute path of the `t3` CLI, because the systemd user manager's `PATH` is usually shorter than a login shell's. On first use, the service runs `t3 auth pairing create` for a 5-minute pairing code and signs itself in with it. No browser is needed. It keeps the 30-day token in `~/.hephaestus/secrets.json`, and signs in again 3 days before the token expires or when T3 rejects it, revoking its earlier session.
-- It records every factory thread with its card, worker, provider instance, model, and config version, and copies each thread's activity into `state.db` while the thread runs. T3 updates items in place, so Hephaestus re-reads from the oldest item that is not final, and fetches the rest of any text T3 cut short. Restarts lose and duplicate nothing. Each thread is polled on its own and backs off up to 5 minutes after errors. A thread T3 no longer has is marked unavailable, and its history stays.
-- T3 cannot send attachments to a linked environment, so content for a worker goes inline in the thread's first message.
-- The Environments page lists the linked environments with reachability, access, and link expiry, and Overview warns 7 days before a link expires.
-- Uninstall revokes the T3 sessions Hephaestus signed in.
+   Then connect a messaging platform to the factory gateway as Hermes's documentation describes. The factory's Hermes home is separate from your own `~/.hermes`.
 
-`HEPHAESTUS_T3_INTEGRATION=1 HEPHAESTUS_T3_WORKER=<environment id> npx vitest run test/t3/integration.test.ts` runs one short thread on a real worker through this host's T3, then archives it and revokes its session.
+## Use it
 
-## Workers
+Ask the planner for work in its channel, or open an issue on a factory repo and admit it on **Work items**. The dashboard shows what needs you first on **Overview**: merges waiting for your approval, issues waiting for admission, improvement proposals, and workers that need a sign-in. **Pause** on Overview stops new factory threads.
 
-A worker is a linked T3 environment that the owner marked on the Environments page. Hephaestus sets each worker up through short T3 threads on the owner's own provider instance (`factory.setup` in the config), so the owner only signs the factory instances in.
-
-1. Name a private config repo on the Environments page, such as `owner/hephaestus-config`. On the first deploy Hephaestus creates it, private, with `gh` when GitHub says it does not exist, and it refuses a repo that is not private. It pushes one tag per deployed version, named with this install's id, from a clone in `~/.hephaestus/config-repo`. Each worker needs `gh` signed in to an account that can read the repo; the deploy script uses it as git's credential helper.
-2. Click Use as a worker. Approving a version in Settings deploys it to every worker, and Deploy on a worker retries. The deploy thread sends `templates/worker/deploy.sh` inline. The script fetches the version's tag, checks that its commit holds that version, installs it under `~/.hephaestus/` on the worker, and adds the Factory Claude (`hephaestus-claude`) and Factory Codex (`hephaestus-codex`) provider instances to T3's `settings.json`, changing no other setting. Writes to that file hold a lock and start over if T3 changed the file meanwhile. The script also keeps the owner's `~/.claude/CLAUDE.md` and `~/.agents/skills` out of factory threads. Hephaestus checks that the worker reports the commit it published.
-3. Click Sign in Claude, open the thread "Hephaestus: sign in Factory Claude" on that worker in T3, and paste the token that `claude setup-token` prints into its secret card. The same token works on every worker.
-4. Click Sign in Codex. The page shows a link and a code; approve the code in a browser within 15 minutes.
-5. After each deploy and sign-in, Hephaestus runs a one-line test turn on each factory instance. The worker is ready once it runs the deployed version and commit, its last deploy succeeded, both test turns since that deploy passed, and T3 reports no problem with either instance.
-
-A worker that is running factory threads gets a new version only after they finish, so a thread never sees instructions or skills change under it; it takes no new threads meanwhile. A failed deploy is retried after 30 minutes, and every worker is deployed again every 6 hours so owner skills added since stay out of Factory Codex. A launch whose reply from T3 was lost is replayed with the same request id (T3 scopes that id to Hephaestus's T3 session, so a replay after a sign-in change can start a second thread; see issue #21), and a task that stalls is given up after a timeout. T3 writes its `settings.json` with its own writer, which Hephaestus cannot lock: the deploy script checks the file just before replacing it, so only a T3 write in the moment between that check and the rename could be lost.
-
-Uninstall stops the service, waits until T3 lists no Hephaestus setup thread as running on each worker, and then runs a cleanup thread there that signs the factory Codex out, removes both instances, and deletes `~/.hephaestus/`. If the logout or the instance removal fails, `~/.hephaestus/` stays on the worker so the cleanup can run again. If any worker cannot be cleaned up, uninstall changes nothing on this host, starts the service again, and names the workers; `uninstall --skip-workers` removes Hephaestus anyway. Revoke the Claude setup token in your Claude account afterwards.
-
-## Factory Hermes
-
-Deploying a version also applies it to the factory Hermes root. The factory's planner, lead, and improver run as Hermes profiles in a Hermes root of their own, `~/.hephaestus/hermes/`, never in the owner's `~/.hermes`. With the factory under the owner's home, the owner's running gateway rewrites the owner's `config.yaml`, and the two gateways run each other's cards and cron jobs (see the Hermes prototype in issue #4).
-
-```sh
-node dist/cli.js hermes sync
-```
-
-`hermes sync` runs every `hermes` command with `HERMES_HOME` set to the factory root. It makes these changes:
-
-- It turns off model-driven triage and Hermes's own review dispatch, so cards move only through Hephaestus.
-- It creates the factory board.
-- It brings each role's profile in line with the current config version: the persona and skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script.
-- It installs and starts `hephaestus-hermes-gateway.service`, the factory's own gateway, which serves only the factory profiles and the factory board.
-
-Install records the `hermes` CLI's path; `--hermes <path>` overrides it. Hermes must run as the same user as Hephaestus, because Hephaestus reads and prunes files Hermes writes in the factory root. Hermes commands also get `HERMES_KANBAN_HOME` set to the factory root, so an inherited value cannot point the factory board at the owner's boards. Hephaestus does not set a model: configure one for the factory root with `HERMES_HOME=~/.hephaestus/hermes hermes model`. The MCP entry points at the port after the dashboard's, where the Hephaestus MCP server (issue #10) will listen.
-
-Card stages map onto the board as the prototype proposed: Admitted is `ready` for the lead, the stages that run in T3 threads are `blocked` with the stage in a comment, Done is `done`, and Abandoned is archived. Cards complete without Hermes PR completion contracts, which need branch protection; Hephaestus checks CI itself.
+The policy decides what merges on its own. `standard` merges when checks pass and the other provider approved the exact head commit, and stops for you when a PR touches `.github/workflows/`. `strict` stops for you on every merge, and `yolo` needs no review.
 
 ## Uninstall
 
@@ -90,14 +69,16 @@ Card stages map onto the board as the prototype proposed: Admitted is `ready` fo
 node dist/cli.js uninstall
 ```
 
-`uninstall` removes the factory setup from each worker (see Workers), stops and removes the service and the factory Hermes gateway, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
+Uninstall removes the factory setup from every worker, then the service and `~/.hephaestus/`, and reports any change to your own config since install. Revoke the Claude setup token in your Claude account afterwards.
 
-## Development
+## Documentation
 
-```sh
-npm run lint
-npm run format:check
-npm run typecheck
-npm test
-npm run test:container   # needs Docker; boots systemd in a privileged container
-```
+- [Install and uninstall](docs/install.md): what install records and changes, and dashboard security
+- [Configuration](docs/configuration.md): config versions, policies, factory settings, backups, and secrets
+- [Workers](docs/workers.md): how workers are deployed, signed in, and cleaned up
+- [The factory](docs/factory.md): intake, the pipeline, the merge gate, revert, and the MCP server
+- [Factory Hermes](docs/hermes.md): the factory's own Hermes home and gateway
+- [T3 integration](docs/t3.md): how Hephaestus drives T3 and records threads
+- [Development](docs/development.md): checks, tests, and integration tests
+
+The MVP plan is in [issue #1](https://github.com/greerviau/hephaestus/issues/1).

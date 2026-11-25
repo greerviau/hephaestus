@@ -81,10 +81,12 @@ describe("syncFactoryHermes", () => {
     );
     expect(service.units).toHaveLength(1);
     expect(service.units[0]).toContain(`HERMES_HOME=${paths.hermes}`);
-    const token = new SecretsFile(paths.secrets).get("hermes-mcp-token");
-    expect(token).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    const secrets = new SecretsFile(paths.secrets);
+    const lead = secrets.get("hermes-mcp-token-lead");
+    expect(lead).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(secrets.get("hermes-mcp-token-planner")).not.toBe(lead);
     expect(readFileSync(join(paths.hermes, "profiles", "lead", ".env"), "utf8")).toContain(
-      `HEPHAESTUS_MCP_TOKEN=${token ?? ""}`,
+      `HEPHAESTUS_MCP_TOKEN=${lead ?? ""}`,
     );
     expect(service.starts).toBe(1);
     expect(existsSync(paths.gatewayUnit)).toBe(true);

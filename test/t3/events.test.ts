@@ -119,4 +119,27 @@ describe("ThreadEvents.setStatusIf", () => {
     expect(events.setStatusIf("worker-1", "thread-1", "starting", "running")).toBe(true);
     expect(events.thread("worker-1", "thread-1")?.status).toBe("running");
   });
+
+  it("moves a refused launch to the worker of its retry, and keeps an unanswered one where it was", () => {
+    const events = new ThreadEvents(openStore(":memory:"));
+    const launch = (environmentId: string) => ({
+      environmentId,
+      title: "t",
+      providerInstanceId: "p",
+      model: "m",
+      configVersion: 1,
+      cardId: "1",
+      kind: "implement",
+    });
+    const envOf = (): string =>
+      (events as unknown as { db: { prepare(sql: string): { get(): { e: string } } } }).db
+        .prepare("SELECT environment_id AS e FROM factory_launches")
+        .get().e;
+    events.recordLaunch("r", launch("w1"));
+    events.finishLaunch("r", { error: "refused" });
+    events.recordLaunch("r", launch("w2"));
+    expect(envOf()).toBe("w2");
+    events.recordLaunch("r", launch("w3"));
+    expect(envOf()).toBe("w2");
+  });
 });

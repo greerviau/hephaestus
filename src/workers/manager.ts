@@ -288,7 +288,8 @@ export class WorkerManager {
 
   /** Factory threads, not setup threads, running on a worker or with a launch T3 has not answered. */
   runningFactoryThreads(environmentId: string): number {
-    const ended = [...ENDED_STATUSES];
+    // A thread waiting on a question runs nothing until someone answers it.
+    const ended = [...ENDED_STATUSES, "waiting"];
     const running = (
       this.db
         .prepare(

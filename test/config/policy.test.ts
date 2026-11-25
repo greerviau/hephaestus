@@ -11,6 +11,8 @@ describe("policy presets", () => {
       maxReviewRounds: 2,
       openIssueCap: 5,
       autoRevert: true,
+      allowNoChecks: false,
+      requiredChecks: [],
     });
   });
 
@@ -23,6 +25,8 @@ describe("policy presets", () => {
       maxReviewRounds: 2,
       openIssueCap: 5,
       autoRevert: true,
+      allowNoChecks: false,
+      requiredChecks: [],
     });
   });
 
