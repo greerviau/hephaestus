@@ -51,17 +51,15 @@ export function unitFile(nodePath: string, cliPath: string): string {
 export interface RunResult {
   status: number;
   stdout: string;
+  stderr?: string;
 }
 
 export type Run = (command: string, args: string[]) => RunResult;
 
 const runCommand: Run = (command, args) => {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "inherit"],
-  });
+  const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   if (result.error) throw result.error;
-  return { status: result.status ?? 1, stdout: result.stdout };
+  return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
 };
 
 /** `systemctl is-active` answers that confirm no service process is running. */
@@ -123,7 +121,10 @@ export class SystemdUserService implements ServiceManager {
   private systemctl(...args: string[]): void {
     const result = this.run("systemctl", ["--user", ...args]);
     if (result.status !== 0) {
-      throw new Error(`systemctl --user ${args.join(" ")} exited with ${String(result.status)}`);
+      const detail = result.stderr?.trim() ?? "";
+      throw new Error(
+        `systemctl --user ${args.join(" ")} exited with ${String(result.status)}${detail === "" ? "" : `: ${detail}`}`,
+      );
     }
   }
 }
