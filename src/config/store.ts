@@ -144,6 +144,20 @@ export class ConfigStore {
     this.transition(id, "draft", "rejected");
   }
 
+  /** Throws unless the version is approved and built from the deployed version. */
+  assertDeployable(id: number): void {
+    this.assertState(id, "approved");
+    const deployed = this.db
+      .prepare("SELECT id FROM config_versions WHERE state = 'deployed'")
+      .get() as { id: number } | undefined;
+    const { parentId } = this.get(id);
+    if (deployed !== undefined && parentId !== deployed.id) {
+      throw new Error(
+        `Version ${String(id)} was built from version ${String(parentId)}, but version ${String(deployed.id)} is deployed. Build it again from version ${String(deployed.id)}.`,
+      );
+    }
+  }
+
   /**
    * Marks an approved version as deployed and the previously deployed one as
    * superseded. The version must be built from the deployed version, so
@@ -151,16 +165,7 @@ export class ConfigStore {
    */
   markDeployed(id: number): void {
     this.db.transaction(() => {
-      this.assertState(id, "approved");
-      const deployed = this.db
-        .prepare("SELECT id FROM config_versions WHERE state = 'deployed'")
-        .get() as { id: number } | undefined;
-      const { parentId } = this.get(id);
-      if (deployed !== undefined && parentId !== deployed.id) {
-        throw new Error(
-          `Version ${String(id)} was built from version ${String(parentId)}, but version ${String(deployed.id)} is deployed. Build it again from version ${String(deployed.id)}.`,
-        );
-      }
+      this.assertDeployable(id);
       this.db
         .prepare("UPDATE config_versions SET state = 'superseded' WHERE state = 'deployed'")
         .run();

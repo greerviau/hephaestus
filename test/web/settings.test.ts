@@ -184,6 +184,36 @@ describe("Settings page", () => {
     expect(response.status).toBe(409);
   });
 
+  it("deploys an approved version through the deploy hook", async () => {
+    const deployed: number[] = [];
+    await new Promise((resolve) => server.close(resolve));
+    server = createDashboardServer({
+      db,
+      instanceId: "test",
+      routes: settingsRoutes(store, (id) => {
+        deployed.push(id);
+        return Promise.resolve({});
+      }),
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    const draft = store.createVersion({
+      document: sampleConfig(),
+      author: "o",
+      message: "d",
+      parentId: 1,
+    });
+    store.approve(draft.id);
+
+    expect(await (await get(`/settings/versions/${String(draft.id)}`)).text()).toContain(
+      ">Deploy<",
+    );
+    const response = await post(`/settings/versions/${String(draft.id)}/deploy`, {});
+
+    expect(response.status).toBe(303);
+    expect(deployed).toEqual([draft.id]);
+  });
+
   it("answers 404 for a version that does not exist", async () => {
     expect((await get("/settings/versions/99")).status).toBe(404);
     expect((await get("/api/config/versions/99")).status).toBe(404);

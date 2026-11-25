@@ -7,6 +7,12 @@ import { createDashboardServer } from "../../src/server.js";
 import { openStore } from "../../src/store.js";
 import type { Environments } from "../../src/t3/adapter.js";
 import { environmentRoutes, linkExpiryWarnings } from "../../src/web/environments.js";
+import { ConfigStore } from "../../src/config/store.js";
+import { ThreadEvents } from "../../src/t3/events.js";
+import { FactoryThreads } from "../../src/t3/threads.js";
+import type { LaunchOptions, T3Adapter } from "../../src/t3/adapter.js";
+import { WorkerManager } from "../../src/workers/manager.js";
+import { sampleConfig } from "../config/fixtures.js";
 
 const PASSWORD = "correct horse battery";
 const NOW = Date.parse("2026-11-25T00:00:00Z");
@@ -47,15 +53,52 @@ function environments(): Environments {
   };
 }
 
-async function start(source: {
-  environments(): Promise<Environments>;
-}): Promise<{ base: string; cookie: string }> {
+let manager: WorkerManager | undefined;
+let configRepo: string | undefined;
+const launches: LaunchOptions[] = [];
+
+async function start(
+  source: {
+    environments(): Promise<Environments>;
+  },
+  withWorkers = false,
+): Promise<{ base: string; cookie: string }> {
   db = openStore(":memory:");
   writePasswordHash(db, hashPassword(PASSWORD));
+  launches.length = 0;
+  configRepo = undefined;
+  const store = new ConfigStore(db);
+  store.createVersion({ document: sampleConfig(), author: "t", message: "first" });
+  const t3 = {
+    launchThread: (options: LaunchOptions) => {
+      launches.push(options);
+      return Promise.resolve({
+        threadId: `t${String(launches.length)}`,
+        runId: null,
+        projectId: "p",
+      });
+    },
+  } as unknown as T3Adapter;
+  const events = new ThreadEvents(db);
+  manager = new WorkerManager({
+    db,
+    store,
+    t3,
+    threads: new FactoryThreads(t3, events),
+    events,
+    configRepo: () => undefined,
+  });
+  const controls = {
+    manager,
+    configRepo: () => configRepo,
+    setConfigRepo: (slug: string) => {
+      configRepo = slug;
+    },
+  };
   server = createDashboardServer({
     db,
     instanceId: "test",
-    routes: environmentRoutes(source, () => NOW),
+    routes: environmentRoutes(source, () => NOW, withWorkers ? controls : undefined),
     overview: () => linkExpiryWarnings(source, () => NOW),
   });
   const running = server;
@@ -140,5 +183,82 @@ describe("link errors", () => {
     expect(html).not.toContain("connection refused");
     expect(api).not.toContain("connection refused");
     expect(html).toContain("last call failed");
+  });
+});
+
+describe("worker setup", () => {
+  async function post(
+    base: string,
+    cookie: string,
+    path: string,
+    form: Record<string, string> = {},
+  ): Promise<Response> {
+    return fetch(`${base}${path}`, {
+      method: "POST",
+      headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams(form).toString(),
+      redirect: "manual",
+    });
+  }
+
+  it("marks an environment as a worker and names its next step", async () => {
+    const { base, cookie } = await start(
+      { environments: () => Promise.resolve(environments()) },
+      true,
+    );
+
+    expect((await post(base, cookie, "/environments/w1/enable")).status).toBe(303);
+    const html = await (await fetch(`${base}/environments`, { headers: { cookie } })).text();
+
+    expect(manager?.worker("w1")).toMatchObject({ label: "worker <one>", enabled: true });
+    expect(html).toContain("No config version is deployed yet.");
+    expect(html).toContain("Use as a worker");
+  });
+
+  it("starts a Codex sign-in and shows the device code once the thread prints it", async () => {
+    const { base, cookie } = await start(
+      { environments: () => Promise.resolve(environments()) },
+      true,
+    );
+    await post(base, cookie, "/environments/w1/enable");
+    await post(base, cookie, "/environments/w1/sign-in-codex");
+    expect(launches.at(-1)?.message).toContain("codex login --device-auth");
+
+    new ThreadEvents(db as Database).upsertItems("w1", "t1", [
+      {
+        itemId: "c",
+        position: 1,
+        type: "command_execution",
+        status: "completed",
+        text: "   https://auth.openai.com/codex/device\n   ABCD-12345",
+      },
+    ]);
+    await manager?.tick();
+    const html = await (await fetch(`${base}/environments`, { headers: { cookie } })).text();
+
+    expect(html).toContain("ABCD-12345");
+  });
+
+  it("saves the config repo name and refuses one that is not owner/name", async () => {
+    const { base, cookie } = await start(
+      { environments: () => Promise.resolve(environments()) },
+      true,
+    );
+
+    expect(
+      (await post(base, cookie, "/environments/config-repo", { slug: "octo/config" })).status,
+    ).toBe(303);
+    expect(configRepo).toBe("octo/config");
+    expect(
+      (await post(base, cookie, "/environments/config-repo", { slug: "not a repo" })).status,
+    ).toBe(400);
+  });
+
+  it("refuses an environment T3 does not link", async () => {
+    const { base, cookie } = await start(
+      { environments: () => Promise.resolve(environments()) },
+      true,
+    );
+    expect((await post(base, cookie, "/environments/nope/enable")).status).toBe(404);
   });
 });

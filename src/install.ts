@@ -47,6 +47,8 @@ export interface InstallOptions {
   t3Home?: string;
   /** The absolute path of the `hermes` CLI, for the factory gateway. */
   hermesPath?: string;
+  gitPath?: string;
+  ghPath?: string;
   /** Skills the owner chose to import into the first config version. */
   skills: ImportedSkill[];
   /** Resolves once this install's dashboard answers, and rejects if it never does. */
@@ -81,6 +83,8 @@ export async function install(options: InstallOptions): Promise<void> {
     ...(options.t3Path === undefined ? {} : { t3Path: options.t3Path }),
     ...(options.t3Home === undefined ? {} : { t3Home: options.t3Home }),
     ...(options.hermesPath === undefined ? {} : { hermesPath: options.hermesPath }),
+    ...(options.gitPath === undefined ? {} : { gitPath: options.gitPath }),
+    ...(options.ghPath === undefined ? {} : { ghPath: options.ghPath }),
   };
 
   mkdirSync(paths.root, { mode: 0o700 });

@@ -24,8 +24,40 @@ export interface ProjectConfig {
   policy: Policy;
 }
 
+export interface ModelChoice {
+  model: string;
+  /** Provider options such as `effort`, by T3 option id. */
+  options?: Record<string, string | boolean>;
+}
+
+/** How Hephaestus runs factory threads and the setup threads on each worker. */
+export interface FactorySettings {
+  /** Names of skills in `FactoryConfig.skills` that factory threads load. */
+  threadSkills: string[];
+  /** The model each factory instance runs. */
+  models: { claude: ModelChoice; codex: ModelChoice };
+  /** The owner's own provider instance and model that run deploy and sign-in threads on a worker. */
+  setup: ModelChoice & { instanceId: string };
+  limits: {
+    /** Running factory threads per worker. */
+    threadsPerWorker: number;
+    /** Running factory threads across all workers. */
+    threads: number;
+    /** Factory threads started per UTC day. */
+    startsPerDay: number;
+  };
+}
+
+export const DEFAULT_FACTORY: FactorySettings = {
+  threadSkills: [],
+  models: { claude: { model: "claude-sonnet-5-5" }, codex: { model: "gpt-6.2-sol" } },
+  setup: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" },
+  limits: { threadsPerWorker: 2, threads: 4, startsPerDay: 40 },
+};
+
 /** The whole factory config. A config version is one snapshot of it. */
 export interface FactoryConfig {
+  factory: FactorySettings;
   /** Keyed by GitHub `owner/repo`. */
   projects: Record<string, ProjectConfig>;
   roles: Record<RoleName, RoleConfig>;
@@ -63,8 +95,22 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Fills in what a project may leave out: the `standard` preset and an empty overrides map. */
+/**
+ * Fills in what a config may leave out: the factory settings' defaults, and
+ * for each project the `standard` preset and an empty overrides map.
+ */
 export function normalizeConfig(value: unknown): unknown {
+  if (!isRecord(value)) return value;
+  const factory = isRecord(value.factory) ? value.factory : {};
+  const limits = isRecord(factory.limits) ? factory.limits : {};
+  value = {
+    ...value,
+    factory: {
+      ...structuredClone(DEFAULT_FACTORY),
+      ...factory,
+      limits: { ...DEFAULT_FACTORY.limits, ...limits },
+    },
+  };
   if (!isRecord(value) || !isRecord(value.projects)) return value;
   const projects: Record<string, unknown> = {};
   for (const [repo, project] of Object.entries(value.projects)) {
@@ -99,8 +145,49 @@ export function validateConfig(value: unknown): FactoryConfig {
     ]);
   }
   for (const key of Object.keys(root)) {
-    if (!["projects", "roles", "instructions", "skills"].includes(key)) {
+    if (!["factory", "projects", "roles", "instructions", "skills"].includes(key)) {
       problems.push(`config.${key} is not a config section`);
+    }
+  }
+
+  const factory = object("factory", root.factory);
+  if (factory !== undefined) {
+    const model = (path: string, v: unknown): Record<string, unknown> | undefined => {
+      const choice = object(path, v);
+      if (choice === undefined) return undefined;
+      if (typeof choice.model !== "string" || choice.model === "") {
+        problems.push(`${path}.model must be a non-empty string`);
+      }
+      if (choice.options !== undefined) {
+        const options = object(`${path}.options`, choice.options) ?? {};
+        for (const [id, option] of Object.entries(options)) {
+          if (typeof option !== "string" && typeof option !== "boolean") {
+            problems.push(`${path}.options.${id} must be a string or true or false`);
+          }
+        }
+      }
+      return choice;
+    };
+    const models = object("factory.models", factory.models);
+    if (models !== undefined) {
+      model("factory.models.claude", models.claude);
+      model("factory.models.codex", models.codex);
+    }
+    const setup = model("factory.setup", factory.setup);
+    if (setup !== undefined && (typeof setup.instanceId !== "string" || setup.instanceId === "")) {
+      problems.push("factory.setup.instanceId must be a non-empty string");
+    }
+    const limits = object("factory.limits", factory.limits) ?? {};
+    for (const name of ["threadsPerWorker", "threads", "startsPerDay"]) {
+      if (!Number.isInteger(limits[name]) || (limits[name] as number) < 0) {
+        problems.push(`factory.limits.${name} must be a whole number of 0 or more`);
+      }
+    }
+    if (
+      !Array.isArray(factory.threadSkills) ||
+      factory.threadSkills.some((skill) => typeof skill !== "string")
+    ) {
+      problems.push("factory.threadSkills must be a list of skill names");
     }
   }
 
@@ -181,6 +268,12 @@ export function validateConfig(value: unknown): FactoryConfig {
         problems.push(`skills.${name}.${JSON.stringify(path)} must be a relative path`);
       }
       string(`skills.${name}.${path}`, text);
+    }
+  }
+  const threadSkills = (factory as { threadSkills?: unknown } | undefined)?.threadSkills;
+  for (const skill of Array.isArray(threadSkills) ? (threadSkills as unknown[]) : []) {
+    if (typeof skill === "string" && !Object.hasOwn(skills, skill)) {
+      problems.push(`factory.threadSkills names unknown skill ${skill}`);
     }
   }
   for (const name of ROLE_NAMES) {

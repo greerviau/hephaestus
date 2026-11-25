@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 import { defineOwn } from "./diff.js";
 import {
+  DEFAULT_FACTORY,
   isSafeRelativePath,
   type FactoryConfig,
   type RoleConfig,
@@ -51,6 +52,7 @@ export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
     names.add(skill.name);
   }
   return {
+    factory: structuredClone(DEFAULT_FACTORY),
     projects: {},
     roles,
     instructions: { factory: template("instructions/factory.md") },

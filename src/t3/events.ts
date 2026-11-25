@@ -28,9 +28,12 @@ export interface FactoryThread {
   model: string;
   configVersion: number;
   cardId: string | null;
+  /** What the thread is for, such as `implement`, `review`, or `setup`. */
+  kind?: string;
 }
 
 export interface StoredThread extends FactoryThread {
+  kind: string;
   status: string;
   createdAt: string;
   updatedAt: string;
@@ -44,6 +47,7 @@ interface ThreadRow {
   model: string;
   config_version: number;
   card_id: string | null;
+  kind: string;
   status: string;
   created_at: string;
   updated_at: string;
@@ -58,6 +62,7 @@ function toThread(row: ThreadRow): StoredThread {
     model: row.model,
     configVersion: row.config_version,
     cardId: row.card_id,
+    kind: row.kind,
     status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -80,8 +85,8 @@ export class ThreadEvents {
     this.db
       .prepare(
         `INSERT INTO factory_threads (environment_id, thread_id, title, provider_instance_id, model,
-           config_version, card_id, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?)
+           config_version, card_id, kind, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?)
          ON CONFLICT (environment_id, thread_id) DO NOTHING`,
       )
       .run(
@@ -92,6 +97,7 @@ export class ThreadEvents {
         thread.model,
         thread.configVersion,
         thread.cardId,
+        thread.kind ?? "factory",
         at,
         at,
       );
@@ -187,8 +193,8 @@ export class ThreadEvents {
     this.db
       .prepare(
         `INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id,
-           model, config_version, card_id, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+           model, config_version, card_id, kind, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
          ON CONFLICT (client_request_id) DO UPDATE SET status = 'pending', error = NULL, updated_at = excluded.updated_at`,
       )
       .run(
@@ -199,6 +205,7 @@ export class ThreadEvents {
         thread.model,
         thread.configVersion,
         thread.cardId,
+        thread.kind ?? "factory",
         at,
         at,
       );

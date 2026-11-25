@@ -1,7 +1,8 @@
-import type { FactoryConfig } from "../../src/config/document.js";
+import { DEFAULT_FACTORY, type FactoryConfig } from "../../src/config/document.js";
 
 export function sampleConfig(): FactoryConfig {
   return {
+    factory: structuredClone(DEFAULT_FACTORY),
     projects: {
       "octo/app": { policy: { preset: "standard", overrides: {} } },
     },
