@@ -35,7 +35,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "hephaestus-service-"));
   unitPath = join(dir, "systemd/user/hephaestus.service");
   calls = [];
-  responses = {};
+  responses = { "systemctl --user cat hephaestus.service": { status: 1, stdout: "" } };
 });
 
 afterEach(() => {
@@ -63,6 +63,7 @@ describe("SystemdUserService.install", () => {
 
     expect(readFileSync(unitPath, "utf8")).toContain(UNIT_MARKER);
     expect(calls).toEqual([
+      "systemctl --user cat hephaestus.service",
       "systemctl --user daemon-reload",
       "systemctl --user enable --now hephaestus.service",
     ]);
@@ -77,6 +78,16 @@ describe("SystemdUserService.install", () => {
     }).toThrow(UnitExistsError);
     expect(readFileSync(unitPath, "utf8")).toContain("the owner's own unit");
     expect(calls).toEqual([]);
+  });
+
+  it("refuses when systemd already knows a unit with the same name elsewhere", () => {
+    responses["systemctl --user cat hephaestus.service"] = { status: 0, stdout: "# /elsewhere\n" };
+
+    expect(() => {
+      service().install(unitFile("/usr/bin/node", "/opt/cli.js"));
+    }).toThrow(UnitExistsError);
+    expect(existsSync(unitPath)).toBe(false);
+    expect(calls).toEqual(["systemctl --user cat hephaestus.service"]);
   });
 
   it("refuses a symlink at the unit path", () => {
@@ -117,10 +128,23 @@ describe("SystemdUserService.remove", () => {
     ]);
   });
 
-  it("succeeds without touching systemd when there is no unit", () => {
+  it("succeeds when there is no unit and no service is running", () => {
+    responses["systemctl --user is-active hephaestus.service"] = {
+      status: 3,
+      stdout: "inactive\n",
+    };
+
     service().remove();
 
-    expect(calls).toEqual([]);
+    expect(calls).toEqual(["systemctl --user is-active hephaestus.service"]);
+  });
+
+  it("refuses when the unit file is gone but the service still runs", () => {
+    responses["systemctl --user is-active hephaestus.service"] = { status: 0, stdout: "active\n" };
+
+    expect(() => {
+      service().remove();
+    }).toThrow(/still active/);
   });
 
   it("leaves a unit that Hephaestus did not write", () => {

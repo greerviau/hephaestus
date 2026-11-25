@@ -76,6 +76,10 @@ export class SystemdUserService implements ServiceManager {
 
   install(unit: string): void {
     if (this.unitExists()) throw new UnitExistsError(this.unitPath);
+    // systemd may load a unit of the same name from another folder; never act on that one.
+    if (this.run("systemctl", ["--user", "cat", SERVICE_NAME]).status === 0) {
+      throw new UnitExistsError(SERVICE_NAME);
+    }
     mkdirSync(dirname(this.unitPath), { recursive: true });
     writeFileSync(this.unitPath, unit, { flag: "wx" });
     this.systemctl("daemon-reload");
@@ -83,19 +87,27 @@ export class SystemdUserService implements ServiceManager {
   }
 
   remove(): void {
-    if (!this.unitExists()) return;
+    if (!this.unitExists()) {
+      // The file can be gone while the service it started still runs.
+      this.assertStopped();
+      return;
+    }
     if (!readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
       throw new Error(`${this.unitPath} was not written by Hephaestus; leaving it in place.`);
     }
     this.systemctl("disable", "--now", SERVICE_NAME);
+    this.assertStopped();
+    rmSync(this.unitPath);
+    this.systemctl("daemon-reload");
+  }
+
+  private assertStopped(): void {
     const state = this.run("systemctl", ["--user", "is-active", SERVICE_NAME]).stdout.trim();
     if (!STOPPED_STATES.has(state)) {
       throw new Error(
         `${SERVICE_NAME} is still ${state || "in an unknown state"}; stop it and run uninstall again.`,
       );
     }
-    rmSync(this.unitPath);
-    this.systemctl("daemon-reload");
   }
 
   private unitExists(): boolean {

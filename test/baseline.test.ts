@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -139,6 +139,49 @@ describe("takeBaseline", () => {
 
     expect(baseline.entries[".hermes/profiles/work/config.yaml"]).toMatch(/^sha256:/);
     expect(baseline.entries[".hermes/profiles/work/sessions/s1.json"]).toBeUndefined();
+  });
+
+  it("records a file it cannot read instead of failing", () => {
+    write(".claude/CLAUDE.md", "# x\n");
+    chmodSync(join(home, ".claude/CLAUDE.md"), 0o000);
+    try {
+      expect(takeBaseline(home).entries[".claude/CLAUDE.md"]).toBe("unreadable:EACCES");
+    } finally {
+      chmodSync(join(home, ".claude/CLAUDE.md"), 0o600);
+    }
+  });
+
+  it("records a folder it cannot list instead of failing", () => {
+    write(".claude/skills/locked/SKILL.md", "# x\n");
+    chmodSync(join(home, ".claude/skills/locked"), 0o000);
+    try {
+      expect(takeBaseline(home).entries[".claude/skills/locked"]).toBe("unreadable:EACCES");
+    } finally {
+      chmodSync(join(home, ".claude/skills/locked"), 0o700);
+    }
+  });
+
+  it("covers Codex instruction overrides and rules", () => {
+    write(".codex/AGENTS.override.md", "# override\n");
+    write(".codex/rules/default.rules", "rule\n");
+
+    const entries = takeBaseline(home).entries;
+
+    expect(entries[".codex/AGENTS.override.md"]).toMatch(/^sha256:/);
+    expect(entries[".codex/rules/default.rules"]).toMatch(/^sha256:/);
+  });
+
+  it("keeps a backslash in a file name distinct from a folder separator", () => {
+    write(".claude/skills/sample\\SKILL.md", "flat\n");
+    write(".claude/skills/sample/SKILL.md", "nested\n");
+
+    const entries = takeBaseline(home).entries;
+    const flat = entries[".claude/skills/sample\\SKILL.md"];
+    const nested = entries[".claude/skills/sample/SKILL.md"];
+
+    expect(flat).toMatch(/^sha256:/);
+    expect(nested).toMatch(/^sha256:/);
+    expect(flat).not.toBe(nested);
   });
 
   it("treats a target under a regular file as absent", () => {

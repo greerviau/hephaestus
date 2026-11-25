@@ -34,7 +34,9 @@ export async function readPassword(prompt: string): Promise<string> {
             reject(new Error("Cancelled."));
             return;
           }
-          if (char === "\u007f" || char === "\b") password = password.slice(0, -1);
+          // Remove one code point, so an emoji is not left as half a surrogate pair.
+          if (char === "\u007f" || char === "\b")
+            password = Array.from(password).slice(0, -1).join("");
           else password += char;
         }
       };

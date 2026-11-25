@@ -48,7 +48,11 @@ export const BASELINE_TARGETS = [
     root: "claude",
     paths: ["CLAUDE.md", "settings.json", "settings.local.json", "skills", "agents", "commands"],
   },
-  { group: "codex", root: "codex", paths: ["config.toml", "AGENTS.md", "skills"] },
+  {
+    group: "codex",
+    root: "codex",
+    paths: ["config.toml", "AGENTS.md", "AGENTS.override.md", "rules", "skills"],
+  },
   { group: "codex", root: "agents", paths: ["AGENTS.md", "skills"] },
   { group: "t3", root: "t3", paths: ["userdata/settings.json", "userdata/keybindings.json"] },
 ] as const satisfies readonly {
@@ -59,7 +63,8 @@ export const BASELINE_TARGETS = [
 
 /**
  * `sha256:<hex>` for a file, `symlink:<target>` for a link (followed by
- * ` sha256:<hex>` when it points at a file), and `absent` for a missing target.
+ * ` sha256:<hex>` when it points at a file), `unreadable:<code>` for a file
+ * that cannot be read, and `absent` for a missing target.
  * The files inside a linked directory are recorded under the link's path.
  */
 export type BaselineEntry = string;
@@ -115,7 +120,7 @@ function isMissing(error: unknown): boolean {
 
 function key(home: string, absolute: string): string {
   const path = relative(home, absolute);
-  return path.startsWith("..") || isAbsolute(path) ? absolute : path.split("\\").join("/");
+  return path.startsWith("..") || isAbsolute(path) ? absolute : path;
 }
 
 /**
@@ -172,13 +177,29 @@ function recordDirectory(
   const real = realpathSync(absolute);
   if (ancestors.has(real)) return;
   const below = new Set(ancestors).add(real);
-  for (const child of listDirectory(absolute)) {
+  let children: string[];
+  try {
+    children = listDirectory(absolute);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== "EACCES" && code !== "EPERM") throw error;
+    entries[key(home, absolute)] = `unreadable:${code}`;
+    return;
+  }
+  for (const child of children) {
     record(home, join(absolute, child), entries, below, false);
   }
 }
 
+/** A file's hash, or `unreadable:<code>` when it exists but cannot be read. */
 function hashFile(path: string): string {
-  return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  try {
+    return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "EACCES" || code === "EPERM") return `unreadable:${code}`;
+    throw error;
+  }
 }
 
 /** Entries that differ between two baselines, sorted by path. A missing entry counts as absent. */
