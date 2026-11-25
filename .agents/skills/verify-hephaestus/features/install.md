@@ -24,7 +24,7 @@ test/container/as-owner.sh "$name" systemctl --user is-active hephaestus.service
 test/container/as-owner.sh "$name" sh -c 'ls -la ~/.hephaestus && cat ~/.config/systemd/user/hephaestus.service'
 ```
 
-For the hidden terminal prompt, allocate a TTY and type the password when asked:
+For the hidden terminal prompt, first uninstall any earlier install with `test/container/as-owner.sh "$name" node /opt/hephaestus/dist/cli.js uninstall`, then allocate a TTY and type the password when asked:
 
 ```sh
 uid=$(docker exec "$name" id -u owner)
@@ -35,5 +35,4 @@ docker exec -it --user owner --workdir /home/owner \
 
 ## Gotchas
 
-- The dashboard needs about a second after `install` returns before it answers.
 - Without a user manager (`loginctl enable-linger owner`), `systemctl --user` fails. `up.sh` sets this up.

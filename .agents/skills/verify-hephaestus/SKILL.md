@@ -17,9 +17,9 @@ All commands run from the repo root and need Docker.
 name=$(test/container/up.sh)
 ```
 
-`up.sh` builds an image from the checkout (`npm ci`, `npm run build`), boots systemd in a container from that exact image ID, and starts the user manager for `owner`.
+`up.sh` builds an image from the checkout (`npm ci`, `npm run build`) under the tag `hephaestus-test:<name>`, boots systemd in a container from it, and starts the user manager for `owner`.
 It prints the container name when the user manager's bus is up, which is the ready signal.
-Each run uses its own container and image ID, so instances run side by side.
+Each run builds its own image tag and container, so instances run side by side.
 The container is the instance; record its name instead of a PID.
 
 ## Doctor
@@ -63,12 +63,12 @@ Capture each command, its output, HTTP status codes and `Set-Cookie` headers, `s
 test/container/down.sh "$name"
 ```
 
-This removes the container, everything in it, and its image unless another container uses it. Evidence on the host stays.
+This removes the container, everything in it, and its image tag. Evidence on the host stays.
 
 ## Helpers
 
 - `test/container/up.sh [name]`: build the image and boot a container; prints its name.
 - `test/container/as-owner.sh <name> <command...>`: run a command as `owner` with the user manager reachable.
-- `test/container/down.sh <name>`: remove the container and its image.
+- `test/container/down.sh <name>`: remove the container and its image tag.
 - `test/container/source-hash.sh [root]`: print the source hash the doctor compares.
 - `.agents/skills/verify-hephaestus/scripts/journey.sh`: launch, run the full journey, save evidence, clean up. Prints the evidence directory.
