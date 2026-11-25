@@ -1,0 +1,38 @@
+{
+  "name": "hephaestus",
+  "version": "0.0.0",
+  "description": "A factory management layer on T3 Code and Hermes Agent.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=11"
+  },
+  "bin": {
+    "hephaestus": "dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:container": "sh test/container/run.sh"
+  },
+  "dependencies": {
+    "better-sqlite3": "13.0.3"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/better-sqlite3": "9.6.0",
+    "@types/node": "22.20.5",
+    "eslint": "10.15.0",
+    "globals": "17.14.0",
+    "prettier": "3.9.10",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.74.0",
+    "vitest": "5.1.0"
+  }
+}
