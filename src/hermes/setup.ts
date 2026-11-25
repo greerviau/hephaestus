@@ -1,0 +1,62 @@
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync } from "node:fs";
+import type { Database } from "better-sqlite3";
+import type { SecretsFile } from "../config/secrets.js";
+import type { ConfigStore } from "../config/store.js";
+import type { Paths } from "../paths.js";
+import type { ServiceManager } from "../service.js";
+import { FactoryBoard } from "./board.js";
+import type { HermesRun } from "./cli.js";
+import { gatewayUnitFile } from "./gateway.js";
+import { FactoryProfiles } from "./profiles.js";
+
+const MCP_TOKEN_SECRET = "hermes-mcp-token";
+const MCP_TOKEN_ENV = "HEPHAESTUS_MCP_TOKEN";
+
+export interface SyncOptions {
+  paths: Paths;
+  store: ConfigStore;
+  db: Database;
+  secrets: SecretsFile;
+  hermesPath: string;
+  /** Runs `hermes` against the factory root. */
+  run: HermesRun;
+  /** The factory gateway's unit. */
+  service: ServiceManager;
+  /** Where the factory profiles reach Hephaestus's MCP server. */
+  mcpUrl: string;
+}
+
+/**
+ * Brings the factory Hermes root in line with the current config version:
+ * root settings, the factory board, the three role profiles, and the
+ * factory gateway's unit. Safe to run again; each step checks first.
+ */
+export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
+  const { paths, run } = options;
+  mkdirSync(paths.hermes, { recursive: true, mode: 0o700 });
+  const hermes = { root: paths.hermes, run };
+
+  // Cards move only through Hephaestus: no model-driven triage, and no Hermes
+  // reviewer spawned for cards sitting in `review`.
+  await run(["config", "set", "kanban.auto_decompose", "false"]);
+  await run(["config", "set", "kanban.review_dispatch", "false"]);
+  await new FactoryBoard(hermes).ensure();
+
+  const version = options.store.current();
+  if (version === undefined) throw new Error("There is no config version to apply.");
+  let token = options.secrets.get(MCP_TOKEN_SECRET);
+  if (token === undefined) {
+    token = randomBytes(32).toString("base64url");
+    options.secrets.set(MCP_TOKEN_SECRET, token);
+  }
+  await new FactoryProfiles(hermes, options.db).sync(version.document, version.id, {
+    url: options.mcpUrl,
+    tokenEnv: MCP_TOKEN_ENV,
+    token,
+  });
+
+  if (!existsSync(paths.gatewayUnit)) {
+    options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
+  }
+}

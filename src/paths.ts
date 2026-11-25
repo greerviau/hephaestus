@@ -2,6 +2,7 @@ import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
 
 export const SERVICE_NAME = "hephaestus.service";
+export const GATEWAY_SERVICE_NAME = "hephaestus-hermes-gateway.service";
 
 export interface Paths {
   home: string;
@@ -11,7 +12,11 @@ export interface Paths {
   baseline: string;
   backups: string;
   secrets: string;
+  /** The factory Hermes root: a Hermes home of its own, separate from the owner's. */
+  hermes: string;
   unit: string;
+  /** The factory Hermes gateway's unit, beside Hephaestus's own. */
+  gatewayUnit: string;
 }
 
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
@@ -28,6 +33,8 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
     baseline: join(root, "baseline.json"),
     backups: join(root, "backups"),
     secrets: join(root, "secrets.json"),
+    hermes: join(root, "hermes"),
     unit: join(configHome, "systemd", "user", SERVICE_NAME),
+    gatewayUnit: join(configHome, "systemd", "user", GATEWAY_SERVICE_NAME),
   };
 }

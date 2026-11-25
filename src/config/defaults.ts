@@ -32,7 +32,17 @@ export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
   const roles: Record<RoleName, RoleConfig> = {
     planner: role("planner"),
     lead: role("lead"),
-    improver: role("improver"),
+    improver: {
+      ...role("improver"),
+      cron: [
+        {
+          name: "nightly",
+          schedule: "30 2 * * *",
+          prompt:
+            "Run your nightly review of the day's factory threads and propose config changes.",
+        },
+      ],
+    },
   };
   const names = new Set<string>();
   for (const skill of skills) {

@@ -8,6 +8,16 @@ export interface RoleConfig {
   persona: string;
   /** Names of skills in `FactoryConfig.skills` that the role loads. */
   skills: string[];
+  /** Scheduled jobs for the role's Hermes profile. */
+  cron?: CronJob[];
+}
+
+export interface CronJob {
+  /** Unique within the role; Hephaestus names the Hermes job `hephaestus-<name>`. */
+  name: string;
+  /** A Hermes schedule: a cron expression, or forms such as `every 2h`. */
+  schedule: string;
+  prompt: string;
 }
 
 export interface ProjectConfig {
@@ -128,6 +138,28 @@ export function validateConfig(value: unknown): FactoryConfig {
     string(`roles.${name}.persona`, role.persona);
     if (!Array.isArray(role.skills) || role.skills.some((skill) => typeof skill !== "string")) {
       problems.push(`roles.${name}.skills must be a list of skill names`);
+    }
+    if (role.cron !== undefined) {
+      const jobs: unknown[] = Array.isArray(role.cron) ? role.cron : [];
+      if (!Array.isArray(role.cron)) problems.push(`roles.${name}.cron must be a list`);
+      const seen = new Set<string>();
+      for (const [index, job] of jobs.entries()) {
+        const path = `roles.${name}.cron[${String(index)}]`;
+        const entry = object(path, job);
+        if (entry === undefined) continue;
+        if (typeof entry.name !== "string" || !NAME.test(entry.name)) {
+          problems.push(`${path}.name must be a simple name`);
+        } else if (seen.has(entry.name)) {
+          problems.push(`${path}.name repeats ${entry.name}`);
+        } else {
+          seen.add(entry.name);
+        }
+        for (const field of ["schedule", "prompt"] as const) {
+          if (typeof entry[field] !== "string" || entry[field] === "") {
+            problems.push(`${path}.${field} must be a non-empty string`);
+          }
+        }
+      }
     }
   }
   for (const name of Object.keys(roles)) {

@@ -61,13 +61,32 @@ Hephaestus drives this host's T3 server, and through it the linked worker enviro
 
 `HEPHAESTUS_T3_INTEGRATION=1 HEPHAESTUS_T3_WORKER=<environment id> npx vitest run test/t3/integration.test.ts` runs one short thread on a real worker through this host's T3, then archives it and revokes its session.
 
+## Factory Hermes
+
+The factory's planner, lead, and improver run as Hermes profiles in a Hermes root of their own, `~/.hephaestus/hermes/`, never in the owner's `~/.hermes`. With the factory under the owner's home, the owner's running gateway rewrites the owner's `config.yaml`, and the two gateways run each other's cards and cron jobs (see the Hermes prototype in issue #4).
+
+```sh
+node dist/cli.js hermes sync
+```
+
+`hermes sync` runs every `hermes` command with `HERMES_HOME` set to the factory root. It makes these changes:
+
+- It turns off model-driven triage and Hermes's own review dispatch, so cards move only through Hephaestus.
+- It creates the factory board.
+- It brings each role's profile in line with the current config version: the persona and skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script.
+- It installs and starts `hephaestus-hermes-gateway.service`, the factory's own gateway, which serves only the factory profiles and the factory board.
+
+Install records the `hermes` CLI's path; `--hermes <path>` overrides it. Hephaestus does not set a model: configure one for the factory root with `HERMES_HOME=~/.hephaestus/hermes hermes model`. The MCP entry points at the port after the dashboard's, where the Hephaestus MCP server (issue #10) will listen.
+
+Card stages map onto the board as the prototype proposed: Admitted is `ready` for the lead, the stages that run in T3 threads are `blocked` with the stage in a comment, Done is `done`, and Abandoned is archived. Cards complete without Hermes PR completion contracts, which need branch protection; Hephaestus checks CI itself.
+
 ## Uninstall
 
 ```sh
 node dist/cli.js uninstall
 ```
 
-`uninstall` stops and removes the service, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
+`uninstall` stops and removes the service and the factory Hermes gateway, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
 
 ## Development
 

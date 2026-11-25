@@ -179,3 +179,19 @@ describe("SystemdUserService.remove", () => {
     expect(existsSync(unitPath)).toBe(true);
   });
 });
+
+describe("SystemdUserService with another unit", () => {
+  it("acts on the unit named by its file", () => {
+    const other = join(dir, "systemd/user/hephaestus-hermes-gateway.service");
+    new SystemdUserService(other, (command, args) => {
+      calls.push([command, ...args].join(" "));
+      return { status: args[1] === "cat" ? 1 : 0, stdout: "" };
+    }).install(unitFile("/usr/bin/node", "/opt/cli.js"));
+
+    expect(calls).toEqual([
+      "systemctl --user cat hephaestus-hermes-gateway.service",
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now hephaestus-hermes-gateway.service",
+    ]);
+  });
+});

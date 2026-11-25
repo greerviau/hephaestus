@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { SERVICE_NAME } from "./paths.js";
+import { basename } from "node:path";
 
 /** First line of every unit Hephaestus writes. Uninstall removes only units that carry it. */
 export const UNIT_MARKER = "# Written by `hephaestus install`. `hephaestus uninstall` removes it.";
@@ -24,7 +24,7 @@ export class UnitExistsError extends Error {
  * `:` prefix on the command turns off `$` expansion, so only `%` specifiers,
  * backslashes and quotes need escaping.
  */
-function quoteArgument(value: string): string {
+export function quoteArgument(value: string): string {
   if (/[\r\n]/.test(value)) throw new Error(`A unit path cannot contain a line break: ${value}`);
   const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
   return `"${escaped}"`;
@@ -67,21 +67,26 @@ const STOPPED_STATES = new Set(["inactive", "failed", "unknown"]);
 
 /** Runs Hephaestus as a systemd user service. */
 export class SystemdUserService implements ServiceManager {
+  /** The unit's name, taken from its file name, such as `hephaestus.service`. */
+  private readonly name: string;
+
   constructor(
     private readonly unitPath: string,
     private readonly run: Run = runCommand,
-  ) {}
+  ) {
+    this.name = basename(unitPath);
+  }
 
   install(unit: string): void {
     if (this.unitExists()) throw new UnitExistsError(this.unitPath);
     // systemd may load a unit of the same name from another folder; never act on that one.
-    if (this.run("systemctl", ["--user", "cat", SERVICE_NAME]).status === 0) {
-      throw new UnitExistsError(SERVICE_NAME);
+    if (this.run("systemctl", ["--user", "cat", this.name]).status === 0) {
+      throw new UnitExistsError(this.name);
     }
     mkdirSync(dirname(this.unitPath), { recursive: true });
     writeFileSync(this.unitPath, unit, { flag: "wx" });
     this.systemctl("daemon-reload");
-    this.systemctl("enable", "--now", SERVICE_NAME);
+    this.systemctl("enable", "--now", this.name);
   }
 
   remove(): void {
@@ -93,17 +98,17 @@ export class SystemdUserService implements ServiceManager {
     if (!readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
       throw new Error(`${this.unitPath} was not written by Hephaestus; leaving it in place.`);
     }
-    this.systemctl("disable", "--now", SERVICE_NAME);
+    this.systemctl("disable", "--now", this.name);
     this.assertStopped();
     rmSync(this.unitPath);
     this.systemctl("daemon-reload");
   }
 
   private assertStopped(): void {
-    const state = this.run("systemctl", ["--user", "is-active", SERVICE_NAME]).stdout.trim();
+    const state = this.run("systemctl", ["--user", "is-active", this.name]).stdout.trim();
     if (!STOPPED_STATES.has(state)) {
       throw new Error(
-        `${SERVICE_NAME} is still ${state || "in an unknown state"}; stop it and run uninstall again.`,
+        `${this.name} is still ${state || "in an unknown state"}; stop it and run uninstall again.`,
       );
     }
   }

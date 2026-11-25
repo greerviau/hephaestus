@@ -229,6 +229,16 @@ describe("uninstall", () => {
     expect(installedUnitPath(paths)).toBe(paths.unit);
   });
 
+  it("also removes the extra services it is given, before its own", async () => {
+    await install(options());
+    const gateway = new FakeService();
+
+    uninstall({ paths, service, extraServices: [gateway] });
+
+    expect(gateway.calls).toEqual(["remove"]);
+    expect(service.calls).toEqual(["install", "remove"]);
+  });
+
   it("refuses when there is no install", () => {
     expect(() => uninstall({ paths, service })).toThrow(NotInstalledError);
     expect(service.calls).toEqual([]);
