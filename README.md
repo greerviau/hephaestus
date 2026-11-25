@@ -34,18 +34,8 @@ All factory config lives as numbered versions in `~/.hephaestus/state.db`: facto
 - Every edit creates a draft version with a diff against the version it was built from: the deployed version, or before the first deploy the newest approved one. A draft becomes approved or rejected, an approved version becomes deployed, and the version it replaces becomes superseded. Only a version built from the deployed version can be deployed, so deploying never drops changes made in between.
 - Reverting a deployed version creates a draft that restores what that version changed. A change stays as it is when a later version changed the same value, or when undoing it alone would make the config invalid, and the page says how many such changes it left. The first version cannot be reverted.
 - A project's policy starts from a preset, `standard` when none is given, and can override any setting. `yolo` merges when checks pass, with no review and no escalation paths. `standard`, the default, also needs an approving review from a different provider on the head commit and stops for changes under `.github/workflows/`. `strict` makes every merge wait for the owner. All three revert a factory merge whose checks fail, allow 2 review rounds, and cap open factory-filed issues at 5.
-- The Settings page lists versions with their author and diff, and edits create versions. It can approve, reject, and revert. Deploying an approved version to workers is not built yet, so until then no version reaches the deployed state.
-- Every night at 03:00, Hephaestus writes all versions to `~/.hephaestus/backups/` and keeps the newest 14 backups.
-- `~/.hephaestus/secrets.json` (mode 600) holds named secrets that config versions refer to by name. Backups leave it out, so secrets must be entered again after a restore.
-
-## Config versions
-
-All factory config lives as numbered versions in `~/.hephaestus/state.db`: factory projects and their policies, the planner, lead, and improver roles, the instructions for factory threads, and skills. No repo holds them.
-
-- Every edit creates a draft version with a diff against the version it was built from. A draft becomes approved or rejected, an approved version becomes deployed, and the version it replaces becomes superseded.
-- Reverting a deployed version creates a draft that restores what that version changed. A value that a later version changed again keeps its later value, and the page says how many such values it left.
-- A project's policy starts from a preset and can override any setting. `yolo` merges when checks pass, with no review and no escalation paths. `standard`, the default, also needs an approving review from a different provider on the head commit and stops for changes under `.github/workflows/`. `strict` makes every merge wait for the owner. All three revert a factory merge whose checks fail, allow 2 review rounds, and cap open factory-filed issues at 5.
-- The Settings page lists versions with their author and diff, and edits create versions. It can approve, reject, and revert. Deploying an approved version to workers is not built yet, so until then no version reaches the deployed state.
+- The Settings page lists versions with their author and diff, and edits create versions. It can approve, reject, revert, and deploy. Deploying publishes the version to the config repo, applies it to the factory Hermes root, and starts a deploy thread on every worker (see Workers).
+- The `factory` section sets which skills factory threads load (`threadSkills`), the model for each factory instance, the owner's own instance and model that run setup threads on a worker, and the thread limits.
 - Every night at 03:00, Hephaestus writes all versions to `~/.hephaestus/backups/` and keeps the newest 14 backups.
 - `~/.hephaestus/secrets.json` (mode 600) holds named secrets that config versions refer to by name. Backups leave it out, so secrets must be entered again after a restore.
 
@@ -61,9 +51,23 @@ Hephaestus drives this host's T3 server, and through it the linked worker enviro
 
 `HEPHAESTUS_T3_INTEGRATION=1 HEPHAESTUS_T3_WORKER=<environment id> npx vitest run test/t3/integration.test.ts` runs one short thread on a real worker through this host's T3, then archives it and revokes its session.
 
+## Workers
+
+A worker is a linked T3 environment that the owner marked on the Environments page. Hephaestus sets each worker up through short T3 threads on the owner's own provider instance (`factory.setup` in the config), so the owner only signs the factory instances in.
+
+1. Name a private config repo on the Environments page, such as `owner/hephaestus-config`. On the first deploy Hephaestus creates it, private, with `gh` when GitHub says it does not exist, and it refuses a repo that is not private. It pushes one tag per deployed version, named with this install's id, from a clone in `~/.hephaestus/config-repo`. Each worker needs `gh` signed in to an account that can read the repo; the deploy script uses it as git's credential helper.
+2. Click Use as a worker. Approving a version in Settings deploys it to every worker, and Deploy on a worker retries. The deploy thread sends `templates/worker/deploy.sh` inline. The script fetches the version's tag, checks that its commit holds that version, installs it under `~/.hephaestus/` on the worker, and adds the Factory Claude (`hephaestus-claude`) and Factory Codex (`hephaestus-codex`) provider instances to T3's `settings.json`, changing no other setting. Writes to that file hold a lock and start over if T3 changed the file meanwhile. The script also keeps the owner's `~/.claude/CLAUDE.md` and `~/.agents/skills` out of factory threads. Hephaestus checks that the worker reports the commit it published.
+3. Click Sign in Claude, open the thread "Hephaestus: sign in Factory Claude" on that worker in T3, and paste the token that `claude setup-token` prints into its secret card. The same token works on every worker.
+4. Click Sign in Codex. The page shows a link and a code; approve the code in a browser within 15 minutes.
+5. After each deploy and sign-in, Hephaestus runs a one-line test turn on each factory instance. The worker is ready once it runs the deployed version and commit, its last deploy succeeded, both test turns since that deploy passed, and T3 reports no problem with either instance.
+
+A worker that is running factory threads gets a new version only after they finish, so a thread never sees instructions or skills change under it; it takes no new threads meanwhile. A failed deploy is retried after 30 minutes, and every worker is deployed again every 6 hours so owner skills added since stay out of Factory Codex. A launch whose reply from T3 was lost is replayed with the same request id (T3 scopes that id to Hephaestus's T3 session, so a replay after a sign-in change can start a second thread; see issue #21), and a task that stalls is given up after a timeout. T3 writes its `settings.json` with its own writer, which Hephaestus cannot lock: the deploy script checks the file just before replacing it, so only a T3 write in the moment between that check and the rename could be lost.
+
+Uninstall stops the service, waits until T3 lists no Hephaestus setup thread as running on each worker, and then runs a cleanup thread there that signs the factory Codex out, removes both instances, and deletes `~/.hephaestus/`. If the logout or the instance removal fails, `~/.hephaestus/` stays on the worker so the cleanup can run again. If any worker cannot be cleaned up, uninstall changes nothing on this host, starts the service again, and names the workers; `uninstall --skip-workers` removes Hephaestus anyway. Revoke the Claude setup token in your Claude account afterwards.
+
 ## Factory Hermes
 
-The factory's planner, lead, and improver run as Hermes profiles in a Hermes root of their own, `~/.hephaestus/hermes/`, never in the owner's `~/.hermes`. With the factory under the owner's home, the owner's running gateway rewrites the owner's `config.yaml`, and the two gateways run each other's cards and cron jobs (see the Hermes prototype in issue #4).
+Deploying a version also applies it to the factory Hermes root. The factory's planner, lead, and improver run as Hermes profiles in a Hermes root of their own, `~/.hephaestus/hermes/`, never in the owner's `~/.hermes`. With the factory under the owner's home, the owner's running gateway rewrites the owner's `config.yaml`, and the two gateways run each other's cards and cron jobs (see the Hermes prototype in issue #4).
 
 ```sh
 node dist/cli.js hermes sync
@@ -86,7 +90,7 @@ Card stages map onto the board as the prototype proposed: Admitted is `ready` fo
 node dist/cli.js uninstall
 ```
 
-`uninstall` stops and removes the service and the factory Hermes gateway, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
+`uninstall` removes the factory setup from each worker (see Workers), stops and removes the service and the factory Hermes gateway, lists every baseline file that changed since install, and deletes `~/.hephaestus/`. It exits with code 0 when nothing changed, 2 when a file changed, and 3 when the baseline was unreadable, so changes are unknown. If the service will not stop, uninstall keeps `~/.hephaestus/` and exits with an error.
 
 ## Development
 

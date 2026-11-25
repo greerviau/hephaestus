@@ -13,6 +13,8 @@ export interface ServiceManager {
   remove(): void;
   /** Enables and starts a unit that is already installed. */
   start?(): void;
+  /** Stops the service and leaves its unit in place. */
+  stop?(): void;
 }
 
 export class UnitExistsError extends Error {
@@ -111,6 +113,31 @@ export class SystemdUserService implements ServiceManager {
       throw new Error(`${this.unitPath} is not a unit Hephaestus wrote.`);
     }
     this.systemctl("enable", "--now", this.name);
+  }
+
+  stop(): void {
+    if (!this.unitExists()) {
+      this.assertStopped();
+      return;
+    }
+    if (!readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
+      throw new Error(`${this.unitPath} was not written by Hephaestus; leaving it running.`);
+    }
+    // systemd may have loaded a unit of the same name from a directory that takes precedence.
+    const loaded = this.run("systemctl", [
+      "--user",
+      "show",
+      "-P",
+      "FragmentPath",
+      this.name,
+    ]).stdout.trim();
+    if (loaded !== "" && loaded !== this.unitPath) {
+      throw new Error(
+        `systemd runs ${this.name} from ${loaded}, not ${this.unitPath}; leaving it running.`,
+      );
+    }
+    this.systemctl("stop", this.name);
+    this.assertStopped();
   }
 
   private assertStopped(): void {

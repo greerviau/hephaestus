@@ -67,6 +67,38 @@ const MIGRATIONS = [
      name TEXT NOT NULL,
      PRIMARY KEY (role, name)
    );`,
+  `ALTER TABLE factory_threads ADD COLUMN kind TEXT NOT NULL DEFAULT 'factory';
+   ALTER TABLE factory_launches ADD COLUMN kind TEXT NOT NULL DEFAULT 'factory';
+   CREATE TABLE workers (
+     environment_id TEXT PRIMARY KEY,
+     label TEXT NOT NULL,
+     enabled INTEGER NOT NULL,
+     home TEXT,
+     deployed_version INTEGER,
+     deployed_sha TEXT,
+     instance_problem TEXT,
+     checked_at TEXT,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE TABLE worker_tasks (
+     id INTEGER PRIMARY KEY,
+     environment_id TEXT NOT NULL,
+     kind TEXT NOT NULL CHECK (kind IN
+       ('deploy', 'claude-sign-in', 'codex-sign-in', 'test-claude', 'test-codex', 'cleanup')),
+     client_request_id TEXT NOT NULL UNIQUE,
+     message TEXT NOT NULL DEFAULT '',
+     thread_id TEXT,
+     version INTEGER,
+     sha TEXT,
+     status TEXT NOT NULL CHECK (status IN ('running', 'succeeded', 'failed')),
+     detail TEXT NOT NULL DEFAULT '{}',
+     created_seq INTEGER NOT NULL DEFAULT 0,
+     done_seq INTEGER,
+     created_at TEXT NOT NULL,
+     updated_at TEXT NOT NULL
+   );
+   CREATE INDEX worker_tasks_by_worker ON worker_tasks (environment_id, kind, id);`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

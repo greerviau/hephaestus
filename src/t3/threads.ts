@@ -5,6 +5,7 @@ import type { ThreadEvents } from "./events.js";
 export interface ThreadRecord {
   configVersion: number;
   cardId: string | null;
+  kind?: string;
 }
 
 /**
@@ -32,6 +33,7 @@ export class FactoryThreads {
       model: options.model,
       configVersion: record.configVersion,
       cardId: record.cardId,
+      kind: record.kind ?? "factory",
     };
     this.events.recordLaunch(options.clientRequestId, thread);
     let threadId: string;

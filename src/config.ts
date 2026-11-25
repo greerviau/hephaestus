@@ -13,6 +13,9 @@ export interface Config {
   t3Home?: string;
   /** The absolute path of the `hermes` CLI at install, when it was on PATH. */
   hermesPath?: string;
+  /** The absolute paths of `git` and `gh` at install, for the config repo. */
+  gitPath?: string;
+  ghPath?: string;
 }
 
 export const DEFAULT_PORT = 7700;

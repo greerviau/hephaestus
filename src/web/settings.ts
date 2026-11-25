@@ -10,8 +10,11 @@ import { readBody, redirect, sendHtml, sendJson, type Route, type RouteContext }
  */
 const MAX_EDIT_BYTES = 3 * MAX_CONFIG_BYTES + 64 * 1024;
 
+/** Publishes a version and deploys it to every worker. */
+export type Deploy = (id: number) => Promise<{ hermesError?: string }>;
+
 /** Settings: config versions, their diffs, and edits that create new versions. */
-export function settingsRoutes(store: ConfigStore): Route[] {
+export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
   return [
     {
       method: "GET",
@@ -31,8 +34,33 @@ export function settingsRoutes(store: ConfigStore): Route[] {
     {
       method: "POST",
       path: /^\/settings\/versions\/(\d+)\/(approve|reject|revert)$/,
-      handle: (context) => {
-        act(context);
+      handle: (context) => act(context),
+    },
+    {
+      method: "POST",
+      path: /^\/settings\/versions\/(\d+)\/deploy$/,
+      handle: async ({ response, params }) => {
+        const id = Number(params[0]);
+        if (deploy === undefined || find(id) === undefined) {
+          sendHtml(response, 404, layout("Not found", "<p>No such config version.</p>"));
+          return;
+        }
+        try {
+          const { hermesError } = await deploy(id);
+          redirect(
+            response,
+            `/settings/versions/${String(id)}${hermesError === undefined ? "" : "?hermes=failed"}`,
+          );
+        } catch (error) {
+          sendHtml(
+            response,
+            409,
+            layout(
+              "Not deployed",
+              `<p class="error">${escapeHtml(error instanceof Error ? error.message : String(error))}</p><p><a href="/settings/versions/${String(id)}">Back</a></p>`,
+            ),
+          );
+        }
       },
     },
     {
@@ -127,6 +155,11 @@ ${errors}
     if (version.state === "draft") {
       actions.push(button(id, "approve", "Approve"), button(id, "reject", "Reject"));
     }
+    if (deploy !== undefined && (version.state === "approved" || version.state === "deployed")) {
+      actions.push(
+        button(id, "deploy", version.state === "deployed" ? "Deploy again to workers" : "Deploy"),
+      );
+    }
     if (
       (version.state === "deployed" || version.state === "superseded") &&
       version.parentId !== null
@@ -145,6 +178,16 @@ ${errors}
             : `, built from <a href="/settings/versions/${String(version.parentId)}">version ${String(version.parentId)}</a>`
         }</p>
 <p>${escapeHtml(version.message)}</p>
+${
+  url.searchParams.get("deploy") === null
+    ? ""
+    : `<p class="error">Approved, but not deployed: ${escapeHtml(url.searchParams.get("deploy") ?? "")}</p>`
+}
+${
+  url.searchParams.get("hermes") === "failed"
+    ? '<p class="error">The version is deployed, but applying it to the factory Hermes root failed. The service log has the error.</p>'
+    : ""
+}
 ${
   conflicts > 0
     ? `<p class="error">${String(conflicts)} changes were left as they are, because a later version changed them again.</p>`
@@ -208,7 +251,7 @@ ${diffTable(store.diff(version.id))}
     }
   }
 
-  function act({ response, params }: RouteContext): void {
+  async function act({ response, params }: RouteContext): Promise<void> {
     const id = Number(params[0]);
     const action = params[1];
     if (find(id) === undefined) {
@@ -216,8 +259,25 @@ ${diffTable(store.diff(version.id))}
       return;
     }
     try {
-      if (action === "approve") store.approve(id);
-      else if (action === "reject") store.reject(id);
+      if (action === "approve") {
+        store.approve(id);
+        // Approval deploys the version; a failed deploy can be retried from this page.
+        if (deploy !== undefined) {
+          try {
+            const { hermesError } = await deploy(id);
+            redirect(
+              response,
+              `/settings/versions/${String(id)}${hermesError === undefined ? "" : "?hermes=failed"}`,
+            );
+          } catch (error) {
+            redirect(
+              response,
+              `/settings/versions/${String(id)}?deploy=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`,
+            );
+          }
+          return;
+        }
+      } else if (action === "reject") store.reject(id);
       else {
         const { version, conflicts } = store.revert(id, "owner");
         redirect(
