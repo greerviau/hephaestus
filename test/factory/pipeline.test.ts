@@ -351,6 +351,23 @@ describe("Pipeline", () => {
     expect(h.t3.launches[0]?.clientRequestId).toBe(`hephaestus-implement-${String(id)}-0`);
   });
 
+  it("waits for required checks and for checks to register before merging", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: { requiredChecks: ["e2e"] } },
+      };
+    });
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([]);
+    expect(h.cards.get(id).waiting).toMatch(/required checks have not run: e2e/);
+    h.github.prs.set(5, pr(5, SHA, { checkNames: ["check:ci", "check:e2e"] }));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([5]);
+  });
+
   it("does not start work for a repo that left the factory projects", async () => {
     const h = harness();
     const id = admitted(h);

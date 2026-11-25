@@ -41,6 +41,8 @@ export interface PipelineOptions {
   config: () => { id: number; document: FactoryConfig } | undefined;
   board?: () => PipelineBoard | undefined;
   now?: () => Date;
+  /** How long a new head's checks get to register before a merge; three minutes by default. */
+  checksSettleMs?: number;
 }
 
 const PAUSED_KEY = "factory_paused";
@@ -59,6 +61,8 @@ const FOREIGN_CHECK_MS = 5 * 60_000;
 const CHECKS_GRACE_MS = 10 * 60_000;
 /** A head or merge commit whose checks have not all appeared is escalated after this. */
 const CHECKS_DEADLINE_MS = 60 * 60_000;
+/** A new head's checks get this long to register before the gate may merge it. */
+const CHECKS_SETTLE_MS = 3 * 60_000;
 /** A thread waiting on a question runs nothing, so it holds no slot. */
 const IDLE_STATUSES = ["waiting"];
 
@@ -148,6 +152,17 @@ export class Pipeline {
     return running + pending;
   }
 
+  /** The worker a launch went to whose reply never came, if any. */
+  private pendingLaunch(request: string): string | undefined {
+    return (
+      this.options.db
+        .prepare(
+          "SELECT environment_id AS env FROM factory_launches WHERE client_request_id = ? AND status = 'pending'",
+        )
+        .get(request) as { env: string } | undefined
+    )?.env;
+  }
+
   /** Factory threads started since midnight UTC. */
   startsToday(): number {
     const midnight = new Date(this.now());
@@ -174,7 +189,9 @@ export class Pipeline {
     if (this.paused()) return "The factory is paused.";
     const limits = this.options.config()?.document.factory.limits;
     if (limits === undefined) return "No config version is deployed.";
-    if (resuming === undefined && this.startsToday() >= limits.startsPerDay) {
+    // A replay of a launch whose reply was lost already holds its start for the day.
+    const replaying = request !== undefined && this.pendingLaunch(request) !== undefined;
+    if (resuming === undefined && !replaying && this.startsToday() >= limits.startsPerDay) {
       return `The limit of ${String(limits.startsPerDay)} factory thread starts per day is reached.`;
     }
     if (this.runningThreads(undefined, resuming, request) >= limits.threads) {
@@ -409,6 +426,7 @@ export class Pipeline {
    */
   private launch(
     card: Card,
+    request: string,
     still: (current: Card) => boolean,
     build: (worker: Worker) => Promise<{ options: LaunchOptions; kind: "implement" | "review" }>,
   ): Promise<{ threadId: string; worker: Worker } | undefined> {
@@ -422,7 +440,11 @@ export class Pipeline {
         this.wait(card, `${card.repo} is no longer a factory project.`);
         return undefined;
       }
-      const worker = this.pickWorker(card);
+      // A replay goes back to the worker that may already have the thread.
+      const pending = this.pendingLaunch(request);
+      const worker = this.pickWorker(
+        pending === undefined ? card : { ...card, workerEnv: pending },
+      );
       if (typeof worker === "string") {
         this.wait(card, worker);
         return undefined;
@@ -431,7 +453,9 @@ export class Pipeline {
       const current = this.cards.get(card.id);
       if (!still(current)) return undefined;
       // Everything is checked again after the preparation's awaits, on the same worker.
-      const again = this.pickWorker(current);
+      const again = this.pickWorker(
+        pending === undefined ? current : { ...current, workerEnv: pending },
+      );
       const blocked = !this.isFactoryProject(card.repo)
         ? `${card.repo} is no longer a factory project.`
         : typeof again === "string" || again.environmentId !== worker.environmentId
@@ -468,8 +492,10 @@ export class Pipeline {
   private async launchImplement(card: Card): Promise<void> {
     const implementer: Provider = card.implementer ?? "claude";
     const branch = `factory/card-${String(card.id)}${card.revertPr === null ? "" : `-retry-${String(card.revertPr)}`}`;
+    const request = `hephaestus-implement-${String(card.id)}-${card.revertPr === null ? "0" : String(card.revertPr)}`;
     const started = await this.launch(
       card,
+      request,
       (current) => current.stage === "Implementing" && current.implementThread === null,
       async (worker) => {
         // Project ids belong to one worker, so the id comes from the worker chosen now.
@@ -491,7 +517,7 @@ export class Pipeline {
             runtimeMode: "full-access",
             workspace: { type: "worktree", baseRef: `origin/${base}`, branch },
             message: implementMessage(this.cards.get(card.id), issue, base, branch),
-            clientRequestId: `hephaestus-implement-${String(card.id)}-${card.revertPr === null ? "0" : String(card.revertPr)}`,
+            clientRequestId: request,
           },
         };
       },
@@ -541,7 +567,13 @@ export class Pipeline {
         return;
       }
       // The same message always carries the same request id, so a retry after a lost reply is one send.
-      const digest = createHash("sha256").update(message).digest("hex").slice(0, 16);
+      const sent = this.cards
+        .events(card.id)
+        .filter((event) => event.kind === "thread:resume").length;
+      const digest = createHash("sha256")
+        .update(`${String(sent)}\n${message}`)
+        .digest("hex")
+        .slice(0, 16);
       await this.options.threads.send(
         env,
         thread,
@@ -675,8 +707,10 @@ export class Pipeline {
     const attempt = this.cards
       .events(card.id)
       .filter((event) => event.kind === "thread:review").length;
+    const request = `hephaestus-review-${String(card.id)}-${String(attempt + 1)}`;
     const started = await this.launch(
       card,
+      request,
       (current) => current.stage === card.stage && current.reviewThread === null,
       async (worker) => {
         const pr = await this.options.github.pullRequest(card.repo, prNumber);
@@ -699,7 +733,7 @@ export class Pipeline {
               branch: `review/card-${String(card.id)}-${String(attempt + 1)}`,
             },
             message: reviewMessage(card, issue, pr, pr.headSha),
-            clientRequestId: `hephaestus-review-${String(card.id)}-${String(attempt + 1)}`,
+            clientRequestId: request,
           },
         };
       },
@@ -792,15 +826,21 @@ export class Pipeline {
       failedChecks: pr.failedChecks,
       files: pr.files,
       filesComplete: pr.filesComplete,
+      checkIds: pr.checkNames,
       approvedAtHead: this.cards.approvedAt(card.id, pr.headSha),
       ownerApprovedAtHead: card.ownerApprovedSha === pr.headSha,
     });
     if (decision.action === "wait") {
-      if (pr.checks === "none" && this.olderThan(card.headAt, CHECKS_DEADLINE_MS)) {
+      if (
+        decision.reason !== "checks are running" &&
+        this.olderThan(card.headAt, CHECKS_DEADLINE_MS)
+      ) {
         return this.escalate(
           card,
           "owner",
-          "no checks ran on the head commit; set allowNoChecks in the project's policy if the repo has no CI",
+          pr.checks === "none"
+            ? "no checks ran on the head commit; set allowNoChecks in the project's policy if the repo has no CI"
+            : `after an hour, ${decision.reason}`,
           { ownerAction: "merge" },
         );
       }
@@ -812,20 +852,36 @@ export class Pipeline {
         ownerAction: decision.to === "owner" ? "merge" : null,
       });
     }
+    if (!this.olderThan(card.headAt, this.options.checksSettleMs ?? CHECKS_SETTLE_MS)) {
+      // A fast check can finish before a slower one has even registered.
+      this.wait(card, "letting every check register on the head commit");
+      return;
+    }
     let mergeSha: string;
     try {
-      mergeSha = await this.options.github.merge(card.repo, pr.number, pr.headSha);
+      mergeSha = await this.options.github.merge(
+        card.repo,
+        pr.number,
+        pr.headSha,
+        mergeMarker(card),
+      );
     } catch (error) {
       if (error instanceof AlreadyMergedError) return this.foreignMerge(card, error.mergeSha);
       throw error;
     }
-    this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, false);
-    const next = this.cards.transition(
-      card.id,
-      "Validating",
-      `merged PR #${String(pr.number)} as ${mergeSha}`,
-      { mergeSha, expectedChecks: pr.checkNames, waiting: null },
-    );
+    const next = this.options.db.transaction(() => {
+      this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, false);
+      return this.cards.transition(
+        card.id,
+        "Validating",
+        `merged PR #${String(pr.number)} as ${mergeSha}`,
+        {
+          mergeSha,
+          expectedChecks: pr.checkNames,
+          waiting: null,
+        },
+      );
+    })();
     await this.mirror(next, "Validating");
   }
 
@@ -845,13 +901,16 @@ export class Pipeline {
       // Every check that ran on the head must also run and finish on the merge commit.
       const missing = (card.expectedChecks ?? []).filter((name) => !checks.finished.includes(name));
       if (checks.state === "pending" || missing.length > 0) {
-        if (this.olderThan(mergedAt, CHECKS_DEADLINE_MS)) {
-          return this.escalate(
-            card,
-            "owner",
-            `checks did not finish on the merge commit ${card.mergeSha}: ${missing.join(", ") || "still running"}`,
+        if (this.olderThan(mergedAt, CHECKS_DEADLINE_MS) && !card.waiting?.startsWith("overdue")) {
+          // The owner hears about it, and validation goes on, so a late failure still reverts.
+          this.cards.notify(
+            `Checks have not finished on the merge commit of PR #${String(card.prNumber)} in ${card.repo} (card ${String(card.id)}) after an hour: ${missing.join(", ") || "still running"}.`,
+            card.id,
           );
+          this.wait(card, `overdue: ${missing.join(", ") || "checks still running"}`);
+          return;
         }
+        if (card.waiting?.startsWith("overdue") === true) return;
         this.wait(
           card,
           `checks are running on the merge commit${missing.length > 0 ? `: ${missing.join(", ")}` : ""}`,
@@ -952,11 +1011,20 @@ export class Pipeline {
         failedChecks: pr.failedChecks,
         files: pr.files,
         filesComplete: pr.filesComplete,
+        checkIds: pr.checkNames,
         approvedAtHead:
           !policy.requireReview || ownerApproved || this.cards.approvedAt(card.id, pr.headSha),
         ownerApprovedAtHead: ownerApproved,
       });
       if (decision.action === "wait") {
+        if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS)) {
+          return this.escalate(
+            card,
+            "owner",
+            `revert PR #${String(pr.number)} has waited an hour: ${decision.reason}`,
+            { ownerAction: "revert-merge" },
+          );
+        }
         this.wait(card, `revert PR: ${decision.reason}`);
         return;
       }
@@ -966,7 +1034,12 @@ export class Pipeline {
         });
       }
       try {
-        const mergeSha = await this.options.github.merge(card.repo, pr.number, pr.headSha);
+        const mergeSha = await this.options.github.merge(
+          card.repo,
+          pr.number,
+          pr.headSha,
+          mergeMarker(card),
+        );
         this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, true);
       } catch (error) {
         if (!(error instanceof AlreadyMergedError)) throw error;
@@ -1104,6 +1177,11 @@ export class Pipeline {
       console.error(`Handing card ${String(card.id)} back to the lead failed`, error);
     }
   }
+}
+
+/** In every squash commit Hephaestus makes, so a merge whose reply was lost can be recognized. */
+function mergeMarker(card: Card): string {
+  return `Merged by Hephaestus for card ${String(card.id)}.`;
 }
 
 const TRANSITIONS_TO_DONE = new Set<Stage>(["Implementing", "Reviewing", "Merging"]);

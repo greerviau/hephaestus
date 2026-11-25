@@ -10,7 +10,7 @@ describe("foldChecks", () => {
         { __typename: "CheckRun", name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
         { __typename: "CheckRun", name: "lint", status: "COMPLETED", conclusion: "SKIPPED" },
       ]),
-    ).toMatchObject({ state: "success", failed: [], finished: ["test", "lint"] });
+    ).toMatchObject({ state: "success", failed: [], finished: ["check:test", "check:lint"] });
     expect(
       foldChecks([
         { __typename: "CheckRun", name: "test", status: "IN_PROGRESS", conclusion: null },
@@ -23,7 +23,7 @@ describe("foldChecks", () => {
         { __typename: "StatusContext", context: "deploy", state: "FAILURE" },
         { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "TIMED_OUT" },
       ]),
-    ).toMatchObject({ state: "failure", failed: ["deploy", "build"] });
+    ).toMatchObject({ state: "failure", failed: ["status:deploy", "check:build"] });
   });
 });
 
@@ -34,7 +34,9 @@ describe("GitHub", () => {
       calls.push(args);
       return Promise.resolve(JSON.stringify({ merged: true, sha: "m" }));
     };
-    expect(await new GitHub("gh", exec).merge("octo/app", 5, "h")).toBe("m");
+    expect(
+      await new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
+    ).toBe("m");
     expect(calls[0]).toEqual([
       "api",
       "-X",
@@ -44,7 +46,36 @@ describe("GitHub", () => {
       "merge_method=squash",
       "-f",
       "sha=h",
+      "-f",
+      "commit_message=Merged by Hephaestus for card 1.",
     ]);
+  });
+
+  it("recognizes its own merge by the marker when GitHub's reply was lost", async () => {
+    const exec: CommandRun = (_file, args) => {
+      if (args[1] === "-X") return Promise.reject(new Error("connection reset"));
+      if (args[0] === "pr") {
+        return Promise.resolve(
+          JSON.stringify({
+            number: 5,
+            url: "u",
+            state: "MERGED",
+            headRefOid: "h",
+            headRefName: "b",
+            baseRefName: "main",
+            isCrossRepository: false,
+            mergeCommit: { oid: "ours" },
+          }),
+        );
+      }
+      if (args[1] === "repos/octo/app/commits/ours") {
+        return Promise.resolve("Fix it (#5)\n\nMerged by Hephaestus for card 1.\n");
+      }
+      return Promise.resolve("");
+    };
+    expect(
+      await new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
+    ).toBe("ours");
   });
 
   it("reports a PR someone else merged instead of taking the merge as its own", async () => {
@@ -67,9 +98,9 @@ describe("GitHub", () => {
       }
       return Promise.resolve("");
     };
-    await expect(new GitHub("gh", exec).merge("octo/app", 5, "h")).rejects.toThrow(
-      AlreadyMergedError,
-    );
+    await expect(
+      new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
+    ).rejects.toThrow(AlreadyMergedError);
   });
 
   it("reads the issue number from gh issue create", async () => {

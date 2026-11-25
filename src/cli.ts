@@ -209,7 +209,16 @@ function factoryEngine(
       : undefined;
   const deployed = (): ConfigVersion | undefined =>
     store.list().find((version) => version.state === "deployed");
-  const intake = new Intake({ db, cards, github, config: () => deployed()?.document, board });
+  // Intake abandons through the pipeline, which is built next.
+  const late: { pipeline?: Pipeline } = {};
+  const intake = new Intake({
+    db,
+    cards,
+    github,
+    config: () => deployed()?.document,
+    board,
+    abandon: (cardId, reason) => late.pipeline?.abandon(cardId, reason) ?? Promise.resolve(),
+  });
   const pipeline = new Pipeline({
     db,
     cards,
@@ -221,6 +230,7 @@ function factoryEngine(
     config: () => deployed(),
     board,
   });
+  late.pipeline = pipeline;
   const secrets = new SecretsFile(paths.secrets);
   const mcp = new FactoryMcp({
     db,

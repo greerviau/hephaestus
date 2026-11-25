@@ -62,15 +62,24 @@ export interface CheckSummary {
   finished: string[];
 }
 
+function isStatus(entry: RollupEntry): boolean {
+  return entry.__typename === "StatusContext" || entry.state !== undefined;
+}
+
+/** A check's identity: a check run and a commit status of the same name are different checks. */
+export function checkId(entry: RollupEntry): string {
+  return `${isStatus(entry) ? "status" : "check"}:${entry.name ?? entry.context ?? "check"}`;
+}
+
 export function foldChecks(entries: RollupEntry[]): CheckSummary {
-  const names = [...new Set(entries.map((entry) => entry.name ?? entry.context ?? "check"))];
+  const names = [...new Set(entries.map(checkId))];
   const finished: string[] = [];
   if (entries.length === 0) return { state: "none", failed: [], names, finished };
   const failed: string[] = [];
   let pending = false;
   for (const entry of entries) {
-    const name = entry.name ?? entry.context ?? "check";
-    if (entry.__typename === "StatusContext" || entry.state !== undefined) {
+    const name = checkId(entry);
+    if (isStatus(entry)) {
       const state = (entry.state ?? "").toUpperCase();
       if (state === "PENDING" || state === "EXPECTED") pending = true;
       else {
@@ -223,7 +232,7 @@ export class GitHub {
    * already merged raises {@link AlreadyMergedError}, so that merge is never
    * taken for Hephaestus's own.
    */
-  async merge(repo: string, number: number, headSha: string): Promise<string> {
+  async merge(repo: string, number: number, headSha: string, marker: string): Promise<string> {
     let answer: { merged?: boolean; sha?: string };
     try {
       answer = await this.json<{ merged?: boolean; sha?: string }>([
@@ -235,11 +244,21 @@ export class GitHub {
         "merge_method=squash",
         "-f",
         `sha=${headSha}`,
+        "-f",
+        `commit_message=${marker}`,
       ]);
     } catch (error) {
       const current = await this.pullRequest(repo, number).catch(() => undefined);
-      if (current?.state === "MERGED") throw new AlreadyMergedError(number, current.mergeSha);
-      throw error;
+      if (current?.state !== "MERGED" || current.mergeSha === null) throw error;
+      // The reply may have been lost after GitHub merged: the marker in the commit says whose merge it was.
+      const message = await this.gh([
+        "api",
+        `repos/${repo}/commits/${current.mergeSha}`,
+        "--jq",
+        ".commit.message",
+      ]).catch(() => "");
+      if (message.includes(marker)) return current.mergeSha;
+      throw new AlreadyMergedError(number, current.mergeSha);
     }
     if (answer.merged !== true || typeof answer.sha !== "string") {
       throw new Error(`GitHub did not merge PR #${String(number)}.`);

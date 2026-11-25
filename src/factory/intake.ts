@@ -30,6 +30,8 @@ export interface IntakeOptions {
   /** The config in force: the deployed version. */
   config: () => FactoryConfig | undefined;
   board?: () => Board | undefined;
+  /** Abandons a card through the pipeline, so it cannot race a launch for the same card. */
+  abandon?: (cardId: number, reason: string) => Promise<unknown>;
   now?: () => Date;
 }
 
@@ -157,7 +159,7 @@ export class Intake {
             filedBy: null,
           });
         }
-        this.closeUnstarted(repo, new Set(open.map((issue) => issue.number)));
+        await this.closeUnstarted(repo, new Set(open.map((issue) => issue.number)));
       }
     });
   }
@@ -166,7 +168,7 @@ export class Intake {
    * Abandons the cards of admitted issues that were closed before any thread
    * started on them, so a closed issue holds no place under the cap.
    */
-  private closeUnstarted(repo: string, open: Set<number>): void {
+  private async closeUnstarted(repo: string, open: Set<number>): Promise<void> {
     const rows = this.db
       .prepare(
         `SELECT i.number, c.id AS cardId FROM issues i JOIN cards c ON c.id = i.card_id
@@ -175,20 +177,39 @@ export class Intake {
       )
       .all(repo) as { number: number; cardId: number }[];
     for (const row of rows) {
-      if (open.has(row.number)) continue;
-      this.options.cards.transition(
-        row.cardId,
-        "Abandoned",
-        "the issue was closed before work started",
-        {
-          reason: "the issue was closed",
-        },
-      );
+      // The open list is capped, so an issue missing from it is read on its own before anything changes.
+      if (open.has(row.number) || !(await this.isClosed(repo, row.number))) continue;
+      const pending = this.db
+        .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
+        .get(String(row.cardId));
+      if (pending !== undefined) continue;
+      if (this.options.abandon !== undefined) {
+        await this.options.abandon(row.cardId, "the issue was closed before work started");
+      } else {
+        this.options.cards.transition(
+          row.cardId,
+          "Abandoned",
+          "the issue was closed before work started",
+          {
+            reason: "the issue was closed",
+          },
+        );
+      }
     }
     const held = this.issues(["held-cap", "awaiting-owner"]).filter(
       (issue) => issue.repo === repo && !open.has(issue.number),
     );
-    for (const issue of held) this.setState(repo, issue.number, "rejected");
+    for (const issue of held) {
+      if (await this.isClosed(repo, issue.number)) this.setState(repo, issue.number, "rejected");
+    }
+  }
+
+  private async isClosed(repo: string, number: number): Promise<boolean> {
+    try {
+      return (await this.options.github.issue(repo, number)).state === "CLOSED";
+    } catch {
+      return false;
+    }
   }
 
   /** The owner's approval on the Work items page: the issue is admitted whatever the cap. */
@@ -197,8 +218,11 @@ export class Intake {
       const issue = this.issue(repo, number);
       if (issue === undefined)
         throw new Error(`Hephaestus has not seen ${repo}#${String(number)}.`);
-      if (issue.state === "admitted" && issue.cardId !== null)
-        return this.options.cards.get(issue.cardId);
+      if (issue.state === "admitted" && issue.cardId !== null) {
+        // A reopened issue whose card was abandoned gets a new card.
+        const card = this.options.cards.get(issue.cardId);
+        if (card.stage !== "Abandoned") return card;
+      }
       const current = await this.options.github.issue(repo, number);
       if (current.state !== "OPEN") throw new Error(`${repo}#${String(number)} is closed.`);
       return this.admit(issue);

@@ -88,6 +88,8 @@ export interface GateInput {
   checks: CheckState;
   failedChecks: string[];
   files: string[];
+  /** Every check on the head, as `check:<name>` or `status:<context>`. */
+  checkIds?: string[];
   /** False when the file list is incomplete; the escalation paths then cannot be checked. */
   filesComplete?: boolean;
   /** A reviewer other than the author approved this exact head commit. */
@@ -107,6 +109,13 @@ export function decideMerge(input: GateInput): GateDecision {
   if (input.checks === "pending") return { action: "wait", reason: "checks are running" };
   if (input.checks === "none" && !policy.allowNoChecks) {
     return { action: "wait", reason: "no checks have run on the head commit yet" };
+  }
+  const ids = input.checkIds ?? [];
+  const absent = policy.requiredChecks.filter(
+    (name) => !ids.some((id) => id === `check:${name}` || id === `status:${name}`),
+  );
+  if (input.checks !== "failure" && absent.length > 0) {
+    return { action: "wait", reason: `required checks have not run: ${absent.join(", ")}` };
   }
   if (input.checks === "failure") {
     return {

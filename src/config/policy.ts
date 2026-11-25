@@ -17,6 +17,8 @@ export interface PolicySettings {
   autoRevert: boolean;
   /** A PR may merge with no checks at all, for a repo without CI. */
   allowNoChecks: boolean;
+  /** Checks that must have passed on a PR's head, by name, besides every check that ran. */
+  requiredChecks: string[];
 }
 
 export const POLICY_SETTING_NAMES = [
@@ -28,6 +30,7 @@ export const POLICY_SETTING_NAMES = [
   "openIssueCap",
   "autoRevert",
   "allowNoChecks",
+  "requiredChecks",
 ] as const satisfies readonly (keyof PolicySettings)[];
 
 export interface Policy {
@@ -40,7 +43,8 @@ const COMMON = {
   openIssueCap: 5,
   autoRevert: true,
   allowNoChecks: false,
-} as const;
+  requiredChecks: [] as string[],
+};
 
 export const PRESETS: Record<PresetName, PolicySettings> = {
   yolo: {

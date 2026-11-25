@@ -12,6 +12,7 @@ describe("policy presets", () => {
       openIssueCap: 5,
       autoRevert: true,
       allowNoChecks: false,
+      requiredChecks: [],
     });
   });
 
@@ -25,6 +26,7 @@ describe("policy presets", () => {
       openIssueCap: 5,
       autoRevert: true,
       allowNoChecks: false,
+      requiredChecks: [],
     });
   });
 

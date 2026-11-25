@@ -166,6 +166,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     events,
     config: () => ({ id: 3, document: config }),
     now,
+    checksSettleMs: 0,
   });
   let item = 0;
   return {

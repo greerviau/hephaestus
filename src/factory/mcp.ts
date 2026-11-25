@@ -201,7 +201,10 @@ export class FactoryMcp {
       }
       // The SDK refuses arguments that do not fit the tool's schema before the handler runs.
       const shape = TOOL_SHAPES[name as Tool];
-      const parsed = z.object(shape).safeParse(call.params?.arguments ?? {});
+      // Omitted arguments mean none; an explicit null is refused by the SDK and recorded here.
+      const given =
+        call.params === undefined || !("arguments" in call.params) ? {} : call.params.arguments;
+      const parsed = z.object(shape).safeParse(given);
       if (!parsed.success) {
         this.record(role, name as Tool, call.params?.arguments ?? {}, false, {
           error: `invalid arguments: ${parsed.error.issues.map((issue) => issue.message).join("; ")}`,

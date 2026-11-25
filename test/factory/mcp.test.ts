@@ -98,6 +98,25 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
+  it("records a call with null arguments", async () => {
+    const { url, mcp } = await start();
+    await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+        authorization: `Bearer ${TOKENS.lead}`,
+      },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tools/call",
+        params: { name: "get_status", arguments: null },
+      }),
+    });
+    expect(mcp.calls()[0]).toMatchObject({ role: "lead", tool: "get_status", ok: false });
+  });
+
   it("files an issue for the planner and records the call with the role", async () => {
     const { h, url, mcp } = await start();
     const c = await client(url, TOKENS.planner);

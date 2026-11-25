@@ -210,7 +210,7 @@ export function validateConfig(value: unknown): FactoryConfig {
       const path = `projects.${repo}.policy.overrides.${name}`;
       if (!POLICY_SETTING_NAMES.includes(name as never)) {
         problems.push(`${path} is not a policy setting`);
-      } else if (name === "escalationPaths") {
+      } else if (name === "escalationPaths" || name === "requiredChecks") {
         if (!Array.isArray(setting) || setting.some((p) => typeof p !== "string")) {
           problems.push(`${path} must be a list of strings`);
         }
