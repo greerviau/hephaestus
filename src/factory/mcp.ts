@@ -154,6 +154,20 @@ export class FactoryMcp {
       response.end(JSON.stringify({ error: "the body is not JSON" }));
       return;
     }
+    // A call the SDK refuses before any handler runs, such as a tool this role lacks, is recorded here.
+    for (const message of Array.isArray(body) ? (body as unknown[]) : [body]) {
+      const call = message as {
+        method?: unknown;
+        params?: { name?: unknown; arguments?: unknown };
+      };
+      if (call.method !== "tools/call") continue;
+      const name = typeof call.params?.name === "string" ? call.params.name : "";
+      if (!(ROLE_TOOLS[role] as readonly string[]).includes(name)) {
+        this.record(role, name as Tool, call.params?.arguments ?? {}, false, {
+          error: `${role} may not call ${name}`,
+        });
+      }
+    }
     // Stateless: a server and transport per request, so no session state outlives a call.
     const server = this.server(role);
     const transport = new StreamableHTTPServerTransport({ enableJsonResponse: true });

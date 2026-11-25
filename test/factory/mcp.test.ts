@@ -80,6 +80,16 @@ describe("FactoryMcp", () => {
     }
   });
 
+  it("records a call to a tool the role does not have", async () => {
+    const { url, mcp } = await start();
+    const c = await client(url, TOKENS.improver);
+    await c
+      .callTool({ name: "file_issue", arguments: { repo: "octo/app", title: "x", body: "" } })
+      .catch(() => undefined);
+    expect(mcp.calls()[0]).toMatchObject({ role: "improver", tool: "file_issue", ok: false });
+    await c.close();
+  });
+
   it("files an issue for the planner and records the call with the role", async () => {
     const { h, url, mcp } = await start();
     const c = await client(url, TOKENS.planner);

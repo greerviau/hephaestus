@@ -17,8 +17,13 @@ export interface PullRequest {
   headSha: string;
   headBranch: string;
   baseBranch: string;
+  /** Whether the PR comes from another repository. */
+  fromFork: boolean;
   mergeSha: string | null;
+  /** Every changed file, with the old name of a renamed one. */
   files: string[];
+  /** False when GitHub could not list every file, so the escalation paths cannot be checked. */
+  filesComplete: boolean;
   checks: CheckState;
   /** Names of checks that failed, for the escalation reason. */
   failedChecks: string[];
@@ -133,6 +138,11 @@ export class GitHub {
     return result.defaultBranchRef.name;
   }
 
+  /**
+   * A PR with every changed file and every check on its head commit. Both
+   * lists are read through the paginated REST API, because `gh pr view`
+   * returns at most 100 of each.
+   */
   async pullRequest(repo: string, number: number): Promise<PullRequest> {
     const pr = await this.json<{
       number: number;
@@ -141,9 +151,8 @@ export class GitHub {
       headRefOid: string;
       headRefName: string;
       baseRefName: string;
+      isCrossRepository: boolean;
       mergeCommit: { oid: string } | null;
-      files: { path: string }[] | null;
-      statusCheckRollup: RollupEntry[] | null;
     }>([
       "pr",
       "view",
@@ -151,9 +160,17 @@ export class GitHub {
       "-R",
       repo,
       "--json",
-      "number,url,state,headRefOid,headRefName,baseRefName,mergeCommit,files,statusCheckRollup",
+      "number,url,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit",
     ]);
-    const checks = foldChecks(pr.statusCheckRollup ?? []);
+    const listed = await this.gh([
+      "api",
+      "--paginate",
+      `repos/${repo}/pulls/${String(number)}/files?per_page=100`,
+      "--jq",
+      ".[] | .filename, (.previous_filename // empty)",
+    ]);
+    const files = [...new Set(listed.split("\n").filter((line) => line !== ""))];
+    const checks = await this.commitChecks(repo, pr.headRefOid);
     return {
       number: pr.number,
       url: pr.url,
@@ -161,8 +178,11 @@ export class GitHub {
       headSha: pr.headRefOid,
       headBranch: pr.headRefName,
       baseBranch: pr.baseRefName,
+      fromFork: pr.isCrossRepository,
       mergeSha: pr.mergeCommit?.oid ?? null,
-      files: (pr.files ?? []).map((file) => file.path),
+      files,
+      // GitHub lists at most 3000 files for a PR.
+      filesComplete: files.length < 3000,
       checks: checks.state,
       failedChecks: checks.failed,
     };
@@ -185,27 +205,41 @@ export class GitHub {
     return merged.mergeSha;
   }
 
-  /** The checks on a commit, such as a merge commit on the default branch. */
+  /** Every check run and the latest status of each context on a commit, all pages. */
   async commitChecks(repo: string, sha: string): Promise<{ state: CheckState; failed: string[] }> {
-    const runs = await this.json<{
-      check_runs: { name: string; status: string; conclusion: string | null }[];
-    }>(["api", `repos/${repo}/commits/${sha}/check-runs`]);
-    const statuses = await this.json<{ statuses: { context: string; state: string }[] }>([
-      "api",
-      `repos/${repo}/commits/${sha}/status`,
-    ]);
+    const runs = (
+      await this.gh([
+        "api",
+        "--paginate",
+        `repos/${repo}/commits/${sha}/check-runs?per_page=100`,
+        "--jq",
+        '.check_runs[] | [.name, .status, (.conclusion // "")] | @tsv',
+      ])
+    )
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => {
+        const [name = "", status = "", conclusion = ""] = line.split("\t");
+        return { __typename: "CheckRun", name, status, conclusion };
+      });
+    // Statuses come newest first; the first one per context is its current state.
+    const latest = new Map<string, string>();
+    for (const line of (
+      await this.gh([
+        "api",
+        "--paginate",
+        `repos/${repo}/commits/${sha}/statuses?per_page=100`,
+        "--jq",
+        ".[] | [.context, .state] | @tsv",
+      ])
+    ).split("\n")) {
+      const [context, state] = line.split("\t");
+      if (context === undefined || state === undefined || latest.has(context)) continue;
+      latest.set(context, state);
+    }
     return foldChecks([
-      ...runs.check_runs.map((run) => ({
-        __typename: "CheckRun",
-        name: run.name,
-        status: run.status,
-        conclusion: run.conclusion,
-      })),
-      ...statuses.statuses.map((status) => ({
-        __typename: "StatusContext",
-        context: status.context,
-        state: status.state,
-      })),
+      ...runs,
+      ...[...latest].map(([context, state]) => ({ __typename: "StatusContext", context, state })),
     ]);
   }
 

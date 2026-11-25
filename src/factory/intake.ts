@@ -26,7 +26,7 @@ export interface Board {
 export interface IntakeOptions {
   db: Database;
   cards: CardStore;
-  github: Pick<GitHub, "createIssue" | "openIssues">;
+  github: Pick<GitHub, "createIssue" | "openIssues" | "issue">;
   /** The config in force: the deployed version. */
   config: () => FactoryConfig | undefined;
   board?: () => Board | undefined;
@@ -135,7 +135,7 @@ export class Intake {
     });
   }
 
-  /** Records open issues nobody has seen, and admits held issues once the cap has room. */
+  /** Records open issues nobody has seen. Issues the cap held stay for the owner. */
   poll(): Promise<void> {
     return this.serial(async () => {
       for (const repo of Object.keys(this.options.config()?.projects ?? {})) {
@@ -157,9 +157,6 @@ export class Intake {
             filedBy: null,
           });
         }
-        for (const held of this.issues(["held-cap"]).filter((issue) => issue.repo === repo)) {
-          await this.admitIfRoom(repo, held.number);
-        }
       }
     });
   }
@@ -172,6 +169,8 @@ export class Intake {
         throw new Error(`Hephaestus has not seen ${repo}#${String(number)}.`);
       if (issue.state === "admitted" && issue.cardId !== null)
         return this.options.cards.get(issue.cardId);
+      const current = await this.options.github.issue(repo, number);
+      if (current.state !== "OPEN") throw new Error(`${repo}#${String(number)} is closed.`);
       return this.admit(issue);
     });
   }
@@ -184,13 +183,14 @@ export class Intake {
       .run(this.now().toISOString(), repo, number);
   }
 
-  /** Factory-filed issues admitted but not yet started; the cap counts these. */
+  /** Factory-filed issues admitted and awaiting work, whose card has no thread yet; the cap counts these. */
   awaitingWork(repo: string): number {
     return (
       this.db
         .prepare(
           `SELECT COUNT(*) AS n FROM issues i JOIN cards c ON c.id = i.card_id
-           WHERE i.repo = ? AND i.provenance = 'factory' AND c.stage = 'Admitted'`,
+           WHERE i.repo = ? AND i.provenance = 'factory' AND c.started_at IS NULL
+           AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
         )
         .get(repo) as { n: number }
     ).n;

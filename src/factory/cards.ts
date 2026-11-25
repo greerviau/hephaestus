@@ -18,8 +18,8 @@ export interface Card {
   implementer: Provider | null;
   implementThread: string | null;
   reviewThread: string | null;
-  /** The last thread message the pipeline acted on, so a thread's result is handled once. */
-  handledItem: string | null;
+  /** The last message the pipeline acted on in each thread, so each result is handled once. */
+  handled: Record<string, string>;
   prNumber: number | null;
   headSha: string | null;
   rounds: number;
@@ -34,6 +34,10 @@ export interface Card {
   ownerApprovedSha: string | null;
   /** A message for the implement thread that waits for a cap to free up. */
   pendingMessage: string | null;
+  /** What an owner's approval on the dashboard resumes: a merge of the PR, or of the revert PR. */
+  ownerAction: "merge" | "revert-merge" | null;
+  /** The branch the implement thread works on; only a PR from it counts. */
+  branch: string | null;
   /** When the first implement thread started, for cycle time. */
   startedAt: string | null;
   foreignMerge: boolean;
@@ -55,12 +59,13 @@ export interface CardEvent {
  */
 export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
   Admitted: ["Implementing", "Escalated", "Abandoned"],
-  Implementing: ["Implementing", "Reviewing", "Merging", "Escalated", "Abandoned"],
-  Reviewing: ["Reviewing", "Implementing", "Merging", "Escalated", "Abandoned"],
-  Merging: ["Validating", "Escalated", "Abandoned"],
+  // Done straight from Implementing, Reviewing, or Merging is a PR merged outside Hephaestus.
+  Implementing: ["Implementing", "Reviewing", "Merging", "Escalated", "Abandoned", "Done"],
+  Reviewing: ["Reviewing", "Implementing", "Merging", "Escalated", "Abandoned", "Done"],
+  Merging: ["Validating", "Escalated", "Abandoned", "Done"],
   Validating: ["Done", "Reverting", "Escalated"],
   Reverting: ["Implementing", "Escalated"],
-  Escalated: ["Implementing", "Merging", "Abandoned", "Done"],
+  Escalated: ["Implementing", "Merging", "Reverting", "Abandoned", "Done"],
   Done: [],
   Abandoned: [],
 };
@@ -86,6 +91,8 @@ interface Row {
   implement_thread: string | null;
   review_thread: string | null;
   handled_item: string | null;
+  owner_action: "merge" | "revert-merge" | null;
+  branch: string | null;
   pr_number: number | null;
   head_sha: string | null;
   rounds: number;
@@ -115,7 +122,9 @@ const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt">, string
   implementer: "implementer",
   implementThread: "implement_thread",
   reviewThread: "review_thread",
-  handledItem: "handled_item",
+  handled: "handled_item",
+  ownerAction: "owner_action",
+  branch: "branch",
   prNumber: "pr_number",
   headSha: "head_sha",
   rounds: "rounds",
@@ -145,7 +154,10 @@ function toCard(row: Row): Card {
     implementer: row.implementer,
     implementThread: row.implement_thread,
     reviewThread: row.review_thread,
-    handledItem: row.handled_item,
+    handled:
+      row.handled_item === null ? {} : (JSON.parse(row.handled_item) as Record<string, string>),
+    ownerAction: row.owner_action,
+    branch: row.branch,
     prNumber: row.pr_number,
     headSha: row.head_sha,
     rounds: row.rounds,
@@ -226,7 +238,13 @@ export class CardStore {
     if (entries.length > 0) {
       const sets = entries.map(([key]) => `${COLUMNS[key]} = ?`).join(", ");
       const values = entries.map(([key, value]) =>
-        key === "foreignMerge" ? (value === true ? 1 : 0) : (value ?? null),
+        key === "foreignMerge"
+          ? value === true
+            ? 1
+            : 0
+          : key === "handled"
+            ? JSON.stringify(value ?? {})
+            : (value ?? null),
       );
       this.db
         .prepare(`UPDATE cards SET ${sets}, updated_at = ? WHERE id = ?`)

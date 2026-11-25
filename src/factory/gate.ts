@@ -88,6 +88,8 @@ export interface GateInput {
   checks: CheckState;
   failedChecks: string[];
   files: string[];
+  /** False when the file list is incomplete; the escalation paths then cannot be checked. */
+  filesComplete?: boolean;
   /** A reviewer other than the author approved this exact head commit. */
   approvedAtHead: boolean;
   /** The owner approved this exact head commit on the dashboard. */
@@ -118,6 +120,14 @@ export function decideMerge(input: GateInput): GateDecision {
     };
   }
   if (input.ownerApprovedAtHead) return { action: "merge" };
+  if (input.filesComplete === false) {
+    return {
+      action: "escalate",
+      to: "owner",
+      reason:
+        "the PR changes more files than GitHub lists, so its escalation paths cannot be checked",
+    };
+  }
   const touched = input.files.filter((file) =>
     policy.escalationPaths.some((pattern) => matchesGlob(pattern, file)),
   );

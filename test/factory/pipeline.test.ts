@@ -142,8 +142,8 @@ describe("Pipeline", () => {
     );
     expect(h.cards.notifications()[0]?.text).toMatch(/needs you/);
 
-    expect(() => h.pipeline.approveMerge(id, SHA2)).toThrow();
-    h.pipeline.approveMerge(id, SHA);
+    await expect(h.pipeline.approveMerge(id, SHA2)).rejects.toThrow();
+    await h.pipeline.approveMerge(id, SHA);
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5]);
   });
@@ -210,7 +210,7 @@ describe("Pipeline", () => {
     expect(other.cards.get(card).waiting).toBe("No worker is ready.");
   });
 
-  it("reverts a merge whose checks fail on the default branch, reopens the issue, and starts again", async () => {
+  it("reverts a merge whose checks fail, after reviewing the revert, reopens the issue, and starts again", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
@@ -221,16 +221,92 @@ describe("Pipeline", () => {
     expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
     expect(h.github.reverted).toEqual([5]);
 
+    // Under standard, the revert PR gets its own review from the other provider.
     await h.pipeline.tick();
+    const review = h.t3.launches.at(-1);
+    expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
+    expect(review?.message).toContain("#9");
+    h.finish(`t${String(h.t3.launches.length)}`, reviewResult("approve", SHA2));
+    await h.pipeline.tick();
+
     expect(h.github.merged).toEqual([5, 9]);
     expect(h.github.reopened).toEqual([5]);
     expect(h.cards.notifications()[0]?.text).toMatch(/Reverted PR #5/);
-    const card = h.cards.get(id);
-    expect(card).toMatchObject({ stage: "Implementing", prNumber: null });
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", prNumber: null });
 
     await h.pipeline.tick();
     expect(h.t3.launches.at(-1)?.message).toContain("reverted");
     expect(h.t3.launches.at(-1)?.workspace).toMatchObject({ branch: "factory/card-1-retry-9" });
+  });
+
+  it("sends a revert PR that touches an escalation path to the owner", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "yolo", overrides: { escalationPaths: ["ci/**"] } },
+      };
+    });
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, { state: "failure", failed: ["build"] });
+    await h.pipeline.tick();
+    h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5", files: ["ci/build.yml"] }));
+    await h.pipeline.tick();
+
+    expect(h.github.merged).toEqual([5]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "revert-merge" });
+    await h.pipeline.approveMerge(id, SHA2);
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([5, 9]);
+  });
+
+  it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.github.prs.set(6, pr(6, SHA, { headBranch: "someone/else" }));
+    h.finish("t1", implementResult(6, SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).reason).toMatch(/not the card's branch/);
+
+    const other = harness();
+    const card = admitted(other);
+    await toReview(other, card);
+    other.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    other.finish("t2", reviewResult("approve", SHA));
+    await other.pipeline.tick();
+    expect(other.cards.get(card)).toMatchObject({ stage: "Done", foreignMerge: true });
+    expect(other.github.reverted).toEqual([]);
+  });
+
+  it("waits for checks to appear on a new merge commit before calling it done", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, { state: "none", failed: [] });
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Validating");
+    h.setClock(Date.parse("2026-11-25T12:11:00Z"));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Done");
+  });
+
+  it("lets a thread waiting on the lead resume within a cap of one", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threadsPerWorker = 1;
+      config.factory.limits.threads = 1;
+    });
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.finish("t1", "", "waiting");
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Escalated");
+    await h.pipeline.startWork(id, "Use the v2 API.");
+    expect(h.t3.sends.at(-1)?.message).toContain("Use the v2 API.");
   });
 
   it("flags a factory PR merged outside Hephaestus", async () => {

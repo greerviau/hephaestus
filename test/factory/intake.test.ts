@@ -52,7 +52,7 @@ describe("Intake", () => {
     expect(h.cards.list()).toEqual([]);
   });
 
-  it("holds factory-filed issues past the cap for the owner, and admits them as room opens", async () => {
+  it("holds factory-filed issues past the cap for the owner", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {
         policy: { preset: "standard", overrides: { openIssueCap: 2 } },
@@ -65,11 +65,23 @@ describe("Intake", () => {
     expect(states).toEqual(["admitted", "admitted", "held-cap"]);
     expect(h.intake.awaitingWork("octo/app")).toBe(2);
 
+    // The held issue waits for the owner, even after room opens.
     const first = h.cards.list().at(-1);
+    h.cards.update(first?.id ?? 0, { startedAt: "2026-11-25T12:00:00Z" });
     h.cards.transition(first?.id ?? 0, "Implementing", "started");
     await h.intake.poll();
-    expect(h.intake.issues(["held-cap"])).toEqual([]);
+    const held = h.intake.issues(["held-cap"]);
+    expect(held).toHaveLength(1);
+    await h.intake.approve("octo/app", held[0]?.number ?? 0);
     expect(h.cards.list()).toHaveLength(3);
+  });
+
+  it("refuses to admit an issue that was closed meanwhile", async () => {
+    const h = harness();
+    h.github.issues.set(8, { number: 8, title: "Old", body: "", author: "x", state: "OPEN" });
+    await h.intake.poll();
+    h.github.issues.set(8, { number: 8, title: "Old", body: "", author: "x", state: "CLOSED" });
+    await expect(h.intake.approve("octo/app", 8)).rejects.toThrow(/closed/);
   });
 
   it("refuses a repo that is not a factory project", async () => {

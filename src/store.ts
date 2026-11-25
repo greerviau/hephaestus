@@ -137,6 +137,8 @@ const MIGRATIONS = [
      revert_pr INTEGER,
      owner_approved_sha TEXT,
      pending_message TEXT,
+     owner_action TEXT CHECK (owner_action IN ('merge', 'revert-merge')),
+     branch TEXT,
      started_at TEXT,
      foreign_merge INTEGER NOT NULL DEFAULT 0,
      created_at TEXT NOT NULL,
