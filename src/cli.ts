@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { isAbsolute, resolve } from "node:path";
+import { accessSync, constants, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { DEFAULT_PORT, readConfig } from "./config.js";
@@ -9,11 +9,13 @@ import { scheduleBackups } from "./config/backup.js";
 import { importSkill } from "./config/defaults.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
-import { resolvePaths } from "./paths.js";
+import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
 import { SystemdUserService } from "./service.js";
+import { hermesRunner } from "./hermes/cli.js";
+import { syncFactoryHermes } from "./hermes/setup.js";
 import { openStore } from "./store.js";
 import { T3Adapter } from "./t3/adapter.js";
 import {
@@ -38,7 +40,10 @@ const USAGE = `Usage:
                                        Each --skill folder (one with a SKILL.md) goes into the first
                                        config version. Reads the password from stdin when stdin is not
                                        a terminal.
-  hephaestus uninstall                 Remove the service and ~/.hephaestus, then report baseline changes.
+  hephaestus hermes sync [--hermes <path>]
+                                       Set up or update the factory Hermes root, board, and profiles from
+                                       the current config version, and start the factory gateway.
+  hephaestus uninstall                 Remove the services and ~/.hephaestus, then report baseline changes.
   hephaestus serve                     Run the dashboard in the foreground (the service runs this).`;
 
 /** Exit code when uninstall succeeded but owner config changed since install. */
@@ -72,6 +77,7 @@ async function main(argv: string[]): Promise<number> {
         roots: resolveRoots(process.env, paths.home),
         ...t3PathOption(findExecutable("t3", process.env.PATH)),
         ...t3HomeOption(process.env.T3CODE_HOME),
+        ...hermesPathOption(findExecutable("hermes", process.env.PATH)),
         skills,
         waitForReady: (config) => waitForDashboard(config),
       });
@@ -84,6 +90,9 @@ async function main(argv: string[]): Promise<number> {
       const { drift } = uninstall({
         paths,
         service: new SystemdUserService(installedUnitPath(paths)),
+        extraServices: [
+          new SystemdUserService(join(dirname(installedUnitPath(paths)), GATEWAY_SERVICE_NAME)),
+        ],
       });
       console.log("Uninstalled.");
       if (installed !== undefined) {
@@ -113,6 +122,43 @@ async function main(argv: string[]): Promise<number> {
       for (const change of drift)
         console.log(`  ${change.path}: ${change.before} -> ${change.after}`);
       return EXIT_DRIFT;
+    }
+    case "hermes": {
+      const { positionals, values } = parseArgs({
+        args: rest,
+        allowPositionals: true,
+        options: { hermes: { type: "string" } },
+      });
+      if (positionals[0] !== "sync") {
+        console.error(USAGE);
+        return 64;
+      }
+      const config = readConfig(paths.config);
+      const hermesPath =
+        values.hermes === undefined ? config.hermesPath : executablePath(values.hermes);
+      if (hermesPath === undefined) {
+        throw new Error("The hermes CLI was not on PATH at install. Pass --hermes <path>.");
+      }
+      const gatewayUnitPath = join(dirname(config.unitPath), GATEWAY_SERVICE_NAME);
+      const db = openStore(paths.state);
+      try {
+        await syncFactoryHermes({
+          paths,
+          store: new ConfigStore(db),
+          db,
+          secrets: new SecretsFile(paths.secrets),
+          hermesPath,
+          run: hermesRunner(hermesPath, paths.hermes),
+          service: new SystemdUserService(gatewayUnitPath),
+          gatewayUnitPath,
+          // The Hephaestus MCP server (issue #10) listens on the port after the dashboard's.
+          mcpUrl: `http://127.0.0.1:${String(config.port + 1)}/mcp`,
+        });
+      } finally {
+        db.close();
+      }
+      console.log(`The factory Hermes root at ${paths.hermes} matches the current config version.`);
+      return 0;
     }
     case "serve": {
       parseArgs({ args: rest, options: {} });
@@ -180,4 +226,19 @@ function t3PathOption(path: string | undefined): { t3Path?: string } {
 
 function t3HomeOption(home: string | undefined): { t3Home?: string } {
   return home !== undefined && isAbsolute(home) ? { t3Home: home } : {};
+}
+
+function hermesPathOption(path: string | undefined): { hermesPath?: string } {
+  return path === undefined ? {} : { hermesPath: path };
+}
+
+/** An absolute path to an executable file, since systemd needs one for ExecStart. */
+function executablePath(path: string): string {
+  const absolute = resolve(path);
+  try {
+    accessSync(absolute, constants.X_OK);
+  } catch {
+    throw new Error(`${absolute} is not an executable file.`);
+  }
+  return absolute;
 }

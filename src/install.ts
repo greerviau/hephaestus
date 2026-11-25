@@ -45,6 +45,8 @@ export interface InstallOptions {
   t3Path?: string;
   /** T3's data directory, when it is not the default. */
   t3Home?: string;
+  /** The absolute path of the `hermes` CLI, for the factory gateway. */
+  hermesPath?: string;
   /** Skills the owner chose to import into the first config version. */
   skills: ImportedSkill[];
   /** Resolves once this install's dashboard answers, and rejects if it never does. */
@@ -78,6 +80,7 @@ export async function install(options: InstallOptions): Promise<void> {
     unitPath: paths.unit,
     ...(options.t3Path === undefined ? {} : { t3Path: options.t3Path }),
     ...(options.t3Home === undefined ? {} : { t3Home: options.t3Home }),
+    ...(options.hermesPath === undefined ? {} : { hermesPath: options.hermesPath }),
   };
 
   mkdirSync(paths.root, { mode: 0o700 });
@@ -133,13 +136,17 @@ export interface UninstallResult {
 export function uninstall({
   paths,
   service,
+  extraServices = [],
 }: {
   paths: Paths;
   service: ServiceManager;
+  /** Other units Hephaestus wrote, such as the factory Hermes gateway; removed first. */
+  extraServices?: ServiceManager[];
 }): UninstallResult {
   if (!existsSync(paths.config)) throw new NotInstalledError(paths.root);
   const baseline = readBaseline(paths.baseline);
 
+  for (const extra of extraServices) extra.remove();
   service.remove();
   const drift =
     baseline === undefined

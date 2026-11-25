@@ -11,6 +11,8 @@ export interface Config {
   t3Path?: string;
   /** T3's data directory when install ran with T3CODE_HOME set; the service has no such variable. */
   t3Home?: string;
+  /** The absolute path of the `hermes` CLI at install, when it was on PATH. */
+  hermesPath?: string;
 }
 
 export const DEFAULT_PORT = 7700;

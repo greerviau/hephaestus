@@ -56,6 +56,17 @@ const MIGRATIONS = [
      created_at TEXT NOT NULL,
      updated_at TEXT NOT NULL
    );`,
+  `CREATE TABLE hermes_cron_jobs (
+     role TEXT NOT NULL,
+     name TEXT NOT NULL,
+     job_id TEXT NOT NULL,
+     PRIMARY KEY (role, name)
+   );
+   CREATE TABLE hermes_skills (
+     role TEXT NOT NULL,
+     name TEXT NOT NULL,
+     PRIMARY KEY (role, name)
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */
