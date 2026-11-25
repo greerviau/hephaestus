@@ -107,3 +107,16 @@ describe("ThreadEvents", () => {
     expect(events.following()).toEqual([]);
   });
 });
+
+describe("ThreadEvents.setStatusIf", () => {
+  it("changes the status only when it still has the expected value", () => {
+    const events = new ThreadEvents(openStore(":memory:"));
+    events.recordThread(thread);
+    events.setStatus("worker-1", "thread-1", "starting");
+
+    expect(events.setStatusIf("worker-1", "thread-1", "running", "completed")).toBe(false);
+    expect(events.thread("worker-1", "thread-1")?.status).toBe("starting");
+    expect(events.setStatusIf("worker-1", "thread-1", "starting", "running")).toBe(true);
+    expect(events.thread("worker-1", "thread-1")?.status).toBe("running");
+  });
+});

@@ -7,6 +7,8 @@ export interface FollowerOptions {
   waitMs?: number;
   onError?: (error: unknown, thread: StoredThread) => void;
   now?: () => number;
+  /** The least time between two polls of one thread, for when T3 answers a wait at once. */
+  minIntervalMs?: number;
 }
 
 const FIRST_RETRY_MS = 5_000;
@@ -42,6 +44,7 @@ export class ThreadFollower {
   private readonly waitMs: number;
   private readonly onError: (error: unknown, thread: StoredThread) => void;
   private readonly now: () => number;
+  private readonly minIntervalMs: number;
   private readonly failures = new Map<string, { count: number; retryAt: number }>();
 
   constructor(
@@ -53,9 +56,11 @@ export class ThreadFollower {
         console.error("Following a thread failed", error);
       },
       now = Date.now,
+      minIntervalMs = 1_000,
     }: FollowerOptions = {},
   ) {
     this.waitMs = waitMs;
+    this.minIntervalMs = minIntervalMs;
     this.onError = onError;
     this.now = now;
   }
@@ -88,8 +93,14 @@ export class ThreadFollower {
       const current = this.events.thread(thread.environmentId, thread.threadId);
       if (current === undefined || ENDED_STATUSES.has(current.status)) return;
       const wait = this.retryIn(current);
-      if (wait > 0) await sleep(wait, signal);
-      else await this.attempt(current);
+      if (wait > 0) {
+        await sleep(wait, signal);
+        continue;
+      }
+      const started = this.now();
+      await this.attempt(current);
+      const elapsed = this.now() - started;
+      if (elapsed < this.minIntervalMs) await sleep(this.minIntervalMs - elapsed, signal);
     }
   }
 
@@ -118,6 +129,7 @@ export class ThreadFollower {
 
   private async followOnce(thread: StoredThread): Promise<void> {
     const { environmentId, threadId } = thread;
+    const before = this.events.thread(environmentId, threadId)?.status ?? thread.status;
     await this.t3.wait(environmentId, threadId, this.waitMs);
     let status = await this.readAll(environmentId, threadId);
     // A run can end between pages, leaving an item from an earlier page stored
@@ -125,7 +137,8 @@ export class ThreadFollower {
     if (ENDED_STATUSES.has(status) && this.hasOpenItems(environmentId, threadId)) {
       status = await this.readAll(environmentId, threadId);
     }
-    this.events.setStatus(environmentId, threadId, status);
+    // A send may have reset the status to starting while this read ran; that wins.
+    this.events.setStatusIf(environmentId, threadId, before, status);
   }
 
   private async readAll(environmentId: string, threadId: string): Promise<string> {

@@ -66,7 +66,7 @@ export function environmentRoutes(
             (environment) => `<tr>
   <td>${escapeHtml(environment.label)}</td>
   <td><code>${escapeHtml(environment.environmentId)}</code></td>
-  <td>${escapeHtml(environment.status)}${environment.lastError === null ? "" : `<br><span class="error">${escapeHtml(environment.lastError)}</span>`}</td>
+  <td>${escapeHtml(environment.status)}${environment.lastCallFailed ? '<br><span class="error">last call failed</span>' : ""}</td>
   <td>${escapeHtml(environment.access)}</td>
   <td>${escapeHtml(environment.expiresAt)}<br><span${expiringSoon(environment, now()) ? ' class="error"' : ""}>${expiresIn(environment, now())}</span></td>
 </tr>`,

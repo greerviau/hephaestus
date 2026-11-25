@@ -4,7 +4,7 @@ import { T3Adapter } from "../../src/t3/adapter.js";
 import { T3Connection } from "../../src/t3/connection.js";
 import { ThreadEvents } from "../../src/t3/events.js";
 import { FactoryThreads } from "../../src/t3/threads.js";
-import { FakeFailure, FakeT3 } from "./fake-t3.js";
+import { FakeFailure, FakeT3, delay } from "./fake-t3.js";
 
 let fake: FakeT3;
 let connection: T3Connection;
@@ -83,5 +83,53 @@ describe("FactoryThreads", () => {
 
     expect(events.thread("w1", "t1")?.status).toBe("starting");
     expect(events.following().map((thread) => thread.threadId)).toEqual(["t1"]);
+  });
+});
+
+describe("FactoryThreads when replies are lost", () => {
+  it("keeps a launch pending when T3 may have accepted it", async () => {
+    fake.tools.set("t3_thread_launch", () => new Promise(() => undefined));
+    await connection.close();
+    connection = new T3Connection(fake.url, {
+      token: () => Promise.resolve("good-token"),
+      renew: () => Promise.resolve(),
+    });
+    threads = new FactoryThreads(new T3Adapter(connection), events);
+    const launching = threads.launch(launch, record).catch(() => undefined);
+    await delay(100);
+    await connection.close();
+    await launching;
+
+    expect(events.launch("card-7-implement-1")?.status).toBe("pending");
+  });
+
+  it("puts the thread back on the follower's list before sending, so a lost reply is still followed", async () => {
+    fake.tools.set("t3_thread_launch", () => ({ threadId: "t1", runId: "r1", projectId: "p1" }));
+    await threads.launch(launch, record);
+    events.setStatus("w1", "t1", "completed");
+    fake.tools.set("t3_thread_send", () => new Promise(() => undefined));
+
+    const sending = threads
+      .send("w1", "t1", "Again", "card-7-round-3")
+      .catch((error: unknown) => error);
+    await delay(100);
+    expect(events.thread("w1", "t1")?.status).toBe("starting");
+    await connection.close();
+
+    expect(await sending).toBeInstanceOf(Error);
+    expect(events.following().map((thread) => thread.threadId)).toEqual(["t1"]);
+  });
+
+  it("restores the old status when T3 refuses the message", async () => {
+    fake.tools.set("t3_thread_launch", () => ({ threadId: "t1", runId: "r1", projectId: "p1" }));
+    await threads.launch(launch, record);
+    events.setStatus("w1", "t1", "completed");
+    fake.tools.set("t3_thread_send", () => {
+      throw new FakeFailure("invalid_request", "No");
+    });
+
+    await expect(threads.send("w1", "t1", "Again", "card-7-round-3")).rejects.toThrow();
+
+    expect(events.thread("w1", "t1")?.status).toBe("completed");
   });
 });

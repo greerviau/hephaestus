@@ -139,3 +139,51 @@ describe("T3Connection under load", () => {
     await connection.close();
   });
 });
+
+describe("T3Connection recovery", () => {
+  it("reconnects at the current origin after the server goes away", async () => {
+    fake.tools.set("t3_environment_links", () => ({ environmentId: "first", links: [] }));
+    let url = fake.url;
+    const connection = new T3Connection(() => url, {
+      token: () => Promise.resolve("good-token"),
+      renew: () => Promise.resolve(),
+    });
+    await connection.call("t3_environment_links", {});
+    await fake.stop();
+
+    await expect(connection.call("t3_environment_links", {})).rejects.toThrow();
+    const second = new FakeT3();
+    second.tools.set("t3_environment_links", () => ({ environmentId: "second", links: [] }));
+    await second.start();
+    url = second.url;
+
+    await expect(connection.call("t3_environment_links", {})).resolves.toMatchObject({
+      environmentId: "second",
+    });
+    await connection.close();
+    await second.stop();
+    fake = second;
+  });
+
+  it("does not sign in twice when a call starts during a renewal", async () => {
+    fake.tools.set("t3_environment_links", () => ({ environmentId: "local", links: [] }));
+    let token = "expired-token";
+    let renewals = 0;
+    const connection = new T3Connection(fake.url, {
+      token: () => Promise.resolve(token),
+      renew: async () => {
+        renewals += 1;
+        await delay(50);
+        token = "good-token";
+      },
+    });
+
+    const first = connection.call("t3_environment_links", {});
+    await delay(20);
+    const second = connection.call("t3_environment_links", {});
+    await Promise.all([first, second]);
+
+    expect(renewals).toBe(1);
+    await connection.close();
+  });
+});

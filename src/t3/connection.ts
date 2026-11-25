@@ -52,6 +52,8 @@ function failureOf(content: unknown): { code: string; message: string } | undefi
  */
 export class T3Connection {
   private client: Promise<Client> | undefined;
+  /** Clients replaced after a failure; their calls already sent may still settle. */
+  private readonly retired = new Set<Promise<Client>>();
   private renewal: Promise<void> | undefined;
   private closed = false;
 
@@ -66,8 +68,11 @@ export class T3Connection {
     try {
       return await this.callWith(client, tool, args);
     } catch (error) {
+      if (error instanceof T3ToolError) throw error;
+      // Any other failure means the client may be dead: a T3 restart ends its
+      // MCP session or moves its port. The next call opens a fresh one.
+      this.retire(client);
       if (!isUnauthorized(error)) throw error;
-      await this.invalidate(client);
       await this.renew();
       try {
         return await this.callWith(this.connect(), tool, args);
@@ -80,13 +85,13 @@ export class T3Connection {
     }
   }
 
-  /** Closes the connection and fails every call still waiting on it. */
+  /** Closes every client and fails the calls still waiting on them. Never waits on a stalled sign-in. */
   async close(): Promise<void> {
     this.closed = true;
-    const client = this.client;
+    const clients = [...this.retired, ...(this.client === undefined ? [] : [this.client])];
     this.client = undefined;
-    if (client !== undefined)
-      await (await client.catch(() => undefined))?.close().catch(() => undefined);
+    this.retired.clear();
+    await Promise.all(clients.map((client) => closeSoon(client)));
   }
 
   private async callWith(
@@ -114,6 +119,8 @@ export class T3Connection {
   }
 
   private async open(): Promise<Client> {
+    // A connection opened during a renewal would use the token being replaced.
+    if (this.renewal !== undefined) await this.renewal.catch(() => undefined);
     const token = await this.credential.token();
     const url = typeof this.url === "string" ? this.url : this.url();
     const transport = new StreamableHTTPClientTransport(new URL(url), {
@@ -136,10 +143,31 @@ export class T3Connection {
     return this.renewal;
   }
 
-  /** Drops `pending` if it is still the current client, so a newer client another call made survives. */
-  private async invalidate(pending: Promise<Client>): Promise<void> {
+  /**
+   * Stops handing out `pending`, if it is still the current client, and closes
+   * it a little later, so calls other callers already sent on it can settle.
+   */
+  private retire(pending: Promise<Client>): void {
     if (this.client === pending) this.client = undefined;
-    const client = await pending.catch(() => undefined);
-    await client?.close().catch(() => undefined);
+    if (this.retired.has(pending)) return;
+    this.retired.add(pending);
+    setTimeout(() => {
+      this.retired.delete(pending);
+      void closeSoon(pending);
+    }, RETIRE_AFTER_MS).unref();
   }
+}
+
+const RETIRE_AFTER_MS = 30_000;
+
+/** Closes a client once it has connected, giving up after a second if it never does. */
+async function closeSoon(pending: Promise<Client>): Promise<void> {
+  const giveUp = new Promise<undefined>((resolve) => {
+    const timer = setTimeout(() => {
+      resolve(undefined);
+    }, 1_000);
+    timer.unref();
+  });
+  const client = await Promise.race([pending.catch(() => undefined), giveUp]);
+  await client?.close().catch(() => undefined);
 }

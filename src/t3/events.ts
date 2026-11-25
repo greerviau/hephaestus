@@ -125,6 +125,16 @@ export class ThreadEvents {
       .run(status, this.now().toISOString(), environmentId, threadId);
   }
 
+  /** Sets the status only if it is still `expected`, and reports whether it did. */
+  setStatusIf(environmentId: string, threadId: string, expected: string, status: string): boolean {
+    const result = this.db
+      .prepare(
+        "UPDATE factory_threads SET status = ?, updated_at = ? WHERE environment_id = ? AND thread_id = ? AND status = ?",
+      )
+      .run(status, this.now().toISOString(), environmentId, threadId, expected);
+    return result.changes > 0;
+  }
+
   upsertItems(environmentId: string, threadId: string, items: ThreadItem[]): void {
     const at = this.now().toISOString();
     const upsert = this.db.prepare(

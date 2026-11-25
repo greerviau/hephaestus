@@ -48,7 +48,7 @@ describe("T3Adapter", () => {
           status: "reachable",
           access: "full-access",
           expiresAt: "2026-12-24T04:32:55.252Z",
-          lastError: null,
+          lastCallFailed: false,
         },
       ],
     });
@@ -180,5 +180,35 @@ describe("T3Adapter.read", () => {
 
     expect(page.items[0]?.text).toBe("first half, second half");
     expect(fake.calls[1]?.args).toMatchObject({ itemId: "long", textOffset: 12 });
+  });
+});
+
+describe("T3Adapter.read continuation", () => {
+  it("keeps reading until T3 reports the end of the text", async () => {
+    const pages = 80;
+    fake.tools.set("t3_thread_read", (args) => {
+      const offset = typeof args.textOffset === "number" ? args.textOffset : 0;
+      const page = offset / 10;
+      return {
+        thread: { status: "completed" },
+        items: [
+          {
+            itemId: "long",
+            position: 0,
+            type: "assistant_message",
+            status: "completed",
+            text: "x".repeat(10),
+            textTruncated: page < pages - 1,
+            nextTextOffset: page < pages - 1 ? offset + 10 : null,
+          },
+        ],
+        nextPosition: 0,
+        hasMore: false,
+      };
+    });
+
+    const page = await t3.read("w1", "t1", -1);
+
+    expect(page.items[0]?.text).toHaveLength(pages * 10);
   });
 });

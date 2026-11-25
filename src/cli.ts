@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, mkdirSync, realpathSync } from "node:fs";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { DEFAULT_PORT, readConfig } from "./config.js";
@@ -71,6 +71,7 @@ async function main(argv: string[]): Promise<number> {
         cliPath: realpathSync(fileURLToPath(import.meta.url)),
         roots: resolveRoots(process.env, paths.home),
         ...t3PathOption(findExecutable("t3", process.env.PATH)),
+        ...t3HomeOption(process.env.T3CODE_HOME),
         skills,
         waitForReady: (config) => waitForDashboard(config),
       });
@@ -88,7 +89,7 @@ async function main(argv: string[]): Promise<number> {
       if (installed !== undefined) {
         try {
           const revoked = await revokeSessions(
-            t3Runner(installed.t3Path),
+            t3Runner(installed.t3Path, installed.t3Home),
             t3ClientName(installed.instanceId),
           );
           console.log(
@@ -121,9 +122,9 @@ async function main(argv: string[]): Promise<number> {
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
       const clientName = t3ClientName(config.instanceId);
-      const runT3 = t3Runner(config.t3Path);
+      const runT3 = t3Runner(config.t3Path, config.t3Home);
       // Resolved on every connect, so a T3 restart on another port is picked up.
-      const origin = (): string => resolveT3Origin(process.env, paths.home);
+      const origin = (): string => resolveT3Origin(process.env, paths.home, config.t3Home);
       const credentials = new T3Credentials(new SecretsFile(paths.secrets), async () => {
         // Each sign-in replaces the last one, so old sessions do not pile up in T3.
         await revokeSessions(runT3, clientName);
@@ -175,4 +176,8 @@ main(process.argv.slice(2)).then(
 
 function t3PathOption(path: string | undefined): { t3Path?: string } {
   return path === undefined ? {} : { t3Path: path };
+}
+
+function t3HomeOption(home: string | undefined): { t3Home?: string } {
+  return home !== undefined && isAbsolute(home) ? { t3Home: home } : {};
 }

@@ -76,3 +76,15 @@ describe("findExecutable", () => {
     expect(findExecutable("t3", "")).toBeUndefined();
   });
 });
+
+describe("resolveT3Origin with a recorded data directory", () => {
+  it("uses the directory install recorded when the service has no T3CODE_HOME", () => {
+    mkdirSync(join(home, "custom/userdata"), { recursive: true });
+    writeFileSync(
+      join(home, "custom/userdata/server-runtime.json"),
+      JSON.stringify({ port: 17773 }),
+    );
+
+    expect(resolveT3Origin({}, home, join(home, "custom"))).toBe("http://127.0.0.1:17773");
+  });
+});

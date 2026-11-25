@@ -7,7 +7,8 @@ export interface Environment {
   status: string;
   access: string;
   expiresAt: string;
-  lastError: string | null;
+  /** Whether T3's last call over this link failed. T3's message is not kept: it can name private addresses. */
+  lastCallFailed: boolean;
 }
 
 export interface Environments {
@@ -69,8 +70,8 @@ interface RawItem {
   nextTextOffset?: number | null;
 }
 
-/** Continuation reads allowed for one item's text: 50 x 20,000 characters. */
-const MAX_TEXT_PAGES = 50;
+/** Stored for an item whose text could not be read to the end; not final, so it is read again. */
+export const TEXT_INCOMPLETE = "text-incomplete";
 
 /** Typed calls to the T3 tools Hephaestus uses. */
 export class T3Adapter {
@@ -79,7 +80,7 @@ export class T3Adapter {
   async environments(): Promise<Environments> {
     const result = (await this.connection.call("t3_environment_links", {})) as {
       environmentId: string;
-      links: Omit<Environment, "reachable">[];
+      links: (Omit<Environment, "reachable" | "lastCallFailed"> & { lastError: string | null })[];
     };
     return {
       localEnvironmentId: result.environmentId,
@@ -90,7 +91,7 @@ export class T3Adapter {
         status: link.status,
         access: link.access,
         expiresAt: link.expiresAt,
-        lastError: link.lastError,
+        lastCallFailed: link.lastError !== null,
       })),
     };
   }
@@ -154,7 +155,10 @@ export class T3Adapter {
     for (const item of result.items) {
       let text = item.text ?? item.title ?? "";
       let next = item.textTruncated === true ? item.nextTextOffset : null;
-      for (let page = 0; typeof next === "number" && page < MAX_TEXT_PAGES; page += 1) {
+      let offset = -1;
+      // Read until T3 reports the end; stop if an offset fails to move forward.
+      while (typeof next === "number" && next > offset) {
+        offset = next;
         const rest = (await this.connection.call("t3_thread_read", {
           environmentId,
           threadId,
@@ -168,11 +172,12 @@ export class T3Adapter {
         text += part.text ?? "";
         next = part.textTruncated === true ? part.nextTextOffset : null;
       }
+      const complete = typeof next !== "number";
       items.push({
         itemId: item.itemId,
         position: item.position,
         type: item.type,
-        status: item.status ?? "completed",
+        status: complete ? (item.status ?? "completed") : TEXT_INCOMPLETE,
         text,
       });
     }

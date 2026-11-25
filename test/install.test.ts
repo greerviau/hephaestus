@@ -117,6 +117,15 @@ describe("install", () => {
     expect(versions[0]?.document.roles.lead.persona).toContain("start_work");
   });
 
+  it("records the t3 CLI and T3 data directory it was given, for the service", async () => {
+    await install({ ...options(), t3Path: "/opt/t3/bin/t3", t3Home: "/data/t3" });
+
+    expect(JSON.parse(readFileSync(paths.config, "utf8"))).toMatchObject({
+      t3Path: "/opt/t3/bin/t3",
+      t3Home: "/data/t3",
+    });
+  });
+
   it("refuses to install over an existing install", async () => {
     await install(options());
 

@@ -32,7 +32,7 @@ function environments(): Environments {
         status: "reachable",
         access: "full-access",
         expiresAt: new Date(NOW + 30 * DAY).toISOString(),
-        lastError: null,
+        lastCallFailed: false,
       },
       {
         environmentId: "w2",
@@ -41,7 +41,7 @@ function environments(): Environments {
         status: "unreachable",
         access: "full-access",
         expiresAt: new Date(NOW + 5 * DAY).toISOString(),
-        lastError: "connection refused",
+        lastCallFailed: true,
       },
     ],
   };
@@ -78,7 +78,6 @@ describe("Environments page", () => {
 
     expect(html).toContain("worker &lt;one&gt;");
     expect(html).toContain("unreachable");
-    expect(html).toContain("connection refused");
     expect(html).toContain(new Date(NOW + 5 * DAY).toISOString());
     expect(html).toContain("expires in 5 days");
   });
@@ -128,5 +127,18 @@ describe("Overview", () => {
     expect(html).toContain("worker two");
     expect(html).toContain("expires in 5 days");
     expect(html).not.toContain("worker &lt;one&gt;");
+  });
+});
+
+describe("link errors", () => {
+  it("says a link has an error without showing T3's error text", async () => {
+    const { base, cookie } = await start({ environments: () => Promise.resolve(environments()) });
+
+    const html = await (await fetch(`${base}/environments`, { headers: { cookie } })).text();
+    const api = await (await fetch(`${base}/api/environments`, { headers: { cookie } })).text();
+
+    expect(html).not.toContain("connection refused");
+    expect(api).not.toContain("connection refused");
+    expect(html).toContain("last call failed");
   });
 });

@@ -43,6 +43,8 @@ export interface InstallOptions {
   roots?: ConfigRoots;
   /** The absolute path of the `t3` CLI, for the service to use. */
   t3Path?: string;
+  /** T3's data directory, when it is not the default. */
+  t3Home?: string;
   /** Skills the owner chose to import into the first config version. */
   skills: ImportedSkill[];
   /** Resolves once this install's dashboard answers, and rejects if it never does. */
@@ -75,6 +77,7 @@ export async function install(options: InstallOptions): Promise<void> {
     instanceId: randomUUID(),
     unitPath: paths.unit,
     ...(options.t3Path === undefined ? {} : { t3Path: options.t3Path }),
+    ...(options.t3Home === undefined ? {} : { t3Home: options.t3Home }),
   };
 
   mkdirSync(paths.root, { mode: 0o700 });

@@ -14,6 +14,8 @@ const REDIRECT_URI = "http://127.0.0.1:1/callback";
 /** Sign in again this long before the token expires. */
 const RENEW_BEFORE_MS = 3 * 24 * 60 * 60 * 1000;
 const TOKEN_SECRET = "t3-mcp-token";
+/** A sign-in step that takes longer than this fails, so a stalled T3 cannot hold shutdown. */
+const OAUTH_TIMEOUT_MS = 30_000;
 const EXPIRY_SECRET = "t3-mcp-token-expires-at";
 /** Scopes a pairing code needs to approve a `full-access` MCP client. */
 const FULL_ACCESS_SCOPES = [
@@ -28,6 +30,7 @@ async function postJson(url: string, body: unknown): Promise<Record<string, unkn
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
   });
   const result = (await response.json()) as Record<string, unknown>;
   if (!response.ok) {
@@ -74,6 +77,7 @@ export async function signIn(
   const response = await fetch(`${origin}/oauth/mcp/token`, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
+    signal: AbortSignal.timeout(OAUTH_TIMEOUT_MS),
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
@@ -92,6 +96,8 @@ export async function signIn(
 
 /** The T3 MCP token, kept in the secrets file and renewed before it expires. */
 export class T3Credentials implements Credential {
+  private renewing: Promise<void> | undefined;
+
   constructor(
     private readonly secrets: SecretsFile,
     private readonly signInAgain: () => Promise<T3Token>,
@@ -106,10 +112,18 @@ export class T3Credentials implements Credential {
     return this.secrets.get(TOKEN_SECRET) ?? "";
   }
 
-  async renew(): Promise<void> {
-    const token = await this.signInAgain();
-    this.secrets.set(TOKEN_SECRET, token.accessToken);
-    this.secrets.set(EXPIRY_SECRET, String(token.expiresAt));
+  /** Signs in again. Concurrent callers share one sign-in. */
+  renew(): Promise<void> {
+    this.renewing ??= (async () => {
+      try {
+        const token = await this.signInAgain();
+        this.secrets.set(TOKEN_SECRET, token.accessToken);
+        this.secrets.set(EXPIRY_SECRET, String(token.expiresAt));
+      } finally {
+        this.renewing = undefined;
+      }
+    })();
+    return this.renewing;
   }
 
   forget(): void {
@@ -121,12 +135,16 @@ export class T3Credentials implements Credential {
 /** Runs the `t3` CLI with arguments and resolves with its stdout. */
 export type CliRun = (args: string[]) => Promise<string>;
 
-/** Runs the `t3` CLI at `executable`: the absolute path install recorded, or `t3` on PATH. */
+/**
+ * Runs the `t3` CLI at `executable` (the absolute path install recorded, or
+ * `t3` on PATH), against the T3 data directory install recorded, if any.
+ */
 export const t3Runner =
-  (executable = "t3"): CliRun =>
+  (executable = "t3", t3Home?: string): CliRun =>
   (args) =>
     new Promise((resolve, reject) => {
-      execFile(executable, args, { timeout: 30_000 }, (error, stdout) => {
+      const env = t3Home === undefined ? process.env : { ...process.env, T3CODE_HOME: t3Home };
+      execFile(executable, args, { timeout: 30_000, env }, (error, stdout) => {
         if (error)
           reject(
             new Error(`t3 ${args.slice(0, 3).join(" ")} failed: ${error.message}`, {

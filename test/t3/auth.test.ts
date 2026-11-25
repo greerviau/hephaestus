@@ -189,3 +189,22 @@ describe("t3ClientName", () => {
     );
   });
 });
+
+describe("T3Credentials under concurrency", () => {
+  it("signs in once when several callers find the token missing at the same time", async () => {
+    let signIns = 0;
+    const credentials = new T3Credentials(
+      new SecretsFile(join(dir, "secrets.json")),
+      async () => {
+        signIns += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return { accessToken: "token", expiresAt: 10 * 86_400_000 };
+      },
+      () => 0,
+    );
+
+    await Promise.all([credentials.token(), credentials.token(), credentials.token()]);
+
+    expect(signIns).toBe(1);
+  });
+});

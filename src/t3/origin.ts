@@ -9,11 +9,15 @@ const DEFAULT_PORT = 3773;
  * The loopback origin of this host's T3 server, from the port in T3's runtime
  * file. Hephaestus always talks to T3 over loopback, even when T3 also listens on the LAN.
  */
-export function resolveT3Origin(env: NodeJS.ProcessEnv, home: string): string {
+export function resolveT3Origin(
+  env: NodeJS.ProcessEnv,
+  home: string,
+  recordedHome?: string,
+): string {
   const root =
     env.T3CODE_HOME !== undefined && isAbsolute(env.T3CODE_HOME)
       ? env.T3CODE_HOME
-      : join(home, ".t3");
+      : (recordedHome ?? join(home, ".t3"));
   try {
     const runtime = JSON.parse(
       readFileSync(join(root, "userdata", "server-runtime.json"), "utf8"),

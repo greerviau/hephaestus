@@ -9,6 +9,8 @@ export interface Config {
   unitPath: string;
   /** The absolute path of the `t3` CLI at install, when it was on PATH. */
   t3Path?: string;
+  /** T3's data directory when install ran with T3CODE_HOME set; the service has no such variable. */
+  t3Home?: string;
 }
 
 export const DEFAULT_PORT = 7700;
