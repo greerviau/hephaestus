@@ -94,8 +94,14 @@ test "$(status --header "cookie: $cookie" "$base/api/session")" = 200 || fail "s
 echo "== uninstall reports changed owner files, including inside a linked skill"
 echo "# edited" > "$HOME/.claude/CLAUDE.md"
 echo "# review v2" > "$HOME/skills-checkout/review/SKILL.md"
-run $cli uninstall
+set +e
+report=$($cli uninstall)
+code=$?
+set -e
+echo "$report"
 test "$code" = 2 || fail "uninstall exit code was $code, expected 2"
+echo "$report" | grep -q '\.claude/CLAUDE\.md' || fail "uninstall did not report CLAUDE.md"
+echo "$report" | grep -q '\.claude/skills/review/SKILL\.md' || fail "uninstall did not report the linked skill"
 report=$($cli uninstall 2>&1 || true)
 echo "$report" | grep -q "No Hephaestus install found" || fail "second uninstall did not say nothing is installed"
 test ! -e "$HOME/.hephaestus" || fail "~/.hephaestus still exists"
@@ -120,6 +126,14 @@ wait_for_dashboard
 run $cli uninstall
 test "$code" = 0 || fail "clean uninstall exit code was $code, expected 0"
 test ! -e "$HOME/.hephaestus" || fail "~/.hephaestus still exists"
+
+echo "== uninstall removes the recorded unit even when XDG_CONFIG_HOME changed"
+printf '%s\n' "$password" | $cli install --port "$port"
+wait_for_dashboard
+run env XDG_CONFIG_HOME="$HOME/elsewhere" $cli uninstall
+test "$code" = 0 || fail "uninstall with another XDG_CONFIG_HOME exited $code"
+test ! -e "$unit" || fail "recorded unit file still exists"
+if systemctl --user is-active hephaestus.service >/dev/null 2>&1; then fail "service still active"; fi
 
 echo "== install fails and rolls back when another program holds the port"
 node -e 'require("node:http").createServer((q, s) => s.end("other")).listen(7701, "0.0.0.0")' &

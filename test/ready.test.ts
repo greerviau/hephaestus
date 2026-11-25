@@ -26,7 +26,7 @@ describe("waitForDashboard", () => {
     const port = await listen("mine");
 
     await expect(
-      waitForDashboard({ host: "0.0.0.0", port, instanceId: "mine" }, { timeoutMs: 2000 }),
+      waitForDashboard({ port, instanceId: "mine" }, { timeoutMs: 2000 }),
     ).resolves.toBeUndefined();
   });
 
@@ -34,7 +34,7 @@ describe("waitForDashboard", () => {
     const port = await listen("someone-else");
 
     await expect(
-      waitForDashboard({ host: "0.0.0.0", port, instanceId: "mine" }, { timeoutMs: 500 }),
+      waitForDashboard({ port, instanceId: "mine" }, { timeoutMs: 500 }),
     ).rejects.toThrow(/did not answer on port/);
   });
 
@@ -44,7 +44,7 @@ describe("waitForDashboard", () => {
     server = undefined;
 
     await expect(
-      waitForDashboard({ host: "0.0.0.0", port, instanceId: "mine" }, { timeoutMs: 500 }),
+      waitForDashboard({ port, instanceId: "mine" }, { timeoutMs: 500 }),
     ).rejects.toThrow(/did not answer on port/);
   });
 });

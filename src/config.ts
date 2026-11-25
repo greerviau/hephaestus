@@ -5,6 +5,8 @@ export interface Config {
   port: number;
   /** Sent in a response header so install can tell its own dashboard from another server on the port. */
   instanceId: string;
+  /** The unit file install wrote; uninstall removes this one even if XDG_CONFIG_HOME changed since. */
+  unitPath: string;
 }
 
 export const DEFAULT_PORT = 7700;

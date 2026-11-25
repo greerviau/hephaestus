@@ -6,8 +6,14 @@ import {
   hashPassword,
   writePasswordHash,
 } from "./auth.js";
-import { diffBaselines, readBaseline, takeBaseline, type Drift } from "./baseline.js";
-import { DEFAULT_HOST, writeConfig, type Config } from "./config.js";
+import {
+  diffBaselines,
+  readBaseline,
+  takeBaseline,
+  type ConfigRoots,
+  type Drift,
+} from "./baseline.js";
+import { DEFAULT_HOST, readConfig, writeConfig, type Config } from "./config.js";
 import type { Paths } from "./paths.js";
 import { UnitExistsError, unitFile, type ServiceManager } from "./service.js";
 import { openStore } from "./store.js";
@@ -31,6 +37,8 @@ export interface InstallOptions {
   port: number;
   nodePath: string;
   cliPath: string;
+  /** Where the owner's tools keep their config; defaults to each tool's default folder. */
+  roots?: ConfigRoots;
   /** Resolves once this install's dashboard answers, and rejects if it never does. */
   waitForReady: (config: Config) => Promise<void>;
 }
@@ -54,8 +62,13 @@ export async function install(options: InstallOptions): Promise<void> {
   if (existsSync(paths.root)) throw new AlreadyInstalledError(paths.root);
 
   // Take the baseline before writing anything, so it reflects the owner's own state.
-  const baseline = takeBaseline(paths.home);
-  const config: Config = { host: DEFAULT_HOST, port: options.port, instanceId: randomUUID() };
+  const baseline = takeBaseline(paths.home, options.roots);
+  const config: Config = {
+    host: DEFAULT_HOST,
+    port: options.port,
+    instanceId: randomUUID(),
+    unitPath: paths.unit,
+  };
 
   mkdirSync(paths.root, { mode: 0o700 });
   let serviceAttempted = false;
@@ -77,7 +90,12 @@ export async function install(options: InstallOptions): Promise<void> {
       try {
         service.remove();
       } catch (cleanupError) {
-        console.error("Could not remove the service after a failed install:", cleanupError);
+        // Keep ~/.hephaestus, so `hephaestus uninstall` can finish the cleanup later.
+        throw new Error(
+          `${String(error)}. Removing the service afterwards also failed: ${String(cleanupError)}. ` +
+            "Fix that, then run `hephaestus uninstall`.",
+          { cause: cleanupError },
+        );
       }
     }
     rmSync(paths.root, { recursive: true, force: true });
@@ -107,7 +125,15 @@ export function uninstall({
 
   service.remove();
   const drift =
-    baseline === undefined ? undefined : diffBaselines(baseline, takeBaseline(paths.home));
+    baseline === undefined
+      ? undefined
+      : diffBaselines(baseline, takeBaseline(paths.home, baseline.roots));
   rmSync(paths.root, { recursive: true, force: true });
   return { drift };
+}
+
+/** The unit path install recorded, so uninstall acts on the unit that install wrote. */
+export function installedUnitPath(paths: Paths): string {
+  if (!existsSync(paths.config)) throw new NotInstalledError(paths.root);
+  return readConfig(paths.config).unitPath;
 }

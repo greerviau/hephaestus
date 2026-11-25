@@ -19,6 +19,7 @@ export interface DashboardOptions {
 }
 
 interface Failures {
+  /** Wrong passwords in the window, plus checks still running for this client. */
   count: number;
   since: number;
 }
@@ -86,6 +87,7 @@ export function createDashboardServer({
 
   async function login(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const client = request.socket.remoteAddress ?? "unknown";
+    // Reserve a check before any await, so concurrent requests cannot all pass the limits.
     if (isLockedOut(client)) {
       send(response, 429, HTML, loginPage("Too many wrong passwords. Try again later."));
       return;
@@ -94,26 +96,27 @@ export function createDashboardServer({
       send(response, 429, HTML, loginPage("The server is busy. Try again."));
       return;
     }
-    const body = await readBody(request);
-    if (body === undefined) {
-      send(response, 413, "text/plain; charset=utf-8", "Request too large\n");
-      return;
-    }
-    const password = new URLSearchParams(body).get("password") ?? "";
-    const stored = readPasswordHash(db);
     loginsInFlight += 1;
-    let valid: boolean;
+    reserveAttempt(client);
+    let valid = false;
     try {
+      const body = await readBody(request);
+      if (body === undefined) {
+        send(response, 413, "text/plain; charset=utf-8", "Request too large\n");
+        return;
+      }
+      const password = new URLSearchParams(body).get("password") ?? "";
+      const stored = readPasswordHash(db);
       valid = stored !== undefined && (await verifyPassword(password, stored));
     } finally {
       loginsInFlight -= 1;
+      // The reserved attempt stays counted as a failure unless the password was right.
+      if (valid) failures.delete(client);
     }
     if (!valid) {
-      recordFailure(client);
       send(response, 401, HTML, loginPage("Wrong password."));
       return;
     }
-    failures.delete(client);
     const token = sessions.create();
     response.setHeader(
       "set-cookie",
@@ -132,7 +135,8 @@ export function createDashboardServer({
     return entry.count >= LOGIN_FAILURE_LIMIT;
   }
 
-  function recordFailure(client: string): void {
+  /** Counts an attempt against the client's limit before its password is checked. */
+  function reserveAttempt(client: string): void {
     for (const [key, entry] of failures) {
       if (now() - entry.since >= LOGIN_FAILURE_WINDOW_MS) failures.delete(key);
     }

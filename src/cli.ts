@@ -1,9 +1,10 @@
 #!/usr/bin/env node
-import { realpathSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { DEFAULT_PORT, readConfig } from "./config.js";
-import { install, uninstall } from "./install.js";
+import { resolveRoots } from "./baseline.js";
+import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
 import { resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
@@ -31,6 +32,8 @@ async function main(argv: string[]): Promise<number> {
       const port = values.port === undefined ? DEFAULT_PORT : Number(values.port);
       if (!Number.isInteger(port) || port < 1 || port > 65535)
         throw new Error(`Invalid port: ${String(values.port)}`);
+      // Refuse before asking for a password that would not be used.
+      if (existsSync(paths.root)) throw new AlreadyInstalledError(paths.root);
       const password = await readPassword("Dashboard password: ");
       await install({
         paths,
@@ -39,6 +42,7 @@ async function main(argv: string[]): Promise<number> {
         port,
         nodePath: process.execPath,
         cliPath: realpathSync(fileURLToPath(import.meta.url)),
+        roots: resolveRoots(process.env, paths.home),
         waitForReady: (config) => waitForDashboard(config),
       });
       console.log(`Installed. The dashboard listens on port ${String(port)}.`);
@@ -46,7 +50,10 @@ async function main(argv: string[]): Promise<number> {
     }
     case "uninstall": {
       parseArgs({ args: rest, options: {} });
-      const { drift } = uninstall({ paths, service: new SystemdUserService(paths.unit) });
+      const { drift } = uninstall({
+        paths,
+        service: new SystemdUserService(installedUnitPath(paths)),
+      });
       console.log("Uninstalled.");
       if (drift === undefined) {
         console.log(

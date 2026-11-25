@@ -7,43 +7,55 @@ import {
   realpathSync,
   statSync,
 } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
+
+/** Where each tool keeps the owner's config. Install records these, and uninstall reuses them. */
+export interface ConfigRoots {
+  hermes: string;
+  claude: string;
+  codex: string;
+  agents: string;
+  t3: string;
+}
+
+/** Resolves config roots the way each tool does: its environment variable, else its default folder. */
+export function resolveRoots(env: NodeJS.ProcessEnv, home: string): ConfigRoots {
+  const root = (variable: string | undefined, fallback: string): string =>
+    variable !== undefined && isAbsolute(variable) ? variable : join(home, fallback);
+  return {
+    hermes: root(env.HERMES_HOME, ".hermes"),
+    claude: root(env.CLAUDE_CONFIG_DIR, ".claude"),
+    codex: root(env.CODEX_HOME, ".codex"),
+    agents: join(home, ".agents"),
+    t3: root(env.T3CODE_HOME, ".t3"),
+  };
+}
 
 /** Files and folders inside a Hermes profile that the owner writes. */
 const HERMES_PROFILE_PATHS = ["config.yaml", ".env", "SOUL.md", "skills", "hooks"];
 
 /**
- * Owner-authored config that Hephaestus must leave unchanged, as paths relative
- * to the home directory. Credentials and runtime state are left out because
- * they change during normal use, and so is `~/.claude.json`, which Claude Code
- * rewrites on every session. Named Hermes profiles under `.hermes/profiles/`
- * are added when the baseline is taken.
+ * Owner-authored config that Hephaestus must leave unchanged, relative to each
+ * tool's config root. Credentials and runtime state are left out because they
+ * change during normal use, and so is `~/.claude.json`, which Claude Code
+ * rewrites on every session. Named Hermes profiles under `profiles/` are added
+ * when the baseline is taken.
  */
 export const BASELINE_TARGETS = [
-  { group: "hermes", paths: HERMES_PROFILE_PATHS.map((path) => `.hermes/${path}`) },
+  { group: "hermes", root: "hermes", paths: HERMES_PROFILE_PATHS },
   {
     group: "claude",
-    paths: [
-      ".claude/CLAUDE.md",
-      ".claude/settings.json",
-      ".claude/settings.local.json",
-      ".claude/skills",
-      ".claude/agents",
-      ".claude/commands",
-    ],
+    root: "claude",
+    paths: ["CLAUDE.md", "settings.json", "settings.local.json", "skills", "agents", "commands"],
   },
-  {
-    group: "codex",
-    paths: [
-      ".codex/config.toml",
-      ".codex/AGENTS.md",
-      ".codex/skills",
-      ".agents/AGENTS.md",
-      ".agents/skills",
-    ],
-  },
-  { group: "t3", paths: [".t3/userdata/settings.json", ".t3/userdata/keybindings.json"] },
-] as const;
+  { group: "codex", root: "codex", paths: ["config.toml", "AGENTS.md", "skills"] },
+  { group: "codex", root: "agents", paths: ["AGENTS.md", "skills"] },
+  { group: "t3", root: "t3", paths: ["userdata/settings.json", "userdata/keybindings.json"] },
+] as const satisfies readonly {
+  group: string;
+  root: keyof ConfigRoots;
+  paths: readonly string[];
+}[];
 
 /**
  * `sha256:<hex>` for a file, `symlink:<target>` for a link (followed by
@@ -54,6 +66,8 @@ export type BaselineEntry = string;
 
 export interface Baseline {
   takenAt: string;
+  roots: ConfigRoots;
+  /** Keyed by path relative to the home directory, or absolute for paths outside it. */
   entries: Record<string, BaselineEntry>;
 }
 
@@ -65,19 +79,22 @@ export interface Drift {
 
 const ABSENT = "absent";
 
-export function takeBaseline(home: string): Baseline {
+export function takeBaseline(home: string, roots: ConfigRoots = resolveRoots({}, home)): Baseline {
   const entries: Record<string, BaselineEntry> = {};
-  const visited = new Set<string>();
-  for (const path of targetPaths(home)) {
-    record(home, path, entries, visited, true);
+  for (const path of targetPaths(roots)) {
+    record(home, path, entries, new Set(), true);
   }
-  return { takenAt: new Date().toISOString(), entries };
+  return { takenAt: new Date().toISOString(), roots, entries };
 }
 
-function targetPaths(home: string): string[] {
-  const paths: string[] = BASELINE_TARGETS.flatMap((target) => [...target.paths]);
-  for (const profile of listDirectory(join(home, ".hermes", "profiles"))) {
-    paths.push(...HERMES_PROFILE_PATHS.map((path) => `.hermes/profiles/${profile}/${path}`));
+function targetPaths(roots: ConfigRoots): string[] {
+  const paths: string[] = BASELINE_TARGETS.flatMap((target) =>
+    target.paths.map((path) => join(roots[target.root], path)),
+  );
+  for (const profile of listDirectory(join(roots.hermes, "profiles"))) {
+    paths.push(
+      ...HERMES_PROFILE_PATHS.map((path) => join(roots.hermes, "profiles", profile, path)),
+    );
   }
   return paths;
 }
@@ -96,20 +113,30 @@ function isMissing(error: unknown): boolean {
   return code === "ENOENT" || code === "ENOTDIR";
 }
 
+function key(home: string, absolute: string): string {
+  const path = relative(home, absolute);
+  return path.startsWith("..") || isAbsolute(path) ? absolute : path.split("\\").join("/");
+}
+
+/**
+ * Records one path. `ancestors` holds the real paths of the directories above
+ * it on this branch, so a link back up the tree stops while two links to the
+ * same folder from different places are both recorded.
+ */
 function record(
   home: string,
-  path: string,
+  absolute: string,
   entries: Record<string, BaselineEntry>,
-  visited: Set<string>,
+  ancestors: Set<string>,
   isTarget: boolean,
 ): void {
-  const absolute = join(home, path);
+  const name = key(home, absolute);
   let stats;
   try {
     stats = lstatSync(absolute);
   } catch (error) {
     if (!isMissing(error)) throw error;
-    if (isTarget) entries[path] = ABSENT;
+    if (isTarget) entries[name] = ABSENT;
     return;
   }
 
@@ -120,33 +147,33 @@ function record(
       target = statSync(absolute);
     } catch (error) {
       if (!isMissing(error) && (error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
-      entries[path] = link;
+      entries[name] = link;
       return;
     }
     if (target.isFile()) {
-      entries[path] = `${link} ${hashFile(absolute)}`;
+      entries[name] = `${link} ${hashFile(absolute)}`;
     } else {
-      entries[path] = link;
-      if (target.isDirectory()) recordDirectory(home, path, entries, visited);
+      entries[name] = link;
+      if (target.isDirectory()) recordDirectory(home, absolute, entries, ancestors);
     }
   } else if (stats.isDirectory()) {
-    recordDirectory(home, path, entries, visited);
+    recordDirectory(home, absolute, entries, ancestors);
   } else if (stats.isFile()) {
-    entries[path] = hashFile(absolute);
+    entries[name] = hashFile(absolute);
   }
 }
 
 function recordDirectory(
   home: string,
-  path: string,
+  absolute: string,
   entries: Record<string, BaselineEntry>,
-  visited: Set<string>,
+  ancestors: Set<string>,
 ): void {
-  const real = realpathSync(join(home, path));
-  if (visited.has(real)) return;
-  visited.add(real);
-  for (const name of listDirectory(join(home, path))) {
-    record(home, `${path}/${name}`, entries, visited, false);
+  const real = realpathSync(absolute);
+  if (ancestors.has(real)) return;
+  const below = new Set(ancestors).add(real);
+  for (const child of listDirectory(absolute)) {
+    record(home, join(absolute, child), entries, below, false);
   }
 }
 
@@ -166,17 +193,25 @@ export function diffBaselines(before: Baseline, after: Baseline): Drift[] {
   return drift;
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 /** Parses a saved baseline, or returns undefined when it is missing or malformed. */
 export function readBaseline(path: string): Baseline | undefined {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(readFileSync(path, "utf8")) as {
-      takenAt?: unknown;
-      entries?: unknown;
-    };
-    if (typeof parsed.entries !== "object" || parsed.entries === null) return undefined;
-    const entries = parsed.entries as Record<string, BaselineEntry>;
-    return { takenAt: String(parsed.takenAt), entries };
+    parsed = JSON.parse(readFileSync(path, "utf8"));
   } catch {
     return undefined;
   }
+  if (!isRecord(parsed) || typeof parsed.takenAt !== "string") return undefined;
+  const { roots, entries } = parsed;
+  if (!isRecord(roots) || !isRecord(entries)) return undefined;
+  const rootNames: (keyof ConfigRoots)[] = ["hermes", "claude", "codex", "agents", "t3"];
+  if (!rootNames.every((name) => typeof roots[name] === "string" && isAbsolute(roots[name]))) {
+    return undefined;
+  }
+  if (!Object.values(entries).every((entry) => typeof entry === "string")) return undefined;
+  return parsed as unknown as Baseline;
 }

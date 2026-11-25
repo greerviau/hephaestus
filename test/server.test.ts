@@ -140,6 +140,21 @@ describe("login throttling", () => {
     expect((await login(PASSWORD)).status).toBe(303);
   });
 
+  it("checks at most the limit of wrong passwords, even when they arrive at once", async () => {
+    const burst = await Promise.all(
+      Array.from({ length: LOGIN_FAILURE_LIMIT * 2 }, () => login("wrong horse battery")),
+    );
+    let checked = burst.filter((response) => response.status === 401).length;
+    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT * 2; attempt += 1) {
+      const response = await login("wrong horse battery");
+      if (response.status === 401) checked += 1;
+      else expect(response.status).toBe(429);
+    }
+
+    expect(checked).toBe(LOGIN_FAILURE_LIMIT);
+    expect((await login(PASSWORD)).status).toBe(429);
+  });
+
   it("clears the failure count after a successful login", async () => {
     for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT - 1; attempt += 1) {
       await login("wrong horse battery");

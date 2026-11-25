@@ -7,7 +7,7 @@ import { INSTANCE_HEADER } from "./server.js";
  * instance id. Another server on the same port does not count.
  */
 export async function waitForDashboard(
-  config: Config,
+  config: Pick<Config, "port" | "instanceId">,
   { timeoutMs = 15_000, intervalMs = 250 }: { timeoutMs?: number; intervalMs?: number } = {},
 ): Promise<void> {
   const deadline = Date.now() + timeoutMs;

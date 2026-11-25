@@ -2,7 +2,13 @@ import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BASELINE_TARGETS, diffBaselines, takeBaseline } from "../src/baseline.js";
+import {
+  BASELINE_TARGETS,
+  diffBaselines,
+  readBaseline,
+  resolveRoots,
+  takeBaseline,
+} from "../src/baseline.js";
 
 let home: string;
 
@@ -22,8 +28,8 @@ function write(relativePath: string, content: string): void {
 
 describe("takeBaseline", () => {
   it("covers the personal Hermes profile, Claude and Codex config, and T3 settings", () => {
-    const groups = BASELINE_TARGETS.map((target) => target.group);
-    expect(groups).toEqual(["hermes", "claude", "codex", "t3"]);
+    const groups = new Set(BASELINE_TARGETS.map((target) => target.group));
+    expect([...groups]).toEqual(["hermes", "claude", "codex", "t3"]);
   });
 
   it("records a hash for each file and marks missing targets as absent", () => {
@@ -88,6 +94,43 @@ describe("takeBaseline", () => {
     expect(Object.keys(baseline.entries).some((key) => key.includes("loop/a"))).toBe(false);
   });
 
+  it("records both links when two skill folders link to the same checkout", () => {
+    write("checkout/review/SKILL.md", "# review\n");
+    mkdirSync(join(home, ".claude/skills"), { recursive: true });
+    mkdirSync(join(home, ".agents/skills"), { recursive: true });
+    symlinkSync(join(home, "checkout/review"), join(home, ".claude/skills/review"));
+    symlinkSync(join(home, "checkout/review"), join(home, ".agents/skills/review"));
+
+    const entries = takeBaseline(home).entries;
+
+    expect(entries[".claude/skills/review/SKILL.md"]).toMatch(/^sha256:/);
+    expect(entries[".agents/skills/review/SKILL.md"]).toMatch(/^sha256:/);
+  });
+
+  it("uses config roots set by HERMES_HOME, CLAUDE_CONFIG_DIR, CODEX_HOME and T3CODE_HOME", () => {
+    write("custom/hermes/config.yaml", "model: x\n");
+    write("custom/claude/CLAUDE.md", "# x\n");
+    write("custom/codex/config.toml", "x = 1\n");
+    write("custom/t3/userdata/settings.json", "{}\n");
+    const roots = resolveRoots(
+      {
+        HERMES_HOME: join(home, "custom/hermes"),
+        CLAUDE_CONFIG_DIR: join(home, "custom/claude"),
+        CODEX_HOME: join(home, "custom/codex"),
+        T3CODE_HOME: join(home, "custom/t3"),
+      },
+      home,
+    );
+
+    const baseline = takeBaseline(home, roots);
+
+    expect(baseline.roots).toEqual(roots);
+    expect(baseline.entries["custom/hermes/config.yaml"]).toMatch(/^sha256:/);
+    expect(baseline.entries["custom/claude/CLAUDE.md"]).toMatch(/^sha256:/);
+    expect(baseline.entries["custom/codex/config.toml"]).toMatch(/^sha256:/);
+    expect(baseline.entries["custom/t3/userdata/settings.json"]).toMatch(/^sha256:/);
+  });
+
   it("covers named personal Hermes profiles", () => {
     write(".hermes/profiles/work/config.yaml", "model: work\n");
     write(".hermes/profiles/work/sessions/s1.json", "{}\n");
@@ -138,5 +181,26 @@ describe("diffBaselines", () => {
     expect(drift.find((change) => change.path === ".agents/skills/new/SKILL.md")?.before).toBe(
       "absent",
     );
+  });
+});
+
+describe("readBaseline", () => {
+  it.each([
+    ["not JSON", "{"],
+    ["entries as a list", '{"takenAt":"x","roots":{},"entries":[]}'],
+    ["a non-string entry", '{"takenAt":"x","roots":{},"entries":{"a":1}}'],
+    ["no roots", '{"takenAt":"x","entries":{}}'],
+  ])("rejects %s", (_label, content) => {
+    write("baseline.json", content);
+
+    expect(readBaseline(join(home, "baseline.json"))).toBeUndefined();
+  });
+
+  it("reads a baseline it wrote", () => {
+    write(".claude/CLAUDE.md", "# x\n");
+    const baseline = takeBaseline(home);
+    write("baseline.json", JSON.stringify(baseline));
+
+    expect(readBaseline(join(home, "baseline.json"))).toEqual(baseline);
   });
 });

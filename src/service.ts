@@ -19,13 +19,14 @@ export class UnitExistsError extends Error {
   }
 }
 
-/** Quotes one ExecStart argument so systemd passes it through unchanged. */
+/**
+ * Quotes one ExecStart argument so systemd passes it through unchanged. The
+ * `:` prefix on the command turns off `$` expansion, so only `%` specifiers,
+ * backslashes and quotes need escaping.
+ */
 function quoteArgument(value: string): string {
-  const escaped = value
-    .replace(/\\/g, "\\\\")
-    .replace(/"/g, '\\"')
-    .replace(/%/g, "%%")
-    .replace(/\$/g, "$$$$");
+  if (/[\r\n]/.test(value)) throw new Error(`A unit path cannot contain a line break: ${value}`);
+  const escaped = value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
   return `"${escaped}"`;
 }
 
@@ -37,7 +38,7 @@ export function unitFile(nodePath: string, cliPath: string): string {
     "After=network-online.target",
     "",
     "[Service]",
-    `ExecStart=${[nodePath, cliPath, "serve"].map(quoteArgument).join(" ")}`,
+    `ExecStart=:${[nodePath, cliPath, "serve"].map(quoteArgument).join(" ")}`,
     "Restart=on-failure",
     "RestartSec=5",
     "",
@@ -63,8 +64,8 @@ const runCommand: Run = (command, args) => {
   return { status: result.status ?? 1, stdout: result.stdout };
 };
 
-/** States in which the service process may still be running. */
-const RUNNING_STATES = new Set(["active", "activating", "deactivating", "reloading", "refreshing"]);
+/** `systemctl is-active` answers that confirm no service process is running. */
+const STOPPED_STATES = new Set(["inactive", "failed", "unknown"]);
 
 /** Runs Hephaestus as a systemd user service. */
 export class SystemdUserService implements ServiceManager {
@@ -86,11 +87,12 @@ export class SystemdUserService implements ServiceManager {
     if (!readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
       throw new Error(`${this.unitPath} was not written by Hephaestus; leaving it in place.`);
     }
-    // A failed stop is checked below rather than trusted or ignored.
-    this.run("systemctl", ["--user", "disable", "--now", SERVICE_NAME]);
+    this.systemctl("disable", "--now", SERVICE_NAME);
     const state = this.run("systemctl", ["--user", "is-active", SERVICE_NAME]).stdout.trim();
-    if (RUNNING_STATES.has(state)) {
-      throw new Error(`${SERVICE_NAME} is still ${state}; stop it and run uninstall again.`);
+    if (!STOPPED_STATES.has(state)) {
+      throw new Error(
+        `${SERVICE_NAME} is still ${state || "in an unknown state"}; stop it and run uninstall again.`,
+      );
     }
     rmSync(this.unitPath);
     this.systemctl("daemon-reload");

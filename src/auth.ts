@@ -19,7 +19,7 @@ const PASSWORD_KEY = "dashboard_password_hash";
 
 /** Returns `scrypt$N$r$p$<salt>$<key>` with base64url salt and key. */
 export function hashPassword(password: string): string {
-  const salt = randomBytes(16);
+  const salt = randomBytes(SALT_LENGTH);
   const key = scryptSync(password, salt, KEY_LENGTH, SCRYPT);
   return [
     "scrypt",
@@ -45,18 +45,25 @@ function scryptAsync(
   });
 }
 
-/** Checks a password off the main thread. A malformed stored hash never matches. */
+const BASE64URL = /^[A-Za-z0-9_-]+$/;
+const SALT_LENGTH = 16;
+
+/**
+ * Checks a password off the main thread. A stored hash that does not match the
+ * exact format `hashPassword` writes, including the salt and key lengths and
+ * scrypt parameters, never matches.
+ */
 export async function verifyPassword(password: string, stored: string): Promise<boolean> {
-  const [scheme, n, r, p, salt, key] = stored.split("$");
-  if (scheme !== "scrypt" || !n || !r || !p || !salt || !key) return false;
+  const parts = stored.split("$");
+  if (parts.length !== 6) return false;
+  const [scheme, n, r, p, salt = "", key = ""] = parts;
+  if (scheme !== "scrypt" || !BASE64URL.test(salt) || !BASE64URL.test(key)) return false;
+  if (n !== String(SCRYPT.N) || r !== String(SCRYPT.r) || p !== String(SCRYPT.p)) return false;
+  const saltBytes = Buffer.from(salt, "base64url");
   const expected = Buffer.from(key, "base64url");
+  if (saltBytes.length !== SALT_LENGTH || expected.length !== KEY_LENGTH) return false;
   try {
-    const actual = await scryptAsync(password, Buffer.from(salt, "base64url"), expected.length, {
-      N: Number(n),
-      r: Number(r),
-      p: Number(p),
-      maxmem: SCRYPT.maxmem,
-    });
+    const actual = await scryptAsync(password, saltBytes, KEY_LENGTH, SCRYPT);
     return timingSafeEqual(actual, expected);
   } catch {
     return false;

@@ -11,7 +11,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readPasswordHash, verifyPassword } from "../src/auth.js";
-import { AlreadyInstalledError, NotInstalledError, install, uninstall } from "../src/install.js";
+import {
+  AlreadyInstalledError,
+  NotInstalledError,
+  install,
+  installedUnitPath,
+  uninstall,
+} from "../src/install.js";
 import { resolvePaths, type Paths } from "../src/paths.js";
 import { UnitExistsError, type ServiceManager } from "../src/service.js";
 import { openStore } from "../src/store.js";
@@ -77,7 +83,7 @@ describe("install", () => {
     expect(paths.root).toBe(join(home, ".hephaestus"));
     expect(statSync(paths.root).mode & 0o777).toBe(0o700);
     const config = JSON.parse(readFileSync(paths.config, "utf8")) as Record<string, unknown>;
-    expect(config).toMatchObject({ host: "0.0.0.0", port: 7700 });
+    expect(config).toMatchObject({ host: "0.0.0.0", port: 7700, unitPath: paths.unit });
     expect(config.instanceId).toMatch(/^[0-9a-f-]{36}$/);
 
     const db = openStore(paths.state);
@@ -91,7 +97,7 @@ describe("install", () => {
 
     expect(service.calls).toEqual(["install"]);
     expect(service.unit).toContain(
-      'ExecStart="/usr/bin/node" "/opt/hephaestus/dist/cli.js" "serve"',
+      'ExecStart=:"/usr/bin/node" "/opt/hephaestus/dist/cli.js" "serve"',
     );
     expect(readyChecks).toBe(1);
   });
@@ -127,6 +133,17 @@ describe("install", () => {
 
     expect(existsSync(paths.root)).toBe(false);
     expect(service.calls).toEqual(["install", "remove"]);
+  });
+
+  it("keeps the install record when rolling back the service also fails", async () => {
+    service.removeError = new Error("still active");
+
+    await expect(
+      install({ ...options(), waitForReady: () => Promise.reject(new Error("port in use")) }),
+    ).rejects.toThrow(/port in use[\s\S]*still active/);
+
+    expect(existsSync(paths.config)).toBe(true);
+    expect(existsSync(paths.baseline)).toBe(true);
   });
 
   it("leaves an existing unit alone and removes only its own state", async () => {
@@ -180,6 +197,12 @@ describe("uninstall", () => {
 
     expect(() => uninstall({ paths, service })).toThrow(/still active/);
     expect(existsSync(paths.baseline)).toBe(true);
+  });
+
+  it("uses the unit path recorded at install", async () => {
+    await install(options());
+
+    expect(installedUnitPath(paths)).toBe(paths.unit);
   });
 
   it("refuses when there is no install", () => {

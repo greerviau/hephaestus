@@ -43,13 +43,17 @@ afterEach(() => {
 });
 
 describe("unitFile", () => {
-  it("marks the unit and quotes each ExecStart argument for systemd", () => {
-    const unit = unitFile("/usr/bin/node", "/opt/Factory Tools/100%/$HOME/dist/cli.js");
+  it("marks the unit, turns off variable expansion, and quotes each ExecStart argument", () => {
+    const unit = unitFile("/opt/n$de/node", '/opt/Factory Tools/100%/"q"/dist/cli.js');
 
     expect(unit.split("\n")[0]).toBe(UNIT_MARKER);
     expect(unit).toContain(
-      'ExecStart="/usr/bin/node" "/opt/Factory Tools/100%%/$$HOME/dist/cli.js" "serve"',
+      'ExecStart=:"/opt/n$de/node" "/opt/Factory Tools/100%%/\\"q\\"/dist/cli.js" "serve"',
     );
+  });
+
+  it("refuses a path with a line break", () => {
+    expect(() => unitFile("/usr/bin/node", "/opt/a\nb/cli.js")).toThrow(/line break/);
   });
 });
 
@@ -130,9 +134,19 @@ describe("SystemdUserService.remove", () => {
     expect(calls).toEqual([]);
   });
 
-  it("keeps the unit when the service is still running after the stop", () => {
+  it("keeps the unit when systemd cannot be reached", () => {
     service().install(unitFile("/usr/bin/node", "/opt/cli.js"));
     responses["systemctl --user disable --now hephaestus.service"] = { status: 1, stdout: "" };
+    responses["systemctl --user is-active hephaestus.service"] = { status: 1, stdout: "" };
+
+    expect(() => {
+      service().remove();
+    }).toThrow(/disable --now/);
+    expect(existsSync(unitPath)).toBe(true);
+  });
+
+  it("keeps the unit when the service is still running after the stop", () => {
+    service().install(unitFile("/usr/bin/node", "/opt/cli.js"));
     responses["systemctl --user is-active hephaestus.service"] = { status: 0, stdout: "active\n" };
 
     expect(() => {

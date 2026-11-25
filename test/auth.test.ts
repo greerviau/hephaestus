@@ -22,6 +22,22 @@ describe("password hashing", () => {
     expect(hashPassword("same password")).not.toBe(hashPassword("same password"));
   });
 
+  it("rejects a stored hash with a truncated key, even when the remaining bytes match", async () => {
+    const [scheme, n, r, p, salt, key] = hashPassword("correct horse battery").split("$");
+    const truncated = [
+      scheme,
+      n,
+      r,
+      p,
+      salt,
+      Buffer.from(key ?? "", "base64url")
+        .subarray(0, 1)
+        .toString("base64url"),
+    ].join("$");
+
+    expect(await verifyPassword("correct horse battery", truncated)).toBe(false);
+  });
+
   it.each(["not-a-hash", "scrypt$0$8$1$c2FsdA$a2V5"])(
     "rejects the malformed stored hash %j",
     async (stored) => {
