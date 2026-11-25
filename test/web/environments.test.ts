@@ -6,7 +6,7 @@ import { hashPassword, writePasswordHash } from "../../src/auth.js";
 import { createDashboardServer } from "../../src/server.js";
 import { openStore } from "../../src/store.js";
 import type { Environments } from "../../src/t3/adapter.js";
-import { environmentRoutes, linkExpiryWarnings } from "../../src/web/environments.js";
+import { environmentRoutes } from "../../src/web/environments.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { ThreadEvents } from "../../src/t3/events.js";
 import { FactoryThreads } from "../../src/t3/threads.js";
@@ -99,7 +99,6 @@ async function start(
     db,
     instanceId: "test",
     routes: environmentRoutes(source, () => NOW, withWorkers ? controls : undefined),
-    overview: () => linkExpiryWarnings(source, () => NOW),
   });
   const running = server;
   await new Promise<void>((resolve) => running.listen(0, "127.0.0.1", resolve));
@@ -146,9 +145,6 @@ describe("Environments page", () => {
     expect(response.status).toBe(502);
     expect(html).toContain("T3 could not be reached");
     expect(html).not.toContain("secret-token-value");
-    const overview = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-    expect(overview).toContain("T3 could not be reached");
-    expect(overview).not.toContain("secret-token-value");
     const api = await (await fetch(`${base}/api/environments`, { headers: { cookie } })).text();
     expect(api).not.toContain("secret-token-value");
   });
@@ -158,18 +154,6 @@ describe("Environments page", () => {
 
     expect((await fetch(`${base}/environments`, { redirect: "manual" })).status).toBe(303);
     expect((await fetch(`${base}/api/environments`)).status).toBe(401);
-  });
-});
-
-describe("Overview", () => {
-  it("warns about a link that expires within 7 days", async () => {
-    const { base, cookie } = await start({ environments: () => Promise.resolve(environments()) });
-
-    const html = await (await fetch(`${base}/`, { headers: { cookie } })).text();
-
-    expect(html).toContain("worker two");
-    expect(html).toContain("expires in 5 days");
-    expect(html).not.toContain("worker &lt;one&gt;");
   });
 });
 

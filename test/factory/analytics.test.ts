@@ -26,7 +26,12 @@ describe("analytics", () => {
     const all = analytics(db, { days: 7, now });
     expect(all.days).toHaveLength(7);
     expect(all.days[0]?.day).toBe("2026-11-19");
-    expect(all.days.find((day) => day.day === "2026-11-20")).toMatchObject({ prs: 1, merges: 1 });
+    expect(all.days.find((day) => day.day === "2026-11-20")).toMatchObject({
+      prs: 1,
+      merges: 1,
+      cycleHours: 4,
+    });
+    expect(all.days.find((day) => day.day === "2026-11-21")?.cycleHours).toBeNull();
     expect(all.totals).toMatchObject({ prs: 1, merges: 1, reverts: 0, escalations: 1 });
     expect(all.cycleHours).toEqual({ median: 4, p90: 4, count: 1 });
 

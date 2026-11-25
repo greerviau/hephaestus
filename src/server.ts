@@ -1,8 +1,9 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Database } from "better-sqlite3";
 import { SESSION_TTL_MS, Sessions, readPasswordHash, verifyPassword } from "./auth.js";
-import { escapeHtml, layout, page } from "./web/html.js";
+import { STYLESHEET_PATH, banner, escapeHtml, layout, page } from "./web/html.js";
 import { HTML, readBody, redirect, send, sendHtml, sendJson, type Route } from "./web/http.js";
+import { STYLESHEET } from "./web/style.js";
 
 export const SESSION_COOKIE = "hephaestus_session";
 export const INSTANCE_HEADER = "x-hephaestus-instance";
@@ -19,8 +20,6 @@ export interface DashboardOptions {
   instanceId: string;
   /** Pages and API routes added by feature modules. All of them require a session. */
   routes?: Route[];
-  /** Extra HTML for the Overview page, such as warnings. */
-  overview?: () => Promise<string>;
   now?: () => number;
 }
 
@@ -38,7 +37,6 @@ export function createDashboardServer({
   db,
   instanceId,
   routes = [],
-  overview = () => Promise.resolve(""),
   now = Date.now,
 }: DashboardOptions): Server {
   const sessions = new Sessions(db, now);
@@ -62,6 +60,11 @@ export function createDashboardServer({
 
     if (method !== "GET" && method !== "HEAD" && !sameOrigin(request)) {
       send(response, 403, "text/plain; charset=utf-8", "Cross-origin request refused\n");
+      return;
+    }
+    // The stylesheet holds nothing private, and the login page needs it before a session exists.
+    if (path === STYLESHEET_PATH && (method === "GET" || method === "HEAD")) {
+      send(response, 200, "text/css; charset=utf-8", STYLESHEET);
       return;
     }
     if (path === "/login" && method === "GET") {
@@ -93,17 +96,6 @@ export function createDashboardServer({
       sendJson(response, 200, { authenticated: true });
       return;
     }
-    if (path === "/" && method === "GET") {
-      sendHtml(
-        response,
-        200,
-        layout(
-          "Overview",
-          `<h1>Overview</h1>\n${await overview()}\n<p>No factory projects yet.</p>`,
-        ),
-      );
-      return;
-    }
     for (const route of routes) {
       if (route.method !== method) continue;
       const match = route.path.exec(path);
@@ -112,7 +104,7 @@ export function createDashboardServer({
       return;
     }
     if (path.startsWith("/api/")) sendJson(response, 404, { error: "not found" });
-    else sendHtml(response, 404, layout("Not found", "<p>Not found.</p>"));
+    else sendHtml(response, 404, layout("Not found", notFound()));
   }
 
   async function login(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -199,12 +191,18 @@ function sessionToken(request: IncomingMessage): string | undefined {
 function loginPage(error?: string): string {
   return page(
     "Sign in",
-    `<form class="login" method="post" action="/login">
+    `<main class="login-wrap">
+<form class="card login" method="post" action="/login">
   <h1>Hephaestus</h1>
-  ${error === undefined ? "" : `<p class="error">${escapeHtml(error)}</p>`}
-  <label for="password">Dashboard password</label>
-  <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-  <button type="submit">Sign in</button>
-</form>`,
+  ${error === undefined ? "" : `<p class="err-text" role="alert">${escapeHtml(error)}</p>`}
+  <div class="field"><label for="password">Dashboard password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required autofocus></div>
+  <button type="submit" class="btn-primary">Sign in</button>
+</form>
+</main>`,
   );
+}
+
+function notFound(): string {
+  return `<div class="page-head"><div><h1>Not found</h1></div></div>${banner("info", "Nothing here", "This page does not exist. Use the tabs above.")}`;
 }

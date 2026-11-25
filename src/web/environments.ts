@@ -43,14 +43,14 @@ export function publicReason(error: unknown): string {
 /** Overview warns this long before a link expires. */
 export const LINK_WARNING_MS = 7 * DAY_MS;
 
-function expiresIn(environment: Environment, now: number): string {
+export function expiresIn(environment: Environment, now: number): string {
   const left = Date.parse(environment.expiresAt) - now;
   if (left <= 0) return "expired";
   const days = Math.floor(left / DAY_MS);
   return days === 1 ? "expires in 1 day" : `expires in ${String(days)} days`;
 }
 
-function expiringSoon(environment: Environment, now: number): boolean {
+export function expiringSoon(environment: Environment, now: number): boolean {
   return Date.parse(environment.expiresAt) - now <= LINK_WARNING_MS;
 }
 
@@ -201,28 +201,6 @@ ${rows}
       },
     },
   ];
-}
-
-/** Overview warnings for links that expire within 7 days, as HTML. */
-export async function linkExpiryWarnings(
-  source: EnvironmentSource,
-  now: () => number = Date.now,
-): Promise<string> {
-  let result: Environments;
-  try {
-    result = await source.environments();
-  } catch (error) {
-    return `<p class="error">T3 could not be reached: ${escapeHtml(publicReason(error))}</p>`;
-  }
-  const soon = result.environments.filter((environment) => expiringSoon(environment, now()));
-  if (soon.length === 0) return "";
-  const items = soon
-    .map(
-      (environment) =>
-        `<li>${escapeHtml(environment.label)}: the T3 link ${expiresIn(environment, now())}. Link it again from this host before then.</li>`,
-    )
-    .join("");
-  return `<h2>Needs you</h2>\n<ul class="error">${items}</ul>`;
 }
 
 function configRepoForm(slug: string | undefined): string {

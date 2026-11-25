@@ -9,6 +9,8 @@ import {
   createDashboardServer,
 } from "../src/server.js";
 import { openStore } from "../src/store.js";
+import { layout } from "../src/web/html.js";
+import { sendHtml } from "../src/web/http.js";
 
 const PASSWORD = "correct horse battery";
 
@@ -21,7 +23,20 @@ beforeEach(async () => {
   db = openStore(":memory:");
   writePasswordHash(db, hashPassword(PASSWORD));
   now = 1_000_000;
-  server = createDashboardServer({ db, instanceId: "test-instance", now: () => now });
+  server = createDashboardServer({
+    db,
+    instanceId: "test-instance",
+    now: () => now,
+    routes: [
+      {
+        method: "GET",
+        path: /^\/$/,
+        handle: ({ response }) => {
+          sendHtml(response, 200, layout("Overview", "<h1>Overview</h1>"));
+        },
+      },
+    ],
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 });
@@ -70,6 +85,14 @@ describe("dashboard without a session", () => {
     });
 
     expect(response.status).toBe(401);
+  });
+
+  it("serves the stylesheet without a session, because the login page needs it", async () => {
+    const response = await fetch(`${base}/assets/app.css`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(await response.text()).toContain("--accent");
   });
 
   it("serves the login page with the instance id", async () => {

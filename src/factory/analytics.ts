@@ -8,6 +8,9 @@ export interface DailyCounts {
   merges: number;
   reverts: number;
   escalations: number;
+  abandoned: number;
+  /** Median hours from first thread to Done for cards done that day, or null when none were. */
+  cycleHours: number | null;
 }
 
 export interface Analytics {
@@ -49,7 +52,15 @@ export function analytics(
   const byDay = new Map<string, DailyCounts>();
   for (let i = 0; i < span; i++) {
     const day = new Date(start.getTime() + i * 86_400_000).toISOString().slice(0, 10);
-    const counts = { day, prs: 0, merges: 0, reverts: 0, escalations: 0 };
+    const counts: DailyCounts = {
+      day,
+      prs: 0,
+      merges: 0,
+      reverts: 0,
+      escalations: 0,
+      abandoned: 0,
+      cycleHours: null,
+    };
     days.push(counts);
     byDay.set(day, counts);
   }
@@ -60,7 +71,6 @@ export function analytics(
        WHERE e.at >= ? AND e.kind IN ('stage:Reviewing', 'stage:Merging', 'stage:Escalated', 'stage:Reverting', 'stage:Abandoned')${repoFilter}`,
     )
     .all(since, ...repoArgs) as { kind: string; at: string; detail: string }[];
-  let abandoned = 0;
   for (const event of events) {
     const counts = byDay.get(dayOf(event.at));
     if (counts === undefined) continue;
@@ -72,7 +82,7 @@ export function analytics(
       if (event.detail.startsWith("PR #")) counts.prs += 1;
     } else if (event.kind === "stage:Escalated") counts.escalations += 1;
     else if (event.kind === "stage:Reverting") counts.reverts += 1;
-    else if (event.kind === "stage:Abandoned") abandoned += 1;
+    else if (event.kind === "stage:Abandoned") counts.abandoned += 1;
   }
 
   const merges = db
@@ -93,12 +103,22 @@ export function analytics(
        WHERE e.at >= ? AND c.started_at IS NOT NULL${repoFilter}`,
     )
     .all(since, ...repoArgs) as { startedAt: string; doneAt: string }[];
-  const hours = done
-    .map((row) => (Date.parse(row.doneAt) - Date.parse(row.startedAt)) / 3_600_000)
-    .filter((value) => Number.isFinite(value) && value >= 0)
-    .sort((a, b) => a - b);
+  const cycles = done
+    .map((row) => ({
+      day: dayOf(row.doneAt),
+      hours: (Date.parse(row.doneAt) - Date.parse(row.startedAt)) / 3_600_000,
+    }))
+    .filter(({ hours }) => Number.isFinite(hours) && hours >= 0);
+  const hours = cycles.map((cycle) => cycle.hours).sort((a, b) => a - b);
+  for (const counts of days) {
+    const that = cycles
+      .filter((cycle) => cycle.day === counts.day)
+      .map((cycle) => cycle.hours)
+      .sort((a, b) => a - b);
+    counts.cycleHours = percentile(that, 0.5);
+  }
 
-  const sum = (key: keyof Omit<DailyCounts, "day">): number =>
+  const sum = (key: "prs" | "merges" | "reverts" | "escalations" | "abandoned"): number =>
     days.reduce((total, counts) => total + counts[key], 0);
   return {
     days,
@@ -107,7 +127,7 @@ export function analytics(
       merges: sum("merges"),
       reverts: sum("reverts"),
       escalations: sum("escalations"),
-      abandoned,
+      abandoned: sum("abandoned"),
     },
     cycleHours: {
       median: percentile(hours, 0.5),
