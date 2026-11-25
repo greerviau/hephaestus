@@ -393,7 +393,9 @@ export class Pipeline {
    */
   private async resume(card: Card, message: string): Promise<boolean> {
     if (card.implementThread === null || card.workerEnv === null) return false;
-    const blocked = this.blockedBecause(card.workerEnv);
+    // A worker that is deploying or otherwise not ready takes no turn, new or continued.
+    const worker = this.pickWorker(card);
+    const blocked = typeof worker === "string" ? worker : this.blockedBecause(card.workerEnv);
     if (blocked !== undefined) {
       this.cards.update(card.id, { pendingMessage: message });
       this.wait(this.cards.get(card.id), blocked);
@@ -487,7 +489,9 @@ export class Pipeline {
     if (card.prNumber === null || card.headSha === null) {
       return this.escalate(card, "lead", "the card is in review without a PR");
     }
-    const blocked = this.blockedBecause(card.workerEnv);
+    // A worker that is deploying or otherwise not ready takes no turn, new or continued.
+    const worker = this.pickWorker(card);
+    const blocked = typeof worker === "string" ? worker : this.blockedBecause(card.workerEnv);
     if (blocked !== undefined) {
       this.wait(card, blocked);
       return;
