@@ -3,19 +3,38 @@ import type { Database } from "better-sqlite3";
 import { SESSION_TTL_MS, Sessions, readPasswordHash, verifyPassword } from "./auth.js";
 
 export const SESSION_COOKIE = "hephaestus_session";
+export const INSTANCE_HEADER = "x-hephaestus-instance";
+/** Wrong passwords a client may send within the window before it is locked out. */
+export const LOGIN_FAILURE_LIMIT = 10;
+export const LOGIN_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+/** Password checks that may run at once; more get 429 so scrypt cannot starve the server. */
+const MAX_CONCURRENT_LOGINS = 4;
 const MAX_FORM_BYTES = 4096;
 
 export interface DashboardOptions {
   db: Database;
+  /** Sent with every response, so install can confirm its own dashboard answers on the port. */
+  instanceId: string;
   now?: () => number;
+}
+
+interface Failures {
+  count: number;
+  since: number;
 }
 
 /**
  * The dashboard. Every route except the login page requires a session: pages
  * redirect to /login and API routes answer 401.
  */
-export function createDashboardServer({ db, now = Date.now }: DashboardOptions): Server {
+export function createDashboardServer({
+  db,
+  instanceId,
+  now = Date.now,
+}: DashboardOptions): Server {
   const sessions = new Sessions(db, now);
+  const failures = new Map<string, Failures>();
+  let loginsInFlight = 0;
 
   return createServer((request, response) => {
     handle(request, response).catch((error: unknown) => {
@@ -29,6 +48,7 @@ export function createDashboardServer({ db, now = Date.now }: DashboardOptions):
   async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = new URL(request.url ?? "/", "http://localhost").pathname;
     const method = request.method ?? "GET";
+    response.setHeader(INSTANCE_HEADER, instanceId);
 
     if (path === "/login" && method === "GET") {
       send(response, 200, HTML, loginPage());
@@ -65,6 +85,15 @@ export function createDashboardServer({ db, now = Date.now }: DashboardOptions):
   }
 
   async function login(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    const client = request.socket.remoteAddress ?? "unknown";
+    if (isLockedOut(client)) {
+      send(response, 429, HTML, loginPage("Too many wrong passwords. Try again later."));
+      return;
+    }
+    if (loginsInFlight >= MAX_CONCURRENT_LOGINS) {
+      send(response, 429, HTML, loginPage("The server is busy. Try again."));
+      return;
+    }
     const body = await readBody(request);
     if (body === undefined) {
       send(response, 413, "text/plain; charset=utf-8", "Request too large\n");
@@ -72,16 +101,44 @@ export function createDashboardServer({ db, now = Date.now }: DashboardOptions):
     }
     const password = new URLSearchParams(body).get("password") ?? "";
     const stored = readPasswordHash(db);
-    if (stored === undefined || !verifyPassword(password, stored)) {
+    loginsInFlight += 1;
+    let valid: boolean;
+    try {
+      valid = stored !== undefined && (await verifyPassword(password, stored));
+    } finally {
+      loginsInFlight -= 1;
+    }
+    if (!valid) {
+      recordFailure(client);
       send(response, 401, HTML, loginPage("Wrong password."));
       return;
     }
+    failures.delete(client);
     const token = sessions.create();
     response.setHeader(
       "set-cookie",
       `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${String(SESSION_TTL_MS / 1000)}`,
     );
     redirect(response, "/");
+  }
+
+  function isLockedOut(client: string): boolean {
+    const entry = failures.get(client);
+    if (entry === undefined) return false;
+    if (now() - entry.since >= LOGIN_FAILURE_WINDOW_MS) {
+      failures.delete(client);
+      return false;
+    }
+    return entry.count >= LOGIN_FAILURE_LIMIT;
+  }
+
+  function recordFailure(client: string): void {
+    for (const [key, entry] of failures) {
+      if (now() - entry.since >= LOGIN_FAILURE_WINDOW_MS) failures.delete(key);
+    }
+    const entry = failures.get(client) ?? { count: 0, since: now() };
+    entry.count += 1;
+    failures.set(client, entry);
   }
 }
 

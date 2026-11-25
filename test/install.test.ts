@@ -13,25 +13,30 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readPasswordHash, verifyPassword } from "../src/auth.js";
 import { AlreadyInstalledError, NotInstalledError, install, uninstall } from "../src/install.js";
 import { resolvePaths, type Paths } from "../src/paths.js";
-import type { ServiceManager } from "../src/service.js";
+import { UnitExistsError, type ServiceManager } from "../src/service.js";
 import { openStore } from "../src/store.js";
 
 class FakeService implements ServiceManager {
   calls: string[] = [];
   unit: string | undefined;
+  installError: Error | undefined;
+  removeError: Error | undefined;
   install(unit: string): void {
-    this.unit = unit;
     this.calls.push("install");
+    if (this.installError) throw this.installError;
+    this.unit = unit;
   }
   remove(): void {
-    this.unit = undefined;
     this.calls.push("remove");
+    if (this.removeError) throw this.removeError;
+    this.unit = undefined;
   }
 }
 
 let home: string;
 let paths: Paths;
 let service: FakeService;
+let readyChecks: number;
 
 const options = () => ({
   paths,
@@ -40,6 +45,10 @@ const options = () => ({
   port: 7700,
   nodePath: "/usr/bin/node",
   cliPath: "/opt/hephaestus/dist/cli.js",
+  waitForReady: () => {
+    readyChecks += 1;
+    return Promise.resolve();
+  },
 });
 
 function write(relativePath: string, content: string): void {
@@ -52,6 +61,7 @@ beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "hephaestus-install-"));
   paths = resolvePaths({ HOME: home });
   service = new FakeService();
+  readyChecks = 0;
   write(".hermes/config.yaml", "model: personal\n");
   write(".claude/CLAUDE.md", "# personal\n");
 });
@@ -61,15 +71,17 @@ afterEach(() => {
 });
 
 describe("install", () => {
-  it("creates ~/.hephaestus with the config, password hash and baseline, and installs the service", () => {
-    install(options());
+  it("creates ~/.hephaestus with the config, password hash and baseline, and starts the service", async () => {
+    await install(options());
 
     expect(paths.root).toBe(join(home, ".hephaestus"));
     expect(statSync(paths.root).mode & 0o777).toBe(0o700);
-    expect(JSON.parse(readFileSync(paths.config, "utf8"))).toEqual({ host: "0.0.0.0", port: 7700 });
+    const config = JSON.parse(readFileSync(paths.config, "utf8")) as Record<string, unknown>;
+    expect(config).toMatchObject({ host: "0.0.0.0", port: 7700 });
+    expect(config.instanceId).toMatch(/^[0-9a-f-]{36}$/);
 
     const db = openStore(paths.state);
-    expect(verifyPassword("correct horse battery", readPasswordHash(db) ?? "")).toBe(true);
+    expect(await verifyPassword("correct horse battery", readPasswordHash(db) ?? "")).toBe(true);
     db.close();
 
     const baseline = JSON.parse(readFileSync(paths.baseline, "utf8")) as {
@@ -78,50 +90,108 @@ describe("install", () => {
     expect(baseline.entries[".hermes/config.yaml"]).toMatch(/^sha256:/);
 
     expect(service.calls).toEqual(["install"]);
-    expect(service.unit).toContain("ExecStart=/usr/bin/node /opt/hephaestus/dist/cli.js serve");
+    expect(service.unit).toContain(
+      'ExecStart="/usr/bin/node" "/opt/hephaestus/dist/cli.js" "serve"',
+    );
+    expect(readyChecks).toBe(1);
   });
 
-  it("refuses to install over an existing install", () => {
-    install(options());
+  it("refuses to install over an existing install", async () => {
+    await install(options());
 
-    expect(() => {
-      install(options());
-    }).toThrow(AlreadyInstalledError);
+    await expect(install(options())).rejects.toThrow(AlreadyInstalledError);
     expect(service.calls).toEqual(["install"]);
   });
 
-  it("rejects a short password before creating anything", () => {
-    expect(() => {
-      install({ ...options(), password: "short" });
-    }).toThrow(/at least 12 characters/);
+  it.each([
+    ["short", /at least 12 characters/],
+    ["x".repeat(257), /at most 256 characters/],
+  ])("rejects the password %# before creating anything", async (password, message) => {
+    await expect(install({ ...options(), password })).rejects.toThrow(message);
     expect(existsSync(paths.root)).toBe(false);
   });
-});
 
-describe("uninstall", () => {
-  it("removes the service and ~/.hephaestus and reports no drift when nothing changed", () => {
-    install(options());
+  it("rolls back the service and ~/.hephaestus when the dashboard never answers", async () => {
+    await expect(
+      install({ ...options(), waitForReady: () => Promise.reject(new Error("port in use")) }),
+    ).rejects.toThrow(/port in use/);
 
-    const drift = uninstall({ paths, service });
-
-    expect(drift).toEqual([]);
     expect(existsSync(paths.root)).toBe(false);
     expect(service.calls).toEqual(["install", "remove"]);
   });
 
-  it("reports each baseline entry that changed after install", () => {
-    install(options());
+  it("rolls back ~/.hephaestus when systemd fails to start the service", async () => {
+    service.installError = new Error("enable failed");
+
+    await expect(install(options())).rejects.toThrow(/enable failed/);
+
+    expect(existsSync(paths.root)).toBe(false);
+    expect(service.calls).toEqual(["install", "remove"]);
+  });
+
+  it("leaves an existing unit alone and removes only its own state", async () => {
+    service.installError = new UnitExistsError(paths.unit);
+
+    await expect(install(options())).rejects.toThrow(UnitExistsError);
+
+    expect(existsSync(paths.root)).toBe(false);
+    expect(service.calls).toEqual(["install"]);
+  });
+});
+
+describe("uninstall", () => {
+  it("removes the service and ~/.hephaestus and reports no drift when nothing changed", async () => {
+    await install(options());
+
+    const result = uninstall({ paths, service });
+
+    expect(result.drift).toEqual([]);
+    expect(existsSync(paths.root)).toBe(false);
+    expect(service.calls).toEqual(["install", "remove"]);
+  });
+
+  it("reports each baseline entry that changed after install", async () => {
+    await install(options());
     write(".claude/CLAUDE.md", "# edited\n");
     write(".codex/config.toml", "model = 'x'\n");
 
-    const drift = uninstall({ paths, service });
+    const result = uninstall({ paths, service });
 
-    expect(drift.map((change) => change.path)).toEqual([".claude/CLAUDE.md", ".codex/config.toml"]);
+    expect(result.drift?.map((change) => change.path)).toEqual([
+      ".claude/CLAUDE.md",
+      ".codex/config.toml",
+    ]);
     expect(existsSync(paths.root)).toBe(false);
+  });
+
+  it("still removes everything when the baseline is unreadable, and says drift is unknown", async () => {
+    await install(options());
+    writeFileSync(paths.baseline, "{ not json");
+
+    const result = uninstall({ paths, service });
+
+    expect(result.drift).toBeUndefined();
+    expect(existsSync(paths.root)).toBe(false);
+  });
+
+  it("keeps ~/.hephaestus when the service cannot be removed", async () => {
+    await install(options());
+    service.removeError = new Error("still active");
+
+    expect(() => uninstall({ paths, service })).toThrow(/still active/);
+    expect(existsSync(paths.baseline)).toBe(true);
   });
 
   it("refuses when there is no install", () => {
     expect(() => uninstall({ paths, service })).toThrow(NotInstalledError);
     expect(service.calls).toEqual([]);
+  });
+
+  it("refuses a ~/.hephaestus that install did not create", () => {
+    mkdirSync(paths.root);
+    writeFileSync(join(paths.root, "notes.txt"), "the owner's own file\n");
+
+    expect(() => uninstall({ paths, service })).toThrow(NotInstalledError);
+    expect(existsSync(join(paths.root, "notes.txt"))).toBe(true);
   });
 });

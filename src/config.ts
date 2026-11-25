@@ -3,6 +3,8 @@ import { readFileSync, writeFileSync } from "node:fs";
 export interface Config {
   host: string;
   port: number;
+  /** Sent in a response header so install can tell its own dashboard from another server on the port. */
+  instanceId: string;
 }
 
 export const DEFAULT_PORT = 7700;

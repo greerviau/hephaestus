@@ -37,13 +37,71 @@ describe("takeBaseline", () => {
     expect(baseline.entries[".codex/config.toml"]).toBe("absent");
   });
 
-  it("records a symlink's target without following it", () => {
+  it("records a broken symlink's target", () => {
     mkdirSync(join(home, ".claude/skills"), { recursive: true });
     symlinkSync("/nowhere/review", join(home, ".claude/skills/review"));
 
     const baseline = takeBaseline(home);
 
     expect(baseline.entries[".claude/skills/review"]).toBe("symlink:/nowhere/review");
+  });
+
+  it("follows a linked skill directory, so edits inside it count as drift", () => {
+    const outside = mkdtempSync(join(tmpdir(), "hephaestus-linked-"));
+    try {
+      writeFileSync(join(outside, "SKILL.md"), "# v1\n");
+      mkdirSync(join(home, ".claude/skills"), { recursive: true });
+      symlinkSync(outside, join(home, ".claude/skills/review"));
+      const before = takeBaseline(home);
+
+      expect(before.entries[".claude/skills/review"]).toBe(`symlink:${outside}`);
+      expect(before.entries[".claude/skills/review/SKILL.md"]).toMatch(/^sha256:/);
+
+      writeFileSync(join(outside, "SKILL.md"), "# v2\n");
+      const drift = diffBaselines(before, takeBaseline(home));
+
+      expect(drift.map((change) => change.path)).toEqual([".claude/skills/review/SKILL.md"]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("records a linked file's target and content", () => {
+    write("shared/CLAUDE.md", "# shared\n");
+    mkdirSync(join(home, ".claude"), { recursive: true });
+    symlinkSync(join(home, "shared/CLAUDE.md"), join(home, ".claude/CLAUDE.md"));
+
+    const entry = takeBaseline(home).entries[".claude/CLAUDE.md"];
+
+    expect(entry).toMatch(/^symlink:.+ sha256:[0-9a-f]{64}$/);
+  });
+
+  it("stops at a symlink cycle", () => {
+    mkdirSync(join(home, ".claude/skills/a"), { recursive: true });
+    symlinkSync(join(home, ".claude/skills"), join(home, ".claude/skills/a/loop"));
+
+    const baseline = takeBaseline(home);
+
+    expect(baseline.entries[".claude/skills/a/loop"]).toBe(
+      `symlink:${join(home, ".claude/skills")}`,
+    );
+    expect(Object.keys(baseline.entries).some((key) => key.includes("loop/a"))).toBe(false);
+  });
+
+  it("covers named personal Hermes profiles", () => {
+    write(".hermes/profiles/work/config.yaml", "model: work\n");
+    write(".hermes/profiles/work/sessions/s1.json", "{}\n");
+
+    const baseline = takeBaseline(home);
+
+    expect(baseline.entries[".hermes/profiles/work/config.yaml"]).toMatch(/^sha256:/);
+    expect(baseline.entries[".hermes/profiles/work/sessions/s1.json"]).toBeUndefined();
+  });
+
+  it("treats a target under a regular file as absent", () => {
+    write(".hermes", "not a directory\n");
+
+    expect(takeBaseline(home).entries[".hermes/config.yaml"]).toBe("absent");
   });
 
   it("ignores volatile files that are not listed as targets", () => {

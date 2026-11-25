@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 export const SERVICE_NAME = "hephaestus.service";
 
@@ -15,7 +15,9 @@ export interface Paths {
 export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
   const home = env.HOME ?? homedir();
   const root = join(home, ".hephaestus");
-  const configHome = env.XDG_CONFIG_HOME ?? join(home, ".config");
+  // The XDG spec says to ignore an empty or relative XDG_CONFIG_HOME.
+  const xdg = env.XDG_CONFIG_HOME;
+  const configHome = xdg !== undefined && isAbsolute(xdg) ? xdg : join(home, ".config");
   return {
     home,
     root,

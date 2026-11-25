@@ -3,7 +3,11 @@ import type { Server } from "node:http";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { hashPassword, writePasswordHash } from "../src/auth.js";
-import { createDashboardServer } from "../src/server.js";
+import {
+  LOGIN_FAILURE_LIMIT,
+  LOGIN_FAILURE_WINDOW_MS,
+  createDashboardServer,
+} from "../src/server.js";
 import { openStore } from "../src/store.js";
 
 const PASSWORD = "correct horse battery";
@@ -11,11 +15,13 @@ const PASSWORD = "correct horse battery";
 let db: Database;
 let server: Server;
 let base: string;
+let now: number;
 
 beforeEach(async () => {
   db = openStore(":memory:");
   writePasswordHash(db, hashPassword(PASSWORD));
-  server = createDashboardServer({ db });
+  now = 1_000_000;
+  server = createDashboardServer({ db, instanceId: "test-instance", now: () => now });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 });
@@ -66,10 +72,11 @@ describe("dashboard without a session", () => {
     expect(response.status).toBe(401);
   });
 
-  it("serves the login page", async () => {
+  it("serves the login page with the instance id", async () => {
     const response = await fetch(`${base}/login`);
 
     expect(response.status).toBe(200);
+    expect(response.headers.get("x-hephaestus-instance")).toBe("test-instance");
     expect(await response.text()).toContain('name="password"');
   });
 });
@@ -116,5 +123,30 @@ describe("login", () => {
 
     const after = await fetch(`${base}/api/session`, { headers: { cookie } });
     expect(after.status).toBe(401);
+  });
+});
+
+describe("login throttling", () => {
+  it(`locks out a client after ${String(LOGIN_FAILURE_LIMIT)} wrong passwords until the window passes`, async () => {
+    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT; attempt += 1) {
+      expect((await login("wrong horse battery")).status).toBe(401);
+    }
+
+    const locked = await login(PASSWORD);
+    expect(locked.status).toBe(429);
+    expect(locked.headers.get("set-cookie")).toBeNull();
+
+    now += LOGIN_FAILURE_WINDOW_MS;
+    expect((await login(PASSWORD)).status).toBe(303);
+  });
+
+  it("clears the failure count after a successful login", async () => {
+    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT - 1; attempt += 1) {
+      await login("wrong horse battery");
+    }
+    expect((await login(PASSWORD)).status).toBe(303);
+
+    expect((await login("wrong horse battery")).status).toBe(401);
+    expect((await login(PASSWORD)).status).toBe(303);
   });
 });

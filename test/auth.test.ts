@@ -10,30 +10,33 @@ import {
 import { openStore } from "../src/store.js";
 
 describe("password hashing", () => {
-  it("verifies the right password and rejects others", () => {
+  it("verifies the right password and rejects others", async () => {
     const stored = hashPassword("correct horse battery");
 
     expect(stored).not.toContain("correct horse battery");
-    expect(verifyPassword("correct horse battery", stored)).toBe(true);
-    expect(verifyPassword("wrong horse battery", stored)).toBe(false);
+    expect(await verifyPassword("correct horse battery", stored)).toBe(true);
+    expect(await verifyPassword("wrong horse battery", stored)).toBe(false);
   });
 
   it("salts each hash", () => {
     expect(hashPassword("same password")).not.toBe(hashPassword("same password"));
   });
 
-  it("rejects a malformed stored hash", () => {
-    expect(verifyPassword("anything", "not-a-hash")).toBe(false);
-  });
+  it.each(["not-a-hash", "scrypt$0$8$1$c2FsdA$a2V5"])(
+    "rejects the malformed stored hash %j",
+    async (stored) => {
+      expect(await verifyPassword("anything", stored)).toBe(false);
+    },
+  );
 
-  it("stores only the hash in the state database", () => {
+  it("stores only the hash in the state database", async () => {
     const db = openStore(":memory:");
     writePasswordHash(db, hashPassword("correct horse battery"));
 
     const stored = readPasswordHash(db);
 
     expect(stored).toBeDefined();
-    expect(verifyPassword("correct horse battery", stored ?? "")).toBe(true);
+    expect(await verifyPassword("correct horse battery", stored ?? "")).toBe(true);
     db.close();
   });
 });

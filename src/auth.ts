@@ -1,8 +1,17 @@
-import { createHash, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import {
+  createHash,
+  randomBytes,
+  scrypt,
+  scryptSync,
+  timingSafeEqual,
+  type ScryptOptions,
+} from "node:crypto";
 import type { Database } from "better-sqlite3";
 
 export const SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 export const MIN_PASSWORD_LENGTH = 12;
+/** Keeps the URL-encoded login form well under the server's request size limit. */
+export const MAX_PASSWORD_LENGTH = 256;
 
 const SCRYPT = { N: 2 ** 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 } as const;
 const KEY_LENGTH = 32;
@@ -22,17 +31,36 @@ export function hashPassword(password: string): string {
   ].join("$");
 }
 
-export function verifyPassword(password: string, stored: string): boolean {
+function scryptAsync(
+  password: string,
+  salt: Buffer,
+  length: number,
+  options: ScryptOptions,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scrypt(password, salt, length, options, (error, key) => {
+      if (error) reject(error);
+      else resolve(key);
+    });
+  });
+}
+
+/** Checks a password off the main thread. A malformed stored hash never matches. */
+export async function verifyPassword(password: string, stored: string): Promise<boolean> {
   const [scheme, n, r, p, salt, key] = stored.split("$");
   if (scheme !== "scrypt" || !n || !r || !p || !salt || !key) return false;
   const expected = Buffer.from(key, "base64url");
-  const actual = scryptSync(password, Buffer.from(salt, "base64url"), expected.length, {
-    N: Number(n),
-    r: Number(r),
-    p: Number(p),
-    maxmem: SCRYPT.maxmem,
-  });
-  return timingSafeEqual(actual, expected);
+  try {
+    const actual = await scryptAsync(password, Buffer.from(salt, "base64url"), expected.length, {
+      N: Number(n),
+      r: Number(r),
+      p: Number(p),
+      maxmem: SCRYPT.maxmem,
+    });
+    return timingSafeEqual(actual, expected);
+  } catch {
+    return false;
+  }
 }
 
 export function writePasswordHash(db: Database, hash: string): void {

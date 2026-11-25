@@ -13,8 +13,9 @@ COPY package.json package-lock.json ./
 RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
-RUN npm run build && npm prune --omit=dev
-COPY test/container/scenario.sh /usr/local/bin/scenario.sh
+COPY test/container/source-hash.sh test/container/scenario.sh /usr/local/bin/
+RUN source-hash.sh /opt/hephaestus > /opt/hephaestus/SOURCE_SHA256 \
+  && npm run build && npm prune --omit=dev
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]
