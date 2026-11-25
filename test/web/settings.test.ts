@@ -129,6 +129,7 @@ describe("Settings page", () => {
 
     expect(html).toContain('name="parentId" value="1"');
     expect(html).toContain('value="Keep me"');
+    expect(html).toContain("built from version 1.");
   });
 
   it("offers no Revert for the first version", async () => {
@@ -214,5 +215,31 @@ describe("Settings page", () => {
 
   it("rejects the config API without a session", async () => {
     expect((await get("/api/config/versions", false)).status).toBe(401);
+  });
+});
+
+describe("large configs", () => {
+  it("can save back an unchanged config near the size cap", async () => {
+    const big = sampleConfig();
+    big.instructions.big = "\u00e9".repeat(600_000);
+    store.createVersion({ document: big, author: "owner", message: "", parentId: 1 });
+    store.approve(2);
+    store.markDeployed(2);
+
+    const page = await (await get("/settings")).text();
+    const text = page.slice(page.indexOf('spellcheck="false">') + 19, page.indexOf("</textarea>"));
+    const unescaped = text
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&#39;/g, "'");
+    const response = await post("/settings/versions", {
+      document: unescaped,
+      message: "Same",
+      parentId: "2",
+    });
+
+    expect(response.status).toBe(303);
   });
 });

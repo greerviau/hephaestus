@@ -1,4 +1,4 @@
-import { mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -77,6 +77,7 @@ describe("backup and restore", () => {
       {
         format: "hephaestus-config-backup",
         version: 1,
+        takenAt: "x",
         versions: [
           {
             id: 1,
@@ -141,5 +142,48 @@ describe("scheduleBackups", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("backup safety", () => {
+  it("refuses to overwrite a file at today's backup path that is not a backup", () => {
+    writeFileSync(join(dir, "config-2026-11-25.json"), "the owner's notes\n");
+
+    expect(() => backupVersions(populated(), dir, new Date("2026-11-25T03:00:00Z"))).toThrow(
+      /not a Hephaestus backup/,
+    );
+    expect(readFileSync(join(dir, "config-2026-11-25.json"), "utf8")).toBe("the owner's notes\n");
+  });
+
+  it("keeps a file that carries the format marker but is not a whole backup", () => {
+    writeFileSync(join(dir, "config-2000-01-01.json"), '{"format": "hephaestus-config-backup"}\n');
+    backupVersions(populated(), dir, new Date(Date.UTC(2026, 10, 1, 3)), 1);
+    backupVersions(populated(), dir, new Date(Date.UTC(2026, 10, 2, 3)), 1);
+
+    expect(readdirSync(dir)).toContain("config-2000-01-01.json");
+  });
+
+  it("refuses a history whose ids do not increase", () => {
+    const version = (id: number, parentId: number | null) => ({
+      id,
+      parentId,
+      state: "approved",
+      author: "a",
+      message: "",
+      createdAt: "x",
+      document: sampleConfig(),
+    });
+    const file = join(dir, "unordered.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        format: "hephaestus-config-backup",
+        version: 1,
+        takenAt: "x",
+        versions: [version(2, null), version(1, 2)],
+      }),
+    );
+
+    expect(() => restoreVersions(new ConfigStore(openStore(":memory:")), file)).toThrow(/history/);
   });
 });

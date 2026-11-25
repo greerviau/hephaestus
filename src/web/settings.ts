@@ -1,11 +1,14 @@
 import type { Change } from "../config/diff.js";
-import { ConfigValidationError } from "../config/document.js";
+import { ConfigValidationError, MAX_CONFIG_BYTES } from "../config/document.js";
 import { VersionNotFoundError, type ConfigStore, type ConfigVersion } from "../config/store.js";
 import { escapeHtml, layout } from "./html.js";
 import { readBody, redirect, sendHtml, sendJson, type Route, type RouteContext } from "./http.js";
 
-/** Config edits carry whole documents, skills included. */
-const MAX_EDIT_BYTES = 8 * 1024 * 1024;
+/**
+ * Form encoding at most triples a config's UTF-8 bytes, so this fits any
+ * config up to MAX_CONFIG_BYTES plus the rest of the form.
+ */
+const MAX_EDIT_BYTES = 3 * MAX_CONFIG_BYTES + 64 * 1024;
 
 /** Settings: config versions, their diffs, and edits that create new versions. */
 export function settingsRoutes(store: ConfigStore): Route[] {
@@ -76,7 +79,7 @@ export function settingsRoutes(store: ConfigStore): Route[] {
 </tr>`,
       )
       .join("\n");
-    const text = problem?.text ?? JSON.stringify(current?.document ?? {}, null, 2);
+    const text = problem?.text ?? editorText(current?.document ?? {});
     // A refused edit keeps the version it was built from, so retrying cannot change its base.
     const parentId = problem?.parentId ?? (current === undefined ? "" : String(current.id));
     const message = problem?.message ?? "";
@@ -98,7 +101,7 @@ ${rows}
 </tbody>
 </table>
 <h2>Edit the config</h2>
-<p>Saving creates a draft version built from version ${current === undefined ? "none" : String(current.id)}. Nothing changes until the draft is approved and deployed.</p>
+<p>Saving creates a draft version built from version ${parentId === "" ? "none" : escapeHtml(parentId)}. Nothing changes until the draft is approved and deployed.</p>
 ${errors}
 <form method="post" action="/settings/versions">
   <input type="hidden" name="parentId" value="${escapeHtml(parentId)}">
@@ -270,4 +273,12 @@ function diffTable(changes: Change[]): string {
 ${rows}
 </tbody>
 </table>`;
+}
+
+/** Pretty JSON for the editor, or compact JSON when pretty JSON could exceed the form limit. */
+function editorText(document: unknown): string {
+  const pretty = JSON.stringify(document, null, 2);
+  return 3 * Buffer.byteLength(pretty) + 64 * 1024 <= MAX_EDIT_BYTES
+    ? pretty
+    : JSON.stringify(document);
 }

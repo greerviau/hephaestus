@@ -40,3 +40,9 @@ describe("SecretsFile", () => {
     }).toThrow(/name/);
   });
 });
+
+describe("SecretsFile lookups", () => {
+  it("returns undefined for a missing secret named like an Object member", () => {
+    expect(new SecretsFile(join(dir, "s.json")).get("constructor")).toBeUndefined();
+  });
+});

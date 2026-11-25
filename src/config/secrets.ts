@@ -7,7 +7,8 @@ export class SecretsFile {
   constructor(private readonly path: string) {}
 
   get(name: string): string | undefined {
-    return this.read()[name];
+    const secrets = this.read();
+    return Object.hasOwn(secrets, name) ? secrets[name] : undefined;
   }
 
   names(): string[] {

@@ -7,6 +7,16 @@ export interface Change {
   after: unknown;
 }
 
+/** Sets an own, enumerable property, so a key such as `__proto__` stays plain data. */
+export function defineOwn(object: Record<string, unknown>, key: string, value: unknown): void {
+  Object.defineProperty(object, key, {
+    value,
+    writable: true,
+    enumerable: true,
+    configurable: true,
+  });
+}
+
 /** An own property's value; inherited members such as `constructor` count as absent. */
 function own(object: Record<string, unknown>, key: string): unknown {
   return Object.hasOwn(object, key) ? object[key] : undefined;
@@ -53,12 +63,12 @@ export function setAt(root: Record<string, unknown>, path: string[], value: unkn
       current = next;
     } else {
       const created: Record<string, unknown> = {};
-      current[key] = created;
+      defineOwn(current, key, created);
       current = created;
     }
   }
   const last = path.at(-1);
   if (last === undefined) return;
   if (value === undefined) Reflect.deleteProperty(current, last);
-  else current[last] = structuredClone(value);
+  else defineOwn(current, last, structuredClone(value));
 }

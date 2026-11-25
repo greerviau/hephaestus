@@ -75,3 +75,14 @@ describe("importSkill", () => {
     expect(() => importSkill(skill)).toThrow(/logo\.png/);
   });
 });
+
+describe("importSkill names", () => {
+  it("keeps a file named __proto__ as a file", () => {
+    const skill = join(dir, "odd");
+    mkdirSync(skill);
+    writeFileSync(join(skill, "SKILL.md"), "# Odd\n");
+    writeFileSync(join(skill, "__proto__"), "x\n");
+
+    expect(Object.hasOwn(importSkill(skill).files, "__proto__")).toBe(true);
+  });
+});

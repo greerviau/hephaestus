@@ -405,3 +405,59 @@ describe("review fixes", () => {
     );
   });
 });
+
+describe("second review fixes", () => {
+  it("restores a skill and its role assignment together", () => {
+    const withSkill = sampleConfig();
+    withSkill.skills.review = { "SKILL.md": "# Review\n" };
+    withSkill.roles.lead.skills = ["review"];
+    const first = store.createVersion({ document: withSkill, author: "install", message: "" });
+    store.approve(first.id);
+    store.markDeployed(first.id);
+    const removed = structuredClone(withSkill);
+    removed.roles.lead.skills = [];
+    Reflect.deleteProperty(removed.skills, "review");
+    const second = store.createVersion({
+      document: removed,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+
+    const { version, conflicts } = store.revert(second.id, "owner");
+
+    expect(conflicts).toEqual([]);
+    expect(version.document.roles.lead.skills).toEqual(["review"]);
+    expect(version.document.skills.review).toBeDefined();
+  });
+
+  it("restores a deleted skill file named __proto__", () => {
+    const first = deployed();
+    const odd = JSON.parse(JSON.stringify(sampleConfig())) as ReturnType<typeof sampleConfig>;
+    odd.skills = JSON.parse(
+      '{"triage": {"SKILL.md": "# Triage\\n", "__proto__": "odd"}}',
+    ) as typeof odd.skills;
+    const second = store.createVersion({
+      document: odd,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    const third = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "",
+      parentId: second.id,
+    });
+    store.approve(third.id);
+    store.markDeployed(third.id);
+
+    const { version } = store.revert(third.id, "owner");
+
+    expect(Object.hasOwn(version.document.skills.triage ?? {}, "__proto__")).toBe(true);
+  });
+});

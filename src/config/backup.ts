@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ConfigStore, ConfigVersion } from "./store.js";
 
@@ -8,7 +8,8 @@ export const BACKUP_HOUR = 3;
 
 interface BackupFile {
   format: "hephaestus-config-backup";
-  version: 1;
+  /** 1 is the only format this code reads and writes. */
+  version: number;
   takenAt: string;
   versions: ConfigVersion[];
 }
@@ -30,6 +31,9 @@ export function backupVersions(
     versions: store.exportVersions(),
   };
   const path = join(dir, `config-${now.toISOString().slice(0, 10)}.json`);
+  if (existsSync(path) && !isBackup(path)) {
+    throw new Error(`${path} is not a Hephaestus backup; leaving it in place.`);
+  }
   const temporary = `${path}.tmp`;
   writeFileSync(temporary, `${JSON.stringify(backup)}\n`, { mode: 0o600 });
   renameSync(temporary, path);
@@ -43,10 +47,15 @@ export function backupVersions(
   return path;
 }
 
-function readBackup(file: string): Partial<BackupFile> | undefined {
+function readBackup(file: string): BackupFile | undefined {
   try {
     const parsed = JSON.parse(readFileSync(file, "utf8")) as Partial<BackupFile>;
-    return parsed.format === "hephaestus-config-backup" ? parsed : undefined;
+    const whole =
+      parsed.format === "hephaestus-config-backup" &&
+      typeof parsed.version === "number" &&
+      typeof parsed.takenAt === "string" &&
+      Array.isArray(parsed.versions);
+    return whole ? (parsed as BackupFile) : undefined;
   } catch {
     return undefined;
   }
@@ -63,16 +72,20 @@ function isBackup(file: string): boolean {
  */
 export function restoreVersions(store: ConfigStore, file: string): number {
   const backup = readBackup(file);
-  if (backup === undefined || backup.version !== 1 || !Array.isArray(backup.versions)) {
+  if (backup === undefined || backup.version !== 1) {
     throw new Error(`${file} is not a Hephaestus config backup this version can read.`);
   }
   const seen = new Set<number>();
+  let previous = 0;
   for (const [index, version] of backup.versions.entries()) {
     const parentOk =
       index === 0
         ? version.parentId === null
         : version.parentId !== null && seen.has(version.parentId);
-    if (!Number.isInteger(version.id) || seen.has(version.id) || !parentOk) {
+    // Ids must increase, because the next backup lists versions in id order.
+    const idOk = Number.isSafeInteger(version.id) && version.id > previous;
+    previous = version.id;
+    if (!idOk || !parentOk) {
       throw new Error(`${file} has a broken version history at version ${String(version.id)}.`);
     }
     seen.add(version.id);

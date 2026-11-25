@@ -189,22 +189,34 @@ export class ConfigStore {
     const later = this.laterChanges(base, id);
     let document = structuredClone(base.document) as unknown as Record<string, unknown>;
     const conflicts: Change[] = [];
+    let pending: Change[] = [];
     for (const change of this.diff(id)) {
       const touchedLater = later.some((path) => overlaps(path, change.path));
       if (touchedLater || !isDeepStrictEqual(getAt(document, change.path), change.after)) {
         conflicts.push(change);
-        continue;
-      }
-      const attempt = structuredClone(document);
-      setAt(attempt, change.path, change.before);
-      try {
-        validateConfig(attempt);
-        document = attempt;
-      } catch (error) {
-        if (!(error instanceof ConfigValidationError)) throw error;
-        conflicts.push(change);
+      } else {
+        pending.push(change);
       }
     }
+    // Undo everything at once when that is valid. Otherwise apply changes one
+    // at a time, retrying the rest after each success, so a change that depends
+    // on another (a role using a restored skill) lands once its dependency has.
+    const undoAll = applyChanges(document, pending);
+    if (isValidConfig(undoAll)) {
+      document = undoAll;
+      pending = [];
+    }
+    for (let progress = true; progress && pending.length > 0;) {
+      progress = false;
+      for (const change of [...pending]) {
+        const attempt = applyChanges(document, [change]);
+        if (!isValidConfig(attempt)) continue;
+        document = attempt;
+        pending = pending.filter((other) => other !== change);
+        progress = true;
+      }
+    }
+    conflicts.push(...pending);
     const version = this.createVersion({
       document: document as unknown as FactoryConfig,
       author,
@@ -267,5 +279,25 @@ export class ConfigStore {
       this.assertState(id, from);
       this.db.prepare("UPDATE config_versions SET state = ? WHERE id = ?").run(to, id);
     })();
+  }
+}
+
+/** A copy of `document` with each change undone. */
+function applyChanges(
+  document: Record<string, unknown>,
+  changes: Change[],
+): Record<string, unknown> {
+  const copy = structuredClone(document);
+  for (const change of changes) setAt(copy, change.path, change.before);
+  return copy;
+}
+
+function isValidConfig(document: unknown): boolean {
+  try {
+    validateConfig(document);
+    return true;
+  } catch (error) {
+    if (error instanceof ConfigValidationError) return false;
+    throw error;
   }
 }

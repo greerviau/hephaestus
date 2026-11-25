@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
+import { defineOwn } from "./diff.js";
 import {
   isSafeRelativePath,
   type FactoryConfig,
@@ -72,7 +73,7 @@ export function importSkill(dir: string): ImportedSkill {
         throw new Error(`Skill file ${key} is not UTF-8 text.`);
       }
       if (text.includes("\0")) throw new Error(`Skill file ${key} is not text.`);
-      files[key] = text;
+      defineOwn(files, key, text);
     }
   };
   walk(dir);
