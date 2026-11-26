@@ -99,7 +99,7 @@ export interface MessagingOptions {
    * The factory gateway's service. A failed restart starts it when it is not
    * running, since a profile cannot restart without the gateway that serves it.
    */
-  gateway?: { active(): boolean; start(): void };
+  gateway?: { stopped(): boolean; start(): void };
   db: Database;
   cards: Pick<CardStore, "notifications">;
   /** The dashboard's address, for the link in each alert. */
@@ -131,7 +131,7 @@ export class Messaging {
       const gateway = this.options.gateway;
       let stopped = false;
       try {
-        stopped = gateway !== undefined && !gateway.active();
+        stopped = gateway !== undefined && gateway.stopped();
       } catch (check) {
         console.error("Checking the factory gateway failed", check);
       }

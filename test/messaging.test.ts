@@ -284,7 +284,7 @@ describe("Messaging", () => {
       root,
       run: () => Promise.reject(failure),
       gateway: {
-        active: () => running,
+        stopped: () => !running,
         start: () => {
           started += 1;
         },
@@ -304,7 +304,7 @@ describe("Messaging", () => {
       root,
       run: () => Promise.reject(failure),
       gateway: {
-        active: () => false,
+        stopped: () => true,
         start: () => {
           throw new Error("unit not found");
         },
@@ -313,6 +313,24 @@ describe("Messaging", () => {
       cards,
       dashboardUrl: () => "",
     });
+    const unreadable = new Messaging({
+      root,
+      run: () => Promise.reject(failure),
+      gateway: {
+        stopped: () => {
+          throw new Error("no user bus");
+        },
+        start: () => {
+          started += 1;
+        },
+      },
+      db,
+      cards,
+      dashboardUrl: () => "",
+    });
+    await expect(unreadable.restart()).rejects.toThrow(/did not restart/);
+    expect(started).toBe(1);
+
     await expect(unstartable.restart()).rejects.toThrow(
       /not running and did not start: unit not found/,
     );
