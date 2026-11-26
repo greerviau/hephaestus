@@ -919,6 +919,43 @@ describe("Pipeline", () => {
     expect(h.t3.settled).toEqual(["setup-2", "setup-1"]);
   });
 
+  it("does not settle a thread a card picked up again during the pass", async () => {
+    const h = harness();
+    setupThread(h, "old-1");
+    setupThread(h, "old-2");
+    const id = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Work" }).id;
+    h.cards.transition(id, "Implementing", "work started");
+    const settle = h.t3.settle.bind(h.t3);
+    h.t3.settle = (environmentId, threadId) => {
+      // While the first call is out, the card takes up the second thread.
+      if (threadId === "old-1") h.cards.update(id, { implementThread: "old-2" });
+      return settle(environmentId, threadId);
+    };
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["old-1"]);
+  });
+
+  it("counts a failed settle's backoff from when the call failed", async () => {
+    const h = harness();
+    setupThread(h, "slow");
+    let clock = Date.parse("2026-11-25T12:00:00Z");
+    h.t3.settle = () => {
+      // The call times out ten minutes later.
+      clock += 10 * 60_000;
+      h.setClock(clock);
+      return Promise.reject(new Error("timed out"));
+    };
+    await h.pipeline.settleThreads();
+    let calls = 0;
+    h.t3.settle = () => {
+      calls += 1;
+      return Promise.resolve();
+    };
+    h.setClock(clock + 30_000);
+    await h.pipeline.settleThreads();
+    expect(calls).toBe(0);
+  });
+
   it("does not abandon a card that started work", async () => {
     const h = harness();
     const id = admitted(h);

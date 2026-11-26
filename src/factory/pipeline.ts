@@ -1338,31 +1338,43 @@ export class Pipeline {
   }
 
   private async settleFinishedThreads(): Promise<void> {
-    const held = new Set<string>();
-    for (const card of this.cards.list()) {
-      if (card.stage === "Done" || card.stage === "Abandoned") continue;
-      if (card.implementThread !== null) held.add(card.implementThread);
-      if (card.reviewThread !== null) held.add(card.reviewThread);
-    }
-    const at = this.now().getTime();
     let tried = 0;
     for (const thread of this.options.events.unsettledEnded()) {
-      if (held.has(thread.threadId)) continue;
       const backoff = this.settleBackoff.get(thread.threadId);
-      if (backoff !== undefined && backoff.until > at) continue;
+      if (backoff !== undefined && backoff.until > this.now().getTime()) continue;
+      // Checked right before each call, since a pass can run while a card picks a thread up again.
+      if (!this.settleable(thread.environmentId, thread.threadId)) continue;
       if (tried >= SETTLES_PER_TICK) return;
       tried += 1;
       try {
         await this.options.threads.settle(thread.environmentId, thread.threadId);
         this.settleBackoff.delete(thread.threadId);
       } catch (error) {
-        // A thread that keeps failing waits longer each time, so it cannot hold up the others.
+        // A thread that keeps failing waits longer each time, counted from when its call failed,
+        // so slow failures cannot hold up the others.
         const failures = (backoff?.failures ?? 0) + 1;
         const wait = Math.min(SETTLE_BACKOFF_MAX_MS, 60_000 * 2 ** (failures - 1));
-        this.settleBackoff.set(thread.threadId, { failures, until: at + wait });
+        this.settleBackoff.set(thread.threadId, {
+          failures,
+          until: this.now().getTime() + wait,
+        });
         console.error(`Settling thread ${thread.threadId} failed`, error);
       }
     }
+  }
+
+  /** Whether a thread is still ended and no active card uses it as its implement or review thread. */
+  private settleable(environmentId: string, threadId: string): boolean {
+    const stored = this.options.events.thread(environmentId, threadId);
+    if (stored === undefined || !ENDED_STATUSES.has(stored.status)) return false;
+    return !this.cards
+      .list()
+      .some(
+        (card) =>
+          card.stage !== "Done" &&
+          card.stage !== "Abandoned" &&
+          (card.implementThread === threadId || card.reviewThread === threadId),
+      );
   }
 
   /** Flags factory PRs merged by anything but Hephaestus, at most every few minutes. */
