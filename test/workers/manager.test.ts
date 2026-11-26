@@ -597,10 +597,23 @@ describe("WorkerManager", () => {
     expect(viewOf("env-1")).toMatchObject({ blocker: "A deploy is running.", ownerStep: false });
     finishThread("t1", deployed(1, SHA));
     await manager.tick();
+    // Hephaestus's own check of the sign-in is its step, not the owner's.
+    expect(viewOf("env-1")).toMatchObject({
+      claude: "checking",
+      blocker: "Checking Factory Claude's sign-in.",
+      ownerStep: false,
+    });
     finishThread("t2", "Not logged in");
     finishThread("t3", "FACTORY-READY");
     await manager.tick();
     expect(viewOf("env-1")).toMatchObject({ blocker: "Sign in Factory Claude.", ownerStep: true });
+    // A sign-in the owner started stays the owner's step while it runs.
+    await manager.startClaudeSignIn("env-1");
+    expect(viewOf("env-1")).toMatchObject({
+      claude: "checking",
+      blocker: "Sign in Factory Claude.",
+      ownerStep: true,
+    });
   });
 
   it("names the next step for a worker that has not been set up", () => {

@@ -168,7 +168,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
       body:
         connected.length === 0
           ? empty("Connect a platform first.")
-          : `<p class="lede">Posts each new item that needs you, such as an escalation, a revert, or an outside merge, to ${escapeHtml(connected.map((state) => state.label).join(" and "))}, with a link to the dashboard.</p>${postButton(
+          : `<p class="lede">Posts each new item that needs you, such as an escalation, a revert, a proposal to approve, or a worker that needs a sign-in, to ${escapeHtml(connected.map((state) => state.label).join(" and "))}, with a link to the dashboard.</p>${postButton(
               `/messaging/alerts/${alerts ? "off" : "on"}`,
               alerts ? "Turn alerts off" : "Turn alerts on",
               { variant: alerts ? "secondary" : "primary", small: false },

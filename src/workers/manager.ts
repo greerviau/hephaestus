@@ -399,8 +399,12 @@ export class WorkerManager {
         `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again every ${String(LIMIT_RECHECK_MS / MINUTE)} minutes. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
       automatic = true;
     } else if (claude !== "signed-in" && claude !== "limited") {
-      blocker = "Sign in Factory Claude.";
-    } else if (codex !== "signed-in" && codex !== "limited") blocker = "Sign in Factory Codex.";
+      automatic = claude === "checking" && tasks["claude-sign-in"]?.status !== "running";
+      blocker = automatic ? "Checking Factory Claude's sign-in." : "Sign in Factory Claude.";
+    } else if (codex !== "signed-in" && codex !== "limited") {
+      automatic = codex === "checking" && tasks["codex-sign-in"]?.status !== "running";
+      blocker = automatic ? "Checking Factory Codex's sign-in." : "Sign in Factory Codex.";
+    }
     // A sign-in waiting on the owner's token or device code is theirs even while it runs.
     const signingIn =
       tasks["claude-sign-in"]?.status === "running" || tasks["codex-sign-in"]?.status === "running";

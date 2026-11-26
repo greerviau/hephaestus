@@ -219,6 +219,15 @@ const MIGRATIONS = [
   `ALTER TABLE factory_threads ADD COLUMN settled_at TEXT;`,
   // The policy a card last ran under, so a merge in flight can finish if its project is removed.
   `ALTER TABLE cards ADD COLUMN policy TEXT;`,
+  // The chat thread each request came from, so its progress is posted there.
+  `CREATE TABLE chat_threads (
+     repo TEXT NOT NULL COLLATE NOCASE,
+     number INTEGER NOT NULL,
+     platform TEXT NOT NULL,
+     chat TEXT NOT NULL,
+     linked_at TEXT NOT NULL,
+     PRIMARY KEY (repo, number)
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

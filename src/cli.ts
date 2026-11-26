@@ -12,6 +12,7 @@ import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
 import { hermesModel } from "./hermes/model.js";
 import { Messaging } from "./messaging.js";
+import { RequestThreads } from "./request-threads.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
@@ -39,6 +40,7 @@ import { SecretsFile } from "./config/secrets.js";
 import { settingsRoutes } from "./web/settings.js";
 import { getMeta, setMeta } from "./meta.js";
 import { ConfigRepo } from "./workers/config-repo.js";
+import { workerAlerts } from "./workers/alerts.js";
 import { WorkerManager, taskReason } from "./workers/manager.js";
 import { FactoryThreads } from "./t3/threads.js";
 import { finalMessage } from "./workers/scripts.js";
@@ -487,12 +489,50 @@ async function main(argv: string[]): Promise<number> {
               db,
               cards: engine.cards,
               dashboardUrl: () => dashboardUrl(config.host, config.port),
+              extraAlerts: () => [
+                ...store
+                  .list()
+                  .filter((version) => version.author === "improver" && version.state === "draft")
+                  .map((version) => ({
+                    key: `proposal-${String(version.id)}`,
+                    text: `Config version ${String(version.id)} is proposed and waits for your approval on Improvement.`,
+                  })),
+                ...workerAlerts(workers.views()),
+              ],
             });
       const alerting = setInterval(() => {
         messaging?.sendAlerts().catch((error: unknown) => {
           console.error("Sending alerts failed", error);
         });
       }, 20_000);
+      const requests =
+        messaging === undefined
+          ? undefined
+          : new RequestThreads({
+              db,
+              cards: engine.cards,
+              messaging,
+              github: engine.github,
+              dashboardUrl: () => dashboardUrl(config.host, config.port),
+            });
+      let followingRequests: Promise<void> | undefined;
+      const threading = setInterval(() => {
+        // One pass at a time; a slow Discord read must not stack passes.
+        followingRequests ??= (async () => {
+          try {
+            await requests?.link();
+          } catch (error) {
+            console.error("Finding request threads failed", error);
+          }
+          await requests?.progress();
+        })()
+          .catch((error: unknown) => {
+            console.error("Posting request progress failed", error);
+          })
+          .finally(() => {
+            followingRequests = undefined;
+          });
+      }, 30_000);
       const server = createDashboardServer({
         db,
         instanceId: config.instanceId,
@@ -533,6 +573,7 @@ async function main(argv: string[]): Promise<number> {
       stopBackups();
       clearInterval(ticking);
       clearInterval(alerting);
+      clearInterval(threading);
       for (const timer of engineTicks) clearInterval(timer);
       await new Promise((resolve) => mcpServer.close(resolve));
       following.abort();

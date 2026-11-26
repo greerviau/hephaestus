@@ -1,5 +1,6 @@
 import type { Database } from "better-sqlite3";
 import { projectFor, type FactoryConfig } from "../config/document.js";
+import { evidenceRef } from "../request-threads.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
@@ -1614,8 +1615,14 @@ ${card.brief ?? "(none)"}
 
 1. Make the change with tests, following the repository's conventions.
 2. Commit, push \`${branch}\` to origin, and open a pull request from it against \`${base}\`${issue === undefined ? "" : ` whose body contains \`Closes #${String(issue.number)}\``}.
-3. Do not merge it, and do not push to any other branch. Hephaestus merges.
-4. End your final message with this block, filled in:
+3. Do not merge it, and do not push to any other branch, except the evidence ref below. Hephaestus merges.
+4. If the change can be seen, such as a page, a command's output, or a generated file, show it: save screenshots, a short recording, or the output to files outside the repository, then push them where the owner's chat picks them up. Run this from the repository, with your file paths in place of the examples:
+   \`\`\`sh
+   tree=$(for f in /tmp/evidence/screen.png /tmp/evidence/output.txt; do printf '100644 blob %s\\t%s\\n' "$(git hash-object -w "$f")" "$(basename "$f")"; done | git mktree)
+   commit=$(git commit-tree "$tree" -m "Evidence for card ${String(card.id)}") && git push --force origin "\${commit}:refs/${evidenceRef(card.id)}"
+   \`\`\`
+   Give each file a different name. This ref holds only the evidence files and is not a branch. Skip this step when there is nothing to show.
+5. End your final message with this block, filled in:
 
 ${RESULT_FENCE}hephaestus-result
 {"status": "done", "pr": <PR number>, "headSha": "<full SHA of the PR's head commit>"}

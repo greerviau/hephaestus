@@ -1,3 +1,4 @@
+import { trackingLine } from "../request-threads.js";
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -303,9 +304,13 @@ export class FactoryMcp {
         const issue = await intake.fileIssue(role, repo, title, body);
         return {
           issue: issue.number,
-          url: `https://github.com/${repo}/issues/${String(issue.number)}`,
+          url: `https://github.com/${issue.repo}/issues/${String(issue.number)}`,
           state: issue.state,
           card_id: issue.cardId,
+          // Hephaestus finds the request's thread by this line and posts the work's progress there.
+          tracking: trackingLine(issue.repo, issue.number),
+          reply:
+            "If the request came in a chat, reply in its thread with the issue's link and the tracking line exactly as given.",
         };
       },
     );

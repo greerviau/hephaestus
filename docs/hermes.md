@@ -24,3 +24,11 @@ The Messaging page connects Hephaestus to Discord or Telegram. Make a bot for th
 On Discord, the channel you give is a request channel: the bot answers there without an @mention and opens a thread for each request. On Telegram, requests and replies use your direct chat with the bot, or a group you name.
 
 With alerts on, Hephaestus posts each new notification, the items that appear under Needs you, to the chat with a link to the dashboard. Alerts start from the moment you turn them on, so earlier notifications are not sent.
+
+### Requests and their threads
+
+When you ask for work in the request channel, the factory files the issue and replies in the request's thread with the issue's link and a line such as `Tracking you/your-repo#12`. Hephaestus looks for that line, in messages from the bot only, in the channel's active threads every 30 seconds. From then on it posts the work's milestones in that thread: work started, PR opened, the review's result, merged, checks passed on the default branch, reverted, stopped, and anything that needs you, with a link to the card.
+
+When the change can be seen, the engineer saves screenshots, a recording, or output files and pushes them to `refs/hephaestus/evidence/card-<id>`, a ref that holds only those files and is not a branch. When the PR opens and when the work is done, Hephaestus downloads up to six files of up to 8 MB each from GitHub and attaches them in the thread, once per version of the evidence.
+
+Threads and progress work on Discord. On Telegram, requests and replies use your chat with the bot, and alerts reach you there, but Hephaestus does not follow a request's progress.
