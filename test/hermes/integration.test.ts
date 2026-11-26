@@ -46,6 +46,9 @@ describe.runIf(enabled)("Hermes integration", () => {
       expect(settings).toMatch(
         /disabled_toolsets:\s*\n(\s*- (terminal|code_execution|cronjob)\n){3}/,
       );
+      expect(settings).toMatch(/tool_progress:\s*false/);
+      expect(settings).toMatch(/busy_ack_detail:\s*false/);
+      expect(settings).toMatch(/long_running_notifications:\s*generic/);
       expect(readFileSync(join(factoryRoot, "profiles", role, ".env"), "utf8")).toContain(
         "HEPHAESTUS_MCP_TOKEN=test-token",
       );

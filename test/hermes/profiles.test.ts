@@ -110,11 +110,17 @@ describe("FactoryProfiles.sync", () => {
     );
   });
 
-  it("keeps tool-progress lines out of every role's chat replies", async () => {
+  it("keeps tool names out of every role's chat replies", async () => {
     await profiles.sync(sampleConfig(), 1, mcp);
 
     for (const role of ["planner", "lead", "improver"]) {
-      expect(hermes.lines()).toContain(`-p ${role} config set --force display.tool_progress off`);
+      expect(hermes.lines()).toEqual(
+        expect.arrayContaining([
+          `-p ${role} config set --force display.tool_progress off`,
+          `-p ${role} config set --force display.busy_ack_detail false`,
+          `-p ${role} config set --force display.long_running_notifications generic`,
+        ]),
+      );
     }
   });
 
