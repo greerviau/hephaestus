@@ -16,6 +16,8 @@ export function trackingLine(repo: string, number: number): string {
 /** A tracking line on its own line, perhaps in backticks; quoted text inside a sentence does not count. */
 const TRACKING = /^[ \t>*_-]*`?Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)`?[ \t.*_]*$/gm;
 const CURSOR_KEY = "request_threads_event";
+/** Stages whose PR is open or merged, where a late thread is shown the evidence. */
+const EVIDENCE_STAGES = new Set<Card["stage"]>(["Reviewing", "Merging", "Validating", "Done"]);
 
 /** Where the engineer pushes evidence for a card: a ref outside every branch. */
 export function evidenceRef(cardId: number): string {
@@ -103,7 +105,11 @@ export class RequestThreads {
     }
   }
 
-  /** Starts following an issue in a thread, and catches the thread up on its card at once. */
+  /**
+   * Starts following an issue in a thread, and catches the thread up on its card at once.
+   * No progress pass may run meanwhile, or a step could be posted before the catch-up and
+   * again in it; the service runs link and progress one after the other.
+   */
   async follow(repo: string, number: number, thread: Thread): Promise<void> {
     // Only an issue Hephaestus tracks can be followed, so a stray line cannot claim another repo's.
     const tracked = this.db
@@ -111,6 +117,10 @@ export class RequestThreads {
       .get(repo, number) as { repo: string } | undefined;
     if (tracked === undefined) return;
     repo = tracked.repo;
+    // Events up to now are covered by the catch-up, once it is sent; until then every one is posted.
+    const newest =
+      (this.db.prepare("SELECT MAX(id) AS id FROM card_events").get() as { id: number | null })
+        .id ?? 0;
     const result = this.db
       .prepare(
         `INSERT INTO chat_threads (repo, number, platform, chat, linked_at) VALUES (?, ?, ?, ?, ?)
@@ -123,10 +133,18 @@ export class RequestThreads {
       .find(
         (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.issueNumber === number,
       );
-    await this.post(
+    const sent = await this.post(
       thread,
-      `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card)}`} Progress shows up here.`,
+      `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card, this.options.dashboardUrl())}`} Progress shows up here.`,
     );
+    if (!sent) return;
+    this.db
+      .prepare("UPDATE chat_threads SET after_event = ? WHERE repo = ? AND number = ?")
+      .run(newest, repo, number);
+    // A card past opening its PR, and not sent back or stopped, may have evidence the thread has not seen.
+    if (card !== undefined && card.prNumber !== null && EVIDENCE_STAGES.has(card.stage)) {
+      await this.postEvidence(thread, card);
+    }
   }
 
   /** Posts the milestones of followed cards that happened since the last pass. */
@@ -147,8 +165,9 @@ export class RequestThreads {
             .all(Number(last)) as CardEvent[]);
     for (const event of events) {
       const card = this.options.cards.get(event.cardId);
-      const thread =
+      const followed =
         card.issueNumber === null ? undefined : this.threadFor(card.repo, card.issueNumber);
+      const thread = followed !== undefined && event.id > followed.after ? followed : undefined;
       const text =
         thread === undefined ? undefined : milestone(event, card, this.options.dashboardUrl());
       if (thread !== undefined && text !== undefined) await this.post(thread, text);
@@ -163,11 +182,16 @@ export class RequestThreads {
     }
   }
 
-  private threadFor(repo: string, number: number): Thread | undefined {
+  /** The thread following an issue, and the last event its catch-up covered. */
+  private threadFor(repo: string, number: number): (Thread & { after: number }) | undefined {
     const row = this.db
-      .prepare("SELECT platform, chat FROM chat_threads WHERE repo = ? AND number = ?")
-      .get(repo, number) as { platform: string; chat: string } | undefined;
-    return row?.platform === "discord" ? { platform: "discord", chat: row.chat } : undefined;
+      .prepare(
+        "SELECT platform, chat, after_event AS after FROM chat_threads WHERE repo = ? AND number = ?",
+      )
+      .get(repo, number) as { platform: string; chat: string; after: number } | undefined;
+    return row?.platform === "discord"
+      ? { platform: "discord", chat: row.chat, after: row.after }
+      : undefined;
   }
 
   /** Posts to a thread; only Hephaestus's own evidence lines may attach files. True when sent. */
@@ -217,8 +241,15 @@ export class RequestThreads {
   }
 }
 
+/** A reason as a clause: trimmed, kept short, and without its final stop, which the caller adds. */
+function sentence(reason: string): string {
+  const text = reason.trim().replace(/[.!?]+$/, "");
+  return text.length > 300 ? `${text.slice(0, 300)} (cut short; the card has it all)` : text;
+}
+
 /** What the card is doing now, in a few words, for a thread that starts following it late. */
-function stageText(card: Card): string {
+function stageText(card: Card, dashboard: string): string {
+  const why = card.reason === null ? "" : `: ${sentence(card.reason)}`;
   switch (card.stage) {
     case "Admitted":
       return "it is admitted and waiting to start.";
@@ -231,13 +262,15 @@ function stageText(card: Card): string {
     case "Validating":
       return "it merged, and checks are running on the default branch.";
     case "Reverting":
-      return "its merge is being reverted.";
+      return `its merge failed checks on the default branch, so it is being reverted${card.revertPr === null ? "" : ` with PR #${String(card.revertPr)}`}.`;
     case "Escalated":
-      return "it is waiting for a decision.";
+      return card.escalatedTo === "owner"
+        ? `it needs you${why}. ${dashboard}work/${String(card.id)}`
+        : `it is waiting for a decision${why}.`;
     case "Done":
       return "it is done.";
     case "Abandoned":
-      return "it was abandoned.";
+      return `it was stopped${why}.`;
   }
 }
 
@@ -275,8 +308,11 @@ export function milestone(event: CardEvent, card: Card, dashboard: string): stri
       return `Checks failed on the default branch after the merge, so it is being reverted with ${pr(card.revertPr)}.`;
     case "stage:Escalated":
       return detail.startsWith("to the owner")
-        ? `This needs you: ${card.reason ?? detail}\n${dashboard}work/${String(card.id)}`
+        ? `This needs you: ${sentence(card.reason ?? detail)}.\n${dashboard}work/${String(card.id)}`
         : undefined;
+    // The lead handing a card it was given on to the owner.
+    case "escalated:owner":
+      return `This needs you: ${sentence(detail)}.\n${dashboard}work/${String(card.id)}`;
     case "stage:Abandoned":
       return `Stopped: ${card.reason ?? detail}.`;
     default:

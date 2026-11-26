@@ -15,6 +15,7 @@ let db: Database;
 let cards: CardStore;
 let posts: { chat: string; text: string; attachments: boolean }[];
 let unreadable: Set<string>;
+let failPosts: number;
 let messages: Record<string, { id: string; content: string; author: { id: string } }[]>;
 let evidence: { tree: string; files: { name: string; data: Buffer }[] } | undefined;
 let threads: RequestThreads;
@@ -52,6 +53,7 @@ beforeEach(() => {
   cards = new CardStore(db);
   posts = [];
   unreadable = new Set();
+  failPosts = 0;
   messages = {};
   evidence = undefined;
   threads = new RequestThreads({
@@ -60,6 +62,10 @@ beforeEach(() => {
     messaging: {
       credentials: () => ({ token: "token", home: CHANNEL }),
       sendTo: (_platform, chat, text, attachments) => {
+        if (failPosts > 0) {
+          failPosts -= 1;
+          return Promise.reject(new Error("Discord is down"));
+        }
         posts.push({ chat, text, attachments: attachments === true });
         return Promise.resolve();
       },
@@ -241,7 +247,7 @@ describe("milestone", () => {
         "http://host:7700/",
       ),
     ).toBe(
-      `This needs you: the PR touches .github/workflows/ci.yml\nhttp://host:7700/work/${String(id)}`,
+      `This needs you: the PR touches .github/workflows/ci.yml.\nhttp://host:7700/work/${String(id)}`,
     );
     expect(
       milestone(
@@ -250,5 +256,114 @@ describe("milestone", () => {
         "http://host:7700/",
       ),
     ).toBeUndefined();
+    // The lead passing the card on to the owner reaches the thread too.
+    expect(
+      milestone(
+        { id: 3, cardId: id, at: "", kind: "escalated:owner", detail: "CI is red!\n" },
+        escalated,
+        "http://host:7700/",
+      ),
+    ).toBe(`This needs you: CI is red.\nhttp://host:7700/work/${String(id)}`);
+  });
+});
+
+describe("RequestThreads, linked late", () => {
+  it("does not repeat in a milestone what the catch-up already said, and attaches waiting evidence", async () => {
+    const id = card();
+    await threads.progress();
+    cards.transition(id, "Implementing", "work started");
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Reviewing", "PR #5 at abc");
+    evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
+    // The thread links before the next progress pass has seen those events.
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    await threads.progress();
+    expect(posts.map((post) => post.text.split("\n")[0])).toEqual([
+      "Following octo/app#7: PR #5 is in review. Progress shows up here.",
+      "Evidence: screen.png",
+    ]);
+    cards.transition(id, "Merging", "approved at abc");
+    await threads.progress();
+    expect(posts.at(-1)?.text).toBe("The review approved it.");
+  });
+
+  it("posts every step of the window when the catch-up itself was not sent", async () => {
+    const id = card();
+    await threads.progress();
+    cards.transition(id, "Implementing", "work started");
+    failPosts = 1;
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    await threads.progress();
+    expect(posts.map((post) => post.text)).toEqual(["Work started."]);
+  });
+
+  it("gives the reason and link of a card that needs the owner, and no evidence for one sent back", async () => {
+    const id = card();
+    await threads.progress();
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Implementing", "work started");
+    evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    expect(posts.map((post) => post.text)).toEqual([
+      "Following octo/app#7: the engineer is working on it. Progress shows up here.",
+    ]);
+
+    card(8);
+    const other = cards.list().find((item) => item.issueNumber === 8)?.id ?? 0;
+    cards.transition(other, "Escalated", "to the owner: pick", {
+      escalatedTo: "owner",
+      reason: "pick a database.",
+    });
+    await threads.follow("octo/app", 8, { platform: "discord", chat: OTHER });
+    expect(posts.at(-1)?.text).toBe(
+      `Following octo/app#8: it needs you: pick a database. http://host:7700/work/${String(other)} Progress shows up here.`,
+    );
+  });
+});
+
+describe("RequestThreads, catch-up text", () => {
+  it("gives a stopped card's and a lead escalation's reason, a revert's PR, and keeps a long reason short", async () => {
+    const texts: string[] = [];
+    for (const [number, setup] of [
+      [
+        21,
+        (id: number) => cards.transition(id, "Abandoned", "x", { reason: "Is this still wanted?" }),
+      ],
+      [
+        22,
+        (id: number) =>
+          cards.transition(id, "Escalated", "to the lead: x", {
+            escalatedTo: "lead",
+            reason: "blocked on a key.",
+          }),
+      ],
+      [
+        23,
+        (id: number) =>
+          cards.transition(id, "Escalated", "to the owner: x", {
+            escalatedTo: "owner",
+            reason: "y".repeat(400),
+          }),
+      ],
+    ] as const) {
+      setup(card(number));
+      await threads.follow("octo/app", number, { platform: "discord", chat: THREAD });
+      texts.push(posts.at(-1)?.text ?? "");
+    }
+    expect(texts[0]).toBe(
+      "Following octo/app#21: it was stopped: Is this still wanted. Progress shows up here.",
+    );
+    expect(texts[1]).toBe(
+      "Following octo/app#22: it is waiting for a decision: blocked on a key. Progress shows up here.",
+    );
+    expect(texts[2]).toMatch(
+      /^Following octo\/app#23: it needs you: y{300} \(cut short; the card has it all\)\. http:\/\/host:7700\/work\/\d+ Progress/,
+    );
+
+    const reverting = card(24);
+    cards.update(reverting, { revertPr: 12 });
+    db.prepare("UPDATE cards SET stage = 'Reverting' WHERE id = ?").run(reverting);
+    await threads.follow("octo/app", 24, { platform: "discord", chat: THREAD });
+    expect(posts.at(-1)?.text).toContain("being reverted with PR #12.");
   });
 });
