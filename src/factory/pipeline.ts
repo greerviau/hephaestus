@@ -1111,120 +1111,17 @@ export class Pipeline {
    */
   private async revert(card: Card): Promise<void> {
     if (card.revertPr === null) return;
-    const pr = await this.options.github.pullRequest(card.repo, card.revertPr);
+    // Files and checks matter only while the revert PR is open, so a merged or closed one is
+    // settled from its merge state alone, whatever the checks API is doing.
+    const pr = await this.options.github.mergeState(card.repo, card.revertPr);
     if (pr.state === "OPEN") {
-      if (pr.fromFork || (card.baseBranch !== null && pr.baseBranch !== card.baseBranch)) {
-        return this.escalate(
-          card,
-          "owner",
-          `the revert PR #${String(pr.number)} is not the factory's`,
-        );
-      }
-      // While the card reverts, its head is the revert PR's head.
-      if (card.headSha !== pr.headSha) {
-        card = this.cards.update(card.id, {
-          headSha: pr.headSha,
-          headAt: this.now().toISOString(),
-          reviewThread: null,
-        });
-      }
-      const policy = this.policy(card);
-      // The deadline comes before the review, so a stalled rollback always reaches the owner.
-      if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS) && card.waiting !== null) {
-        return this.escalate(
-          card,
-          "owner",
-          `the revert PR #${String(pr.number)} has not merged after an hour: ${card.waiting}`,
-          { ownerAction: "revert-merge" },
-        );
-      }
-      // The owner's approval of the revert's head stands in for its review.
-      const ownerApproved = card.ownerApprovedSha === pr.headSha;
-      if (policy.requireReview && !ownerApproved && !this.cards.approvedAt(card.id, pr.headSha)) {
-        if (card.reviewThread === null) {
-          await this.launchReview(card, pr.number);
-          return;
-        }
-        const result = this.newResult(card, card.reviewThread);
-        if (result === undefined) {
-          this.wait(card, "the revert PR is in review");
-          return;
-        }
-        const done = this.handled(card, card.reviewThread, result.itemId);
-        const review = result.status === "completed" ? parseReviewResult(result.text) : undefined;
-        if (review?.verdict !== "approve" || review.headSha !== pr.headSha) {
-          return this.escalate(
-            card,
-            "owner",
-            `the review of revert PR #${String(pr.number)} did not approve it${review === undefined ? "" : `: ${review.findings}`}`,
-            { ...done, ownerAction: "revert-merge" },
-          );
-        }
-        this.cards.recordReview({
-          cardId: card.id,
-          headSha: review.headSha,
-          reviewer: other(card.implementer ?? "claude"),
-          author: card.implementer ?? "claude",
-          verdict: "approve",
-          threadId: card.reviewThread,
-        });
-        card = this.cards.update(card.id, done);
-      }
-      const decision = decideMerge({
-        policy,
-        checks: pr.checks,
-        failedChecks: pr.failedChecks,
-        files: pr.files,
-        filesComplete: pr.filesComplete,
-        checkIds: pr.checkNames,
-        approvedAtHead:
-          !policy.requireReview || ownerApproved || this.cards.approvedAt(card.id, pr.headSha),
-        ownerApprovedAtHead: ownerApproved,
-      });
-      if (decision.action === "wait") {
-        if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS)) {
-          return this.escalate(
-            card,
-            "owner",
-            `revert PR #${String(pr.number)} has waited an hour: ${decision.reason}`,
-            { ownerAction: "revert-merge" },
-          );
-        }
-        this.wait(card, `revert PR: ${decision.reason}`);
-        return;
-      }
-      if (decision.action === "escalate") {
-        return this.escalate(card, "owner", `revert PR #${String(pr.number)}: ${decision.reason}`, {
-          ownerAction: "revert-merge",
-        });
-      }
-      if (!this.olderThan(card.headAt, this.options.checksSettleMs ?? CHECKS_SETTLE_MS)) {
-        this.wait(card, "revert PR: letting every check register");
-        return;
-      }
-      try {
-        const mergeSha = await this.options.github.merge(
-          card.repo,
-          pr.number,
-          pr.headSha,
-          mergeMarker(card),
-        );
-        this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, true);
-      } catch (error) {
-        if (error instanceof MergeOutcomeUnknownError) {
-          return this.escalate(
-            card,
-            "owner",
-            `GitHub may have merged revert PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
-            { ownerAction: "revert-merge" },
-          );
-        }
-        if (!(error instanceof AlreadyMergedError)) throw error;
-        this.cards.recordForeignRevert(card.repo, pr.number, error.mergeSha ?? "", card.id);
-      }
-    } else if (pr.state !== "MERGED") {
+      await this.mergeRevert(card, await this.options.github.pullRequest(card.repo, card.revertPr));
+      return;
+    }
+    if (pr.state !== "MERGED") {
       return this.escalate(card, "owner", `the revert PR #${String(pr.number)} was closed`);
-    } else if (!this.cards.hasMerge(card.repo, pr.number)) {
+    }
+    if (!this.cards.hasMerge(card.repo, pr.number)) {
       // A merge Hephaestus made, whose record was lost, carries its marker.
       const ours =
         pr.mergeSha === null
@@ -1237,6 +1134,127 @@ export class Pipeline {
       if (ours) this.cards.recordMerge(card.repo, pr.number, pr.mergeSha ?? "", card.id, true);
       else this.cards.recordForeignRevert(card.repo, pr.number, pr.mergeSha ?? "", card.id);
     }
+    await this.finishRevert(card, pr.number);
+  }
+
+  /** Merges an open revert PR under the same conditions as any factory PR, then finishes the revert. */
+  private async mergeRevert(card: Card, pr: PullRequest): Promise<void> {
+    // It merged or closed since its state was read; the next pass settles it from that.
+    if (pr.state !== "OPEN") return;
+    if (pr.fromFork || (card.baseBranch !== null && pr.baseBranch !== card.baseBranch)) {
+      return this.escalate(
+        card,
+        "owner",
+        `the revert PR #${String(pr.number)} is not the factory's`,
+      );
+    }
+    // While the card reverts, its head is the revert PR's head.
+    if (card.headSha !== pr.headSha) {
+      card = this.cards.update(card.id, {
+        headSha: pr.headSha,
+        headAt: this.now().toISOString(),
+        reviewThread: null,
+      });
+    }
+    const policy = this.policy(card);
+    // The deadline comes before the review, so a stalled rollback always reaches the owner.
+    if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS) && card.waiting !== null) {
+      return this.escalate(
+        card,
+        "owner",
+        `the revert PR #${String(pr.number)} has not merged after an hour: ${card.waiting}`,
+        { ownerAction: "revert-merge" },
+      );
+    }
+    // The owner's approval of the revert's head stands in for its review.
+    const ownerApproved = card.ownerApprovedSha === pr.headSha;
+    if (policy.requireReview && !ownerApproved && !this.cards.approvedAt(card.id, pr.headSha)) {
+      if (card.reviewThread === null) {
+        await this.launchReview(card, pr.number);
+        return;
+      }
+      const result = this.newResult(card, card.reviewThread);
+      if (result === undefined) {
+        this.wait(card, "the revert PR is in review");
+        return;
+      }
+      const done = this.handled(card, card.reviewThread, result.itemId);
+      const review = result.status === "completed" ? parseReviewResult(result.text) : undefined;
+      if (review?.verdict !== "approve" || review.headSha !== pr.headSha) {
+        return this.escalate(
+          card,
+          "owner",
+          `the review of revert PR #${String(pr.number)} did not approve it${review === undefined ? "" : `: ${review.findings}`}`,
+          { ...done, ownerAction: "revert-merge" },
+        );
+      }
+      this.cards.recordReview({
+        cardId: card.id,
+        headSha: review.headSha,
+        reviewer: other(card.implementer ?? "claude"),
+        author: card.implementer ?? "claude",
+        verdict: "approve",
+        threadId: card.reviewThread,
+      });
+      card = this.cards.update(card.id, done);
+    }
+    const decision = decideMerge({
+      policy,
+      checks: pr.checks,
+      failedChecks: pr.failedChecks,
+      files: pr.files,
+      filesComplete: pr.filesComplete,
+      checkIds: pr.checkNames,
+      approvedAtHead:
+        !policy.requireReview || ownerApproved || this.cards.approvedAt(card.id, pr.headSha),
+      ownerApprovedAtHead: ownerApproved,
+    });
+    if (decision.action === "wait") {
+      if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS)) {
+        return this.escalate(
+          card,
+          "owner",
+          `revert PR #${String(pr.number)} has waited an hour: ${decision.reason}`,
+          { ownerAction: "revert-merge" },
+        );
+      }
+      this.wait(card, `revert PR: ${decision.reason}`);
+      return;
+    }
+    if (decision.action === "escalate") {
+      return this.escalate(card, "owner", `revert PR #${String(pr.number)}: ${decision.reason}`, {
+        ownerAction: "revert-merge",
+      });
+    }
+    if (!this.olderThan(card.headAt, this.options.checksSettleMs ?? CHECKS_SETTLE_MS)) {
+      this.wait(card, "revert PR: letting every check register");
+      return;
+    }
+    try {
+      const mergeSha = await this.options.github.merge(
+        card.repo,
+        pr.number,
+        pr.headSha,
+        mergeMarker(card),
+      );
+      this.cards.recordMerge(card.repo, pr.number, mergeSha, card.id, true);
+    } catch (error) {
+      if (error instanceof MergeOutcomeUnknownError) {
+        return this.escalate(
+          card,
+          "owner",
+          `GitHub may have merged revert PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
+          { ownerAction: "revert-merge" },
+        );
+      }
+      if (!(error instanceof AlreadyMergedError)) throw error;
+      this.cards.recordForeignRevert(card.repo, pr.number, error.mergeSha ?? "", card.id);
+    }
+    await this.finishRevert(card, pr.number);
+  }
+
+  /** Reopens the issue and sends the card back to Implementing once its revert PR merged. */
+  private async finishRevert(card: Card, revertNumber: number): Promise<void> {
     const reverted = card.prNumber;
     if (card.issueNumber !== null) {
       await this.options.github.reopenIssue(
@@ -1252,7 +1270,7 @@ export class Pipeline {
     const next = this.cards.transition(
       card.id,
       "Implementing",
-      `revert PR #${String(pr.number)} merged; working on the issue again`,
+      `revert PR #${String(revertNumber)} merged; working on the issue again`,
       {
         brief: `${card.brief ?? ""}\n\nYour earlier PR #${String(reverted)} was merged and then reverted, because checks failed on the default branch after the merge. Find out why and fix it in a new PR.`,
         implementThread: null,

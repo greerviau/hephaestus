@@ -357,6 +357,35 @@ describe("Pipeline", () => {
     expect(h.cards.get(id).escalatedTo).toBe("lead");
   });
 
+  it("finishes a revert the owner merged by hand while the checks API is down", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "yolo", overrides: { escalationPaths: ["ci/**"] } },
+      };
+    });
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5", files: ["ci/build.yml"] }));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Escalated");
+
+    h.github.prs.set(
+      9,
+      pr(9, SHA2, { headBranch: "revert-5", state: "MERGED", mergeSha: "f".repeat(40) }),
+    );
+    h.github.pullRequest = () => Promise.reject(new Error("HTTP 503 from the checks API"));
+    h.setClock(Date.parse("2026-11-25T13:00:00Z"));
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", reverting: false });
+    expect(h.github.reopened).toEqual([5]);
+  });
+
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
     const h = harness();
     const id = admitted(h);
