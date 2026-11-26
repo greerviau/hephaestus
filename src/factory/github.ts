@@ -3,6 +3,9 @@ import { commandRunner, type CommandRun } from "../workers/config-repo.js";
 export type CheckState = "success" | "pending" | "failure" | "none";
 
 /** GitHub may have merged the PR, and Hephaestus could not read back whether it did. */
+/** How long one gh call may run before it is killed and counts as failed. */
+const GH_TIMEOUT_MS = 2 * 60_000;
+
 /** The most open issues one read lists; an issue missing from a full list may still be open. */
 export const OPEN_ISSUES_LIMIT = 200;
 
@@ -136,7 +139,8 @@ export class GitHub {
   ) {}
 
   private gh(args: string[]): Promise<string> {
-    return this.exec(this.ghPath, args);
+    // A stalled call must not hold up a poll or a card forever.
+    return this.exec(this.ghPath, args, undefined, GH_TIMEOUT_MS);
   }
 
   private async json<T>(args: string[]): Promise<T> {

@@ -107,4 +107,14 @@ describe("GitHub", () => {
     const exec: CommandRun = () => Promise.resolve("https://github.com/octo/app/issues/42\n");
     expect(await new GitHub("gh", exec).createIssue("octo/app", "t", "b")).toBe(42);
   });
+
+  it("gives every gh call a timeout, so a stalled call cannot hold up a poll", async () => {
+    const timeouts: (number | undefined)[] = [];
+    const exec: CommandRun = (_file, _args, _cwd, timeoutMs) => {
+      timeouts.push(timeoutMs);
+      return Promise.resolve("[]");
+    };
+    await new GitHub("gh", exec).openIssues("octo/app");
+    expect(timeouts).toEqual([120_000]);
+  });
 });

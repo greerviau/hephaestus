@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { NotAFactoryProjectError } from "../../src/factory/intake.js";
+import type { Issue } from "../../src/factory/github.js";
+import { Intake, NotAFactoryProjectError } from "../../src/factory/intake.js";
 import { harness } from "./harness.js";
 
 describe("Intake", () => {
@@ -144,7 +145,7 @@ describe("Intake", () => {
     expect(new Set(lookups).size).toBe(15);
   });
 
-  it("keeps one lookup budget per poll across projects, and retries failed reads in turn", async () => {
+  it("splits the reads of a poll among the projects, and retries failed reads in turn", async () => {
     const h = harness((config) => {
       config.projects["octo/lib"] = { policy: { preset: "standard", overrides: {} } };
     });
@@ -256,6 +257,99 @@ describe("Intake", () => {
     expect(
       h.cards.events(b.cardId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
     ).toHaveLength(1);
+  });
+
+  it("settles a project while a read in another project is stalled", async () => {
+    const h = harness((config) => {
+      config.projects["octo/lib"] = { policy: { preset: "standard", overrides: {} } };
+    });
+    h.github.issues.set(9, { number: 9, title: "Old", body: "", author: "x", state: "OPEN" });
+    // Two polls, so a poll order that rotates would put the stalled project first.
+    await h.intake.poll();
+    await h.intake.poll();
+    h.github.issues.set(9, { number: 9, title: "Old", body: "", author: "x", state: "CLOSED" });
+    const read = h.github.issue.bind(h.github);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.github.issue = async (repo, number) => {
+      if (repo === "octo/app") await held;
+      return read(repo, number);
+    };
+
+    const polling = h.intake.poll();
+    await expect.poll(() => h.intake.issue("octo/lib", 9)?.closed).toBe(true);
+    expect(h.intake.issue("octo/app", 9)?.closed).toBe(false);
+    release();
+    await polling;
+    expect(h.intake.issue("octo/app", 9)?.closed).toBe(true);
+  });
+
+  it("gives every project reads in its first poll, however many another project needs", async () => {
+    const h = harness((config) => {
+      config.projects["octo/lib"] = { policy: { preset: "standard", overrides: {} } };
+    });
+    const lists: Record<string, Issue[]> = {
+      "octo/app": Array.from({ length: 10 }, (_, index) => ({
+        number: index + 1,
+        title: "Gone",
+        body: "",
+        author: "x",
+        state: "OPEN" as const,
+      })),
+      "octo/lib": [{ number: 20, title: "Closed", body: "", author: "x", state: "OPEN" }],
+    };
+    // Intake passes the repo, which the fake itself ignores.
+    h.github.openIssues = (repo?: string) => Promise.resolve(lists[repo ?? ""] ?? []);
+    await h.intake.poll();
+    lists["octo/app"] = [];
+    lists["octo/lib"] = [];
+    h.github.issues.set(20, {
+      number: 20,
+      title: "Closed",
+      body: "",
+      author: "x",
+      state: "CLOSED",
+    });
+    h.github.issue = (repo, number) =>
+      repo === "octo/app"
+        ? Promise.reject(new Error("deleted"))
+        : Promise.resolve({ number, title: "", body: "", author: "x", state: "CLOSED" });
+
+    // A fresh service, as after a restart, polls once.
+    const restarted = new Intake({
+      db: h.db,
+      cards: h.cards,
+      github: h.github,
+      config: () => h.config,
+    });
+    await restarted.poll();
+    expect(h.intake.issue("octo/lib", 20)?.closed).toBe(true);
+  });
+
+  it("goes on to the next issue when settling one fails", async () => {
+    const h = harness();
+    for (const number of [1, 2]) {
+      h.github.issues.set(number, { number, title: "Old", body: "", author: "x", state: "OPEN" });
+    }
+    await h.intake.poll();
+    for (const number of [1, 2]) {
+      h.github.issues.set(number, { number, title: "Old", body: "", author: "x", state: "CLOSED" });
+    }
+    const lookup = Reflect.get(h.intake, "lookup") as (
+      repo: string,
+      number: number,
+    ) => Promise<string>;
+    let calls = 0;
+    Reflect.set(h.intake, "lookup", (repo: string, number: number) => {
+      calls += 1;
+      if (calls === 1) throw new Error("SQLITE_BUSY: database is locked");
+      return lookup.call(h.intake, repo, number);
+    });
+
+    await h.intake.poll();
+    expect([1, 2].map((number) => h.intake.issue("octo/app", number)?.closed)).toContain(true);
   });
 
   it("frees the cap when an unstarted issue is closed", async () => {

@@ -6,6 +6,8 @@ The factory works only on factory projects, the repos listed under `projects` in
 
 Every two minutes Hephaestus lists each factory project's open issues with `gh`. It records an issue it did not file as external, and an external issue waits for the owner to admit or reject it on the dashboard. An issue a factory role files with `file_issue` is admitted at once, unless the project already has `openIssueCap` factory-filed issues admitted whose card has not started a thread; then it waits for the owner too. Every admitted issue gets a card, and a card on the Hermes board for the lead.
 
+A closed issue leaves the owner's queue and comes back if it is reopened, and closing an admitted issue before any thread starts abandons its card. `gh` lists at most 200 open issues, so an issue missing from a full list is read on its own: at most 10 such reads per poll, split among the projects, oldest first. Every `gh` call times out after two minutes.
+
 ## The pipeline
 
 - The lead starts a card with `start_work` and a brief. If the lead has not started an admitted card after `factory.autoStartMinutes` (10 by default; 0 waits for the lead), Hephaestus starts it from the issue.

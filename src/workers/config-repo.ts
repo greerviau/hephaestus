@@ -6,13 +6,19 @@ import type { FactoryConfig } from "../config/document.js";
 
 const run = promisify(execFile);
 
-/** Runs a command and returns its stdout; the error carries stderr. */
-export type CommandRun = (file: string, args: string[], cwd?: string) => Promise<string>;
+/** Runs a command and returns its stdout; the error carries stderr. A timeout kills the command. */
+export type CommandRun = (
+  file: string,
+  args: string[],
+  cwd?: string,
+  timeoutMs?: number,
+) => Promise<string>;
 
-export const commandRunner: CommandRun = async (file, args, cwd) => {
+export const commandRunner: CommandRun = async (file, args, cwd, timeoutMs) => {
   try {
     const { stdout } = await run(file, args, {
       cwd,
+      timeout: timeoutMs ?? 0,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       maxBuffer: 64 * 1024 * 1024,
     });

@@ -4,7 +4,7 @@ import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
-/** Issues missing from the open lists that one poll reads on their own, across every project. */
+/** Issues missing from the open lists that one poll reads on their own, split among the projects. */
 const LOOKUPS_PER_POLL = 10;
 
 interface Candidate {
@@ -100,8 +100,6 @@ function toIssue(row: Row): TrackedIssue {
  */
 export class Intake {
   private readonly now: () => Date;
-  /** Polls so far, which picks the project that reads first. */
-  private polls = 0;
   /** Serializes filing and polling, so a poll never records a just-filed issue as external. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -169,33 +167,35 @@ export class Intake {
   poll(): Promise<void> {
     return this.serial(async () => {
       const repos = Object.keys(this.options.config()?.projects ?? {});
-      // The budget is shared, so the first project changes each poll and none goes without reads.
-      const first = repos.length === 0 ? 0 : this.polls % repos.length;
-      this.polls += 1;
-      const budget = { left: LOOKUPS_PER_POLL };
-      for (const repo of [...repos.slice(first), ...repos.slice(0, first)]) {
-        let open;
-        try {
-          open = await this.options.github.openIssues(repo);
-        } catch (error) {
-          console.error(`Reading the open issues of ${repo} failed`, error);
-          continue;
-        }
-        for (const issue of open) {
-          if (this.issue(repo, issue.number) !== undefined) continue;
-          this.record({
-            repo,
-            number: issue.number,
-            title: issue.title,
-            author: issue.author,
-            provenance: "external",
-            filedBy: null,
-          });
-        }
-        // Each project is settled as soon as its list is read, so a slow list elsewhere delays nothing here.
-        await this.reconcile(repo, new Set(open.map((issue) => issue.number)), budget);
-      }
+      // Projects run side by side, so a slow list or read in one delays nothing in another,
+      // and each has its own share of the reads, so none goes without.
+      const share = Math.max(1, Math.floor(LOOKUPS_PER_POLL / Math.max(1, repos.length)));
+      await Promise.all(
+        repos.map(async (repo) => {
+          try {
+            await this.pollRepo(repo, share);
+          } catch (error) {
+            console.error(`Polling the issues of ${repo} failed`, error);
+          }
+        }),
+      );
     });
+  }
+
+  private async pollRepo(repo: string, reads: number): Promise<void> {
+    const open = await this.options.github.openIssues(repo);
+    for (const issue of open) {
+      if (this.issue(repo, issue.number) !== undefined) continue;
+      this.record({
+        repo,
+        number: issue.number,
+        title: issue.title,
+        author: issue.author,
+        provenance: "external",
+        filedBy: null,
+      });
+    }
+    await this.reconcile(repo, new Set(open.map((issue) => issue.number)), reads);
   }
 
   /**
@@ -203,15 +203,10 @@ export class Intake {
    * any thread started has its card abandoned, so it holds no place under the
    * cap. An issue waiting for the owner leaves the queue while it is closed,
    * and comes back if reopened. A full list may leave out open issues, so
-   * missing issues are read on their own: at most a few per poll across every
-   * project, in the order they joined the line, to stay well inside GitHub's
-   * rate limit.
+   * missing issues are read on their own: a few per poll, in the order they
+   * joined the line, to stay well inside GitHub's rate limit.
    */
-  private async reconcile(
-    repo: string,
-    open: Set<number>,
-    budget: { left: number },
-  ): Promise<void> {
+  private async reconcile(repo: string, open: Set<number>, reads: number): Promise<void> {
     const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
     const complete = open.size < OPEN_ISSUES_LIMIT;
     const rows = this.db
@@ -232,11 +227,9 @@ export class Intake {
         candidates.push(row);
       }
     }
-    for (const candidate of candidates) {
-      if (budget.left <= 0) return;
-      budget.left -= 1;
-      const state = await this.lookup(repo, candidate.number);
+    for (const candidate of candidates.slice(0, reads)) {
       try {
+        const state = await this.lookup(repo, candidate.number);
         if (candidate.state !== "admitted") {
           if (state === "OPEN" && candidate.closed === 1) mark.run(0, repo, candidate.number);
           if (state === "CLOSED" && candidate.closed === 0) mark.run(1, repo, candidate.number);
