@@ -274,4 +274,29 @@ describe("FactoryProfiles.sync", () => {
       "-p improver config set model.provider anthropic",
     ]);
   });
+
+  it("copies a custom endpoint's whole model block, and leaves a named custom provider to the owner", async () => {
+    writeFileSync(
+      join(root, "config.yaml"),
+      "model:\n  default: local-model\n  provider: custom\n  base_url: http://localhost:8080/v1\n  api_key: ${LOCAL_KEY}\n  api_mode: chat_completions\n",
+    );
+    await profiles.sync(sampleConfig(), 1, mcp);
+    const lead = hermes.calls
+      .map((call) => call.args.join(" "))
+      .filter((args) => args.startsWith("-p lead config set model."));
+    expect(lead).toEqual([
+      "-p lead config set model.default local-model",
+      "-p lead config set model.provider custom",
+      "-p lead config set model.base_url http://localhost:8080/v1",
+      "-p lead config set model.api_key ${LOCAL_KEY}",
+      "-p lead config set model.api_mode chat_completions",
+    ]);
+
+    hermes.calls.length = 0;
+    writeFileSync(join(root, "config.yaml"), "model:\n  default: m\n  provider: custom:my-box\n");
+    await profiles.sync(sampleConfig(), 2, mcp);
+    expect(hermes.calls.some((call) => call.args.join(" ").includes("config set model."))).toBe(
+      false,
+    );
+  });
 });

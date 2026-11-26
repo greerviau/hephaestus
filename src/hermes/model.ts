@@ -10,12 +10,25 @@ export function hermesModel(text: string): string | undefined {
 
 /** The model and provider a Hermes config.yaml names, each undefined when it names none. */
 export function hermesModelSettings(text: string): { model?: string; provider?: string } {
+  const block = hermesModelBlock(text);
+  const model = block.default ?? block.model;
+  return {
+    ...(model === undefined ? {} : { model }),
+    ...(block.provider === undefined ? {} : { provider: block.provider }),
+  };
+}
+
+/**
+ * Every scalar key in the `model:` block, such as default, provider,
+ * base_url, api_key, and api_mode; a plain `model: <name>` reads as default.
+ */
+export function hermesModelBlock(text: string): Record<string, string> {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const start = lines.findIndex((line) => /^["']?model["']?[ \t]*:/.test(line));
   if (start === -1) return {};
   const inline = scalar(lines[start]?.replace(/^["']?model["']?[ \t]*:/, "") ?? "");
-  if (inline !== undefined) return { model: inline };
-  const found: { model?: string; provider?: string } = {};
+  if (inline !== undefined) return { default: inline };
+  const found: Record<string, string> = {};
   let indent: number | undefined;
   for (const line of lines.slice(start + 1)) {
     if (/^\s*(#.*)?$/.test(line)) continue;
@@ -25,12 +38,10 @@ export function hermesModelSettings(text: string): { model?: string; provider?: 
     indent ??= depth;
     // Only the block's own keys count, not keys nested deeper inside it.
     if (depth !== indent) continue;
-    const match = /^\s*["']?(default|model|provider)["']?[ \t]*:(.*)$/.exec(line);
-    if (match === null) continue;
+    const match = /^\s*["']?([A-Za-z0-9_]+)["']?[ \t]*:(.*)$/.exec(line);
+    if (match?.[1] === undefined) continue;
     const value = scalar(match[2] ?? "");
-    if (value === undefined) continue;
-    if (match[1] === "provider") found.provider ??= value;
-    else found.model ??= value;
+    if (value !== undefined) found[match[1]] ??= value;
   }
   return found;
 }

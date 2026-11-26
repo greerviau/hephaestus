@@ -14,7 +14,7 @@ import { dirname, join, relative, sep } from "node:path";
 import type { Database } from "better-sqlite3";
 import { ROLE_NAMES, type CronJob, type FactoryConfig, type RoleName } from "../config/document.js";
 import { stripAnsi, type FactoryHermes } from "./cli.js";
-import { hermesModel, hermesModelSettings } from "./model.js";
+import { hermesModel, hermesModelBlock } from "./model.js";
 
 export interface McpEntry {
   url: string;
@@ -74,11 +74,14 @@ export class FactoryProfiles {
   private async inheritModel(role: RoleName, profileDir: string): Promise<void> {
     const read = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "");
     if (hermesModel(read(join(profileDir, "config.yaml"))) !== undefined) return;
-    const root = hermesModelSettings(read(join(this.hermes.root, "config.yaml")));
-    if (root.model === undefined) return;
-    await this.hermes.run(["-p", role, "config", "set", "model.default", root.model]);
-    if (root.provider !== undefined) {
-      await this.hermes.run(["-p", role, "config", "set", "model.provider", root.provider]);
+    const root = hermesModelBlock(read(join(this.hermes.root, "config.yaml")));
+    if ((root.default ?? root.model) === undefined) return;
+    // A named custom provider also needs its custom_providers entry, which a key cannot carry;
+    // the owner sets the model on each profile, and the setup checklist says so.
+    if (root.provider?.startsWith("custom:") === true) return;
+    // Every key, so a custom endpoint's base_url, api_key, and api_mode come along.
+    for (const [key, value] of Object.entries(root)) {
+      await this.hermes.run(["-p", role, "config", "set", `model.${key}`, value]);
     }
   }
 
