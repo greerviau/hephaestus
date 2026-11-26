@@ -174,6 +174,90 @@ describe("Intake", () => {
     expect(new Set(lookups).size).toBe(60);
   });
 
+  it("settles a project as soon as its list is read, while another project's list is slow", async () => {
+    const h = harness((config) => {
+      config.projects["octo/lib"] = { policy: { preset: "standard", overrides: {} } };
+    });
+    const filed = await h.intake.fileIssue("planner", "octo/app", "one", "");
+    const issue = h.github.issues.get(filed.number);
+    if (issue !== undefined) issue.state = "CLOSED";
+    const list = h.github.openIssues.bind(h.github);
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    // Intake passes the repo, which the fake itself ignores.
+    h.github.openIssues = async (repo?: string) => {
+      if (repo === "octo/lib") await held;
+      return list();
+    };
+
+    const polling = h.intake.poll();
+    await expect.poll(() => h.cards.get(filed.cardId ?? 0).stage).toBe("Abandoned");
+    release();
+    await polling;
+  });
+
+  it("retries a failed read before issues that went missing after it", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: { openIssueCap: 1 } },
+      };
+    });
+    const first = await h.intake.fileIssue("planner", "octo/app", "one", "");
+    const issue = h.github.issues.get(first.number);
+    if (issue !== undefined) issue.state = "CLOSED";
+    const read = h.github.issue.bind(h.github);
+    let failures = 1;
+    h.github.issue = (repo, number) => {
+      if (number === first.number && failures > 0) {
+        failures -= 1;
+        return Promise.reject(new Error("GitHub is down"));
+      }
+      return read(repo, number);
+    };
+    await h.intake.poll();
+    expect(h.cards.get(first.cardId ?? 0).stage).toBe("Admitted");
+
+    // Ten more issues are filed, held at the cap, and closed before the next poll.
+    for (let index = 0; index < 10; index += 1) {
+      const held = await h.intake.fileIssue("planner", "octo/app", `held ${String(index)}`, "");
+      expect(held.state).toBe("held-cap");
+      const filed = h.github.issues.get(held.number);
+      if (filed !== undefined) filed.state = "CLOSED";
+    }
+    await h.intake.poll();
+    expect(h.cards.get(first.cardId ?? 0).stage).toBe("Abandoned");
+  });
+
+  it("goes on when a card it would abandon was abandoned during the read", async () => {
+    const h = harness();
+    const a = await h.intake.fileIssue("planner", "octo/app", "a", "");
+    const b = await h.intake.fileIssue("planner", "octo/app", "b", "");
+    for (const number of [a.number, b.number]) {
+      const issue = h.github.issues.get(number);
+      if (issue !== undefined) issue.state = "CLOSED";
+    }
+    const read = h.github.issue.bind(h.github);
+    h.github.issue = async (repo, number) => {
+      // The owner abandons both cards while the first read is out.
+      for (const id of [a.cardId, b.cardId]) {
+        if (id !== null && h.cards.get(id).stage !== "Abandoned") {
+          await h.pipeline.abandon(id, "not needed");
+        }
+      }
+      return read(repo, number);
+    };
+
+    await h.intake.poll();
+    expect(
+      h.cards.events(a.cardId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
+    ).toHaveLength(1);
+    expect(
+      h.cards.events(b.cardId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
+    ).toHaveLength(1);
+  });
+
   it("frees the cap when an unstarted issue is closed", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {
