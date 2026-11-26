@@ -1,5 +1,6 @@
 import {
   ModelError,
+  ModelPartial,
   ModelWarning,
   type DeviceLogin,
   type ModelCatalog,
@@ -30,6 +31,8 @@ type Problem = {
   warning?: { model: string; baseUrl: string };
   /** The change was saved but the gateway did not restart. */
   saved?: boolean;
+  /** Hermes refused partway, after some of the factory was written. */
+  partial?: boolean;
 };
 
 /** The Model page: give the factory Hermes a provider and model, with any provider Hermes supports. */
@@ -94,7 +97,14 @@ export function modelRoutes(factory: FactoryPages): Route[] {
         sendHtml(response, 400, await page(provider, "", { text: error.message, saved: true }));
         return;
       }
-      sendHtml(response, 400, await page(provider, "", { text: messageOf(error) }));
+      sendHtml(
+        response,
+        400,
+        await page(provider, "", {
+          text: messageOf(error),
+          ...(error instanceof ModelPartial ? { partial: true } : {}),
+        }),
+      );
     }
   }
 
@@ -147,15 +157,23 @@ export function modelRoutes(factory: FactoryPages): Route[] {
             )
           : banner(
               "err",
-              problem.warning === undefined ? "Not changed" : "Not changed: Hermes warned",
-              problem.warning === undefined
-                ? problem.text
-                : `${problem.text} Check the name, or tick Use it anyway and save again.`,
+              problem.partial === true
+                ? "Partly saved"
+                : problem.warning === undefined
+                  ? "Not changed"
+                  : "Not changed: Hermes warned",
+              problem.partial === true
+                ? `${problem.text} Fix the cause and save again, so every part of the factory uses the same model.`
+                : problem.warning === undefined
+                  ? problem.text
+                  : `${problem.text} Check the name, or tick Use it anyway and save again.`,
             )
     }<div class="grid">${currentCard(catalog)}${pickerCard(catalog, provider?.slug ?? "")}${
       provider === undefined ? "" : providerCard(catalog, provider, login, problem?.warning)
     }</div>`;
-    return layout("Model", body, { section: SECTION, ...(waiting ? { refreshSeconds: 5 } : {}) });
+    // An error page is rendered at the POST's address, which has no GET route to refresh to.
+    const refresh = waiting && problem === undefined;
+    return layout("Model", body, { section: SECTION, ...(refresh ? { refreshSeconds: 5 } : {}) });
   }
 }
 

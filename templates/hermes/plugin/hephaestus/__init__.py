@@ -6,8 +6,9 @@ calls the same Hermes code that Hermes's own dashboard uses, so every
 provider Hermes supports works here too.
 
 Every action prints JSON lines on stdout. A refusal is `{"refused": ...}`, a
-warning that `--force` overrides is `{"warning": ...}`, and Hermes code this
-plugin cannot find is `{"outdated": ...}`; all three exit 0 so the reason is
+refusal after some scopes were written is `{"partial": ...}`, a warning that
+`--force` overrides is `{"warning": ...}`, and Hermes code this plugin cannot
+find is `{"outdated": ...}`; all four exit 0 so the reason is
 never lost in stderr. Secrets arrive on stdin and are never printed.
 """
 
@@ -26,6 +27,10 @@ ANTHROPIC_SLOTS = ("ANTHROPIC_TOKEN", "ANTHROPIC_API_KEY")
 
 class Refused(Exception):
     """Hermes said no; the message is for the owner."""
+
+
+class Partial(Exception):
+    """Hermes refused while writing, after some scopes were saved."""
 
 
 class Warned(Exception):
@@ -62,10 +67,8 @@ def _catalog(args):
     from hermes_cli.web_routers.oauth import _build_oauth_catalog
     from hermes_cli.web_server_profiles import _profile_scope
 
-    # Cached catalogs only, so a slow provider never holds up the page.
-    payload = build_models_payload(
-        load_picker_context(), include_unconfigured=True, picker_hints=True, non_blocking_catalogs=True,
-    )
+    # Blocking catalog reads: a background refresh would die with this short-lived process.
+    payload = build_models_payload(load_picker_context(), include_unconfigured=True, picker_hints=True)
     oauth = [
         {"id": entry["id"], "name": entry["name"], "flow": entry["flow"], "cli_command": entry.get("cli_command") or ""}
         for entry in _build_oauth_catalog()
@@ -116,6 +119,18 @@ def _env_var_for(slug, key):
     return names[0]
 
 
+def _check_scopes(args):
+    """Enters every scope once, so a missing profile refuses before anything is written."""
+    from hermes_cli.web_server_profiles import _profile_scope
+
+    for scope in _scopes(args):
+        try:
+            with _profile_scope(scope):
+                pass
+        except Exception as error:
+            raise Refused(f"The factory's {scope} profile is missing: {_detail(error)} Deploy a config version.") from None
+
+
 def _add_key(args):
     from hermes_cli.config import load_env
     from hermes_cli.credential_lifecycle import remove_provider_env_credential, save_provider_env_credential
@@ -126,6 +141,7 @@ def _add_key(args):
         raise Refused("The key is empty.")
     env_var = _env_var_for(args.provider, key)
     stale = [name for name in ANTHROPIC_SLOTS if name != env_var] if env_var in ANTHROPIC_SLOTS else []
+    _check_scopes(args)
     # A profile reads only its own .env, so the key goes to the root and to every profile.
     for scope in _scopes(args):
         with _profile_scope(scope):
@@ -174,6 +190,7 @@ def _set_model(args):
     api_key = str(secrets.get("api_key") or "").strip()
     base_url = str(secrets.get("base_url") or "").strip()
     scopes = _scopes(args)
+    _check_scopes(args)
     # Check every scope before writing any, so a refusal or a warning changes nothing.
     prepared = {}
     for scope in scopes:
@@ -188,9 +205,20 @@ def _set_model(args):
     warnings = sorted({result.warning_message for _, result in prepared.values() if result.warning_message})
     if warnings and not args.force:
         raise Warned(" ".join(warnings))
+    written = []
     for scope in scopes:
         with _profile_scope(scope):
-            _apply_main_assignment_sync(load_config(), args.provider, args.model, base_url, api_key, prepared[scope])
+            try:
+                _apply_main_assignment_sync(load_config(), args.provider, args.model, base_url, api_key, prepared[scope])
+            except (ImportError, AttributeError):
+                raise
+            except Exception as error:
+                # Hermes can still refuse while writing, for example over a shared key variable.
+                names = ", ".join("the root" if name is None else name for name in written) or "nothing"
+                raise Partial(
+                    f"Hermes refused the model while saving it (saved for {names} so far): {_detail(error)}"
+                ) from None
+            written.append(scope)
     _, result = prepared[None]
     _emit({"ok": True, "provider": result.target_provider, "model": result.new_model})
 
@@ -223,9 +251,16 @@ def _handle(args):
         _emit({"refused": str(error)})
     except Warned as error:
         _emit({"warning": str(error)})
+    except Partial as error:
+        _emit({"partial": str(error)})
     except (ImportError, AttributeError) as error:
         # Hermes renamed or moved code this plugin calls.
         _emit({"outdated": f"{type(error).__name__}: {error}"})
+    except Exception as error:
+        # Hermes's dashboard code refuses with an HTTP error that carries a reason.
+        if getattr(error, "detail", None) is None:
+            raise
+        _emit({"refused": str(error.detail)})
 
 
 def register(ctx):

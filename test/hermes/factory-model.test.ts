@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FactoryModel,
   ModelError,
+  ModelPartial,
   ModelWarning,
   type LoginProcess,
   type ModelCatalog,
@@ -219,6 +220,15 @@ describe("FactoryModel", () => {
     await model.setModel({ provider: "anthropic", model: "x", force: true });
 
     expect(calls[1]?.args).toContain("--force");
+  });
+
+  it("reports a save Hermes refused partway as partial", async () => {
+    const { model, restarts } = setup(() => '{"partial": "saved for the root so far: 409"}\n');
+
+    await expect(model.setModel({ provider: "custom", model: "x" })).rejects.toBeInstanceOf(
+      ModelPartial,
+    );
+    expect(restarts).toEqual([]);
   });
 
   it("says Hermes is out of date when the plugin cannot find Hermes code, or Hermes fails", async () => {

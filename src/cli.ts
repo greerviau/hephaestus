@@ -506,7 +506,10 @@ async function main(argv: string[]): Promise<number> {
         messaging === undefined || config.hermesPath === undefined
           ? undefined
           : new FactoryModel({
-              ready: () => existsSync(join(paths.hermes, "plugins", PLUGIN_NAME, "__init__.py")),
+              // A deploy installs the plugin, then creates the profiles it writes to.
+              ready: () =>
+                existsSync(join(paths.hermes, "plugins", PLUGIN_NAME, "__init__.py")) &&
+                ROLE_NAMES.every((role) => existsSync(join(paths.hermes, "profiles", role))),
               run: hermesRunner(config.hermesPath, paths.hermes),
               restartGateway: () => messaging.restart(),
               startLogin: spawnLogin(config.hermesPath, paths.hermes),

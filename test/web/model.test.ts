@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
   ModelError,
+  ModelPartial,
   ModelWarning,
   type DeviceLogin,
   type ModelCatalog,
@@ -98,6 +99,7 @@ function fakeModel(
     refuse?: string;
     warn?: string;
     restartFails?: boolean;
+    partial?: string;
     login?: DeviceLogin;
   } = {},
 ): FakeModel {
@@ -118,6 +120,7 @@ function fakeModel(
     },
     setModel: (choice) => {
       if (options.refuse !== undefined) return Promise.reject(new ModelError(options.refuse));
+      if (options.partial !== undefined) return Promise.reject(new ModelPartial(options.partial));
       if (options.warn !== undefined && choice.force !== true) {
         return Promise.reject(new ModelWarning(options.warn));
       }
@@ -360,5 +363,98 @@ describe("Model page", () => {
     expect(html).not.toContain(hostile);
     expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
     expect(html).not.toContain('href="javascript:');
+  });
+
+  it("says a save Hermes refused partway was partly saved", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        partial: "Hermes refused the model while saving it (saved for the root so far): 409",
+      }),
+    });
+
+    const response = await dashboard.post("/model/set", { provider: "custom", model: "llama" });
+
+    const html = await response.text();
+    expect(html).toContain("Partly saved");
+    expect(html).not.toContain("Not changed");
+  });
+
+  it("does not refresh an error page while a sign-in waits", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        refuse: "Hermes refused the model: no",
+        login: { provider: "openai-codex", url: "https://a/", code: "C", status: "waiting" },
+      }),
+    });
+
+    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+      'http-equiv="refresh"',
+    );
+    const response = await dashboard.post("/model/set", { provider: "openai-codex", model: "x" });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain('http-equiv="refresh"');
+  });
+
+  it("shows a restart failure after a sign-in", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        login: {
+          provider: "openai-codex",
+          status: "signed-in",
+          error: "Signed in, but the factory's chat did not restart.",
+        },
+      }),
+    });
+
+    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+      "Signed in, but the factory&#39;s chat did not restart.",
+    );
+  });
+
+  it("escapes a key variable, a host command, and a sign-in address that is not a web link", async () => {
+    const hostile = "<b>x</b>";
+    const base = catalog();
+    const providers = [
+      {
+        slug: "keyed",
+        name: "Keyed",
+        auth_type: "api_key",
+        key_env: hostile,
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "outside",
+        name: "Outside",
+        auth_type: "oauth_external",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "device",
+        name: "Device",
+        auth_type: "oauth_external",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+    ];
+    const oauth = [
+      { id: "outside", name: "Outside", flow: "external", cli_command: hostile },
+      { id: "device", name: "Device", flow: "device_code", cli_command: "" },
+    ];
+    dashboard = await startDashboard({
+      model: fakeModel({
+        catalog: { ...base, providers, oauth },
+        login: { provider: "device", url: `javascript:${hostile}`, code: "C", status: "waiting" },
+      }),
+    });
+
+    for (const slug of ["keyed", "outside", "device"]) {
+      const html = (await dashboard.get(`/model?provider=${slug}`)).html;
+      expect(html).not.toContain(hostile);
+    }
   });
 });

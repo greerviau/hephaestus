@@ -37,6 +37,10 @@ from contextlib import contextmanager
 from hermes_cli import _state
 @contextmanager
 def _profile_scope(profile):
+    if profile in _state.load().get("missing", []):
+        error = RuntimeError("404")
+        error.detail = f"Profile '{profile}' does not exist."
+        raise error
     previous = _state.CURRENT[0]
     _state.CURRENT[0] = profile or "root"
     try:
@@ -76,7 +80,7 @@ PROVIDER_REGISTRY = {
 def load_picker_context():
     return None
 def build_models_payload(ctx, **options):
-    assert options.get("non_blocking_catalogs") is True
+    assert not options.get("non_blocking_catalogs")
     return {"provider": "anthropic", "model": "claude-sonnet-5", "providers": [
         {"slug": "anthropic", "name": "Anthropic", "authenticated": True, "models": ["claude-sonnet-5"]},
         {"slug": "deepseek", "name": "DeepSeek", "auth_type": "api_key", "key_env": "DEEPSEEK_API_KEY", "models": []},
@@ -96,6 +100,8 @@ def _prepare_main_assignment(cfg, provider, model, base_url, api_key):
 def _apply_main_assignment_sync(cfg, provider, model, base_url, api_key, prepared=None):
     assert prepared is not None, "applied without the checked result"
     state, scope = _state.scope()
+    if _state.CURRENT[0] in state.get("refuse_apply_in", []):
+        raise RuntimeError("LAB_API_KEY is read by another endpoint's block")
     scope["model"] = {"provider": provider, "default": model}
     _state.save(state)
     return {"ok": True}
@@ -155,6 +161,8 @@ interface Scope {
 interface State {
   scopes: Record<string, Scope>;
   refuse_in?: string[];
+  refuse_apply_in?: string[];
+  missing?: string[];
   warn_in?: Record<string, string>;
   prepared?: [string, string, string][];
 }
@@ -174,7 +182,12 @@ function state(): State {
 function run(args: string[], input = ""): Record<string, unknown>[] {
   const output = execFileSync(PYTHON ?? "python3", [join(dir, "driver.py"), PLUGIN, ...args], {
     input,
-    env: { ...process.env, PYTHONPATH: join(dir, "stubs"), STUB_STATE: join(dir, "state.json") },
+    env: {
+      ...process.env,
+      PYTHONPATH: join(dir, "stubs"),
+      PYTHONDONTWRITEBYTECODE: "1",
+      STUB_STATE: join(dir, "state.json"),
+    },
     encoding: "utf8",
   });
   return output
@@ -294,5 +307,36 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     const [result] = run(["catalog", ...PROFILES]);
 
     expect(result?.outdated).toMatch(/^ImportError: cannot import name '_build_oauth_catalog'/);
+  });
+
+  it("says which scopes were saved when Hermes refuses while writing", () => {
+    seed({ refuse_apply_in: ["lead"] });
+
+    const output = run(["set-model", "--provider", "custom", "--model", "llama", ...PROFILES]);
+
+    expect(output).toEqual([
+      {
+        partial:
+          "Hermes refused the model while saving it (saved for the root, planner so far): LAB_API_KEY is read by another endpoint's block",
+      },
+    ]);
+  });
+
+  it("refuses before writing anything when a profile is missing", () => {
+    seed({ missing: ["lead"] });
+
+    const output = run(["add-key", "--provider", "deepseek", ...PROFILES], "k");
+
+    expect(output[0]?.refused).toMatch(/^The factory's lead profile is missing/);
+    expect(state().scopes.root?.env).toEqual({});
+    expect(state().scopes.planner?.env).toEqual({});
+  });
+
+  it("turns any other refusal Hermes's dashboard code raises into a refusal", () => {
+    seed({ missing: ["planner"] });
+
+    expect(run(["catalog", ...PROFILES])).toEqual([
+      { refused: "Profile 'planner' does not exist." },
+    ]);
   });
 });

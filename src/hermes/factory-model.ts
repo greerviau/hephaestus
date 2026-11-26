@@ -56,6 +56,9 @@ export class ModelError extends Error {}
 /** Hermes would save the model but warned, for example that the provider does not list it. */
 export class ModelWarning extends ModelError {}
 
+/** Hermes refused while saving, after the model was written to some of the factory. */
+export class ModelPartial extends ModelError {}
+
 export interface FactoryModelOptions {
   /** Whether the factory Hermes has the Hephaestus plugin yet; a deploy installs it. */
   ready: () => boolean;
@@ -227,6 +230,7 @@ export class FactoryModel {
     if (result === undefined) throw this.outdated(output);
     if (typeof result.refused === "string") throw new ModelError(result.refused);
     if (typeof result.warning === "string") throw new ModelWarning(result.warning);
+    if (typeof result.partial === "string") throw new ModelPartial(result.partial);
     if (typeof result.outdated === "string") throw this.outdated(result.outdated);
     return result;
   }
@@ -240,6 +244,7 @@ export class FactoryModel {
 /** How the plugin reports an action that did not happen. */
 interface Outcome {
   refused?: string;
+  partial?: string;
   warning?: string;
   outdated?: string;
 }
