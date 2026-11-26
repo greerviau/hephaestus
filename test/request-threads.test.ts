@@ -121,7 +121,7 @@ describe("RequestThreads", () => {
   it("attaches the engineer's evidence once when the PR opens", async () => {
     const id = card();
     await threads.progress();
-    threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     evidence = {
       commit: "c1",
       files: [{ name: "../screen shot.png", data: Buffer.from("png") }],

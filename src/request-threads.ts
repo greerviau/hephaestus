@@ -86,13 +86,13 @@ export class RequestThreads {
         if (message.author.id !== botId) continue;
         const match = TRACKING.exec(message.content);
         if (match?.[1] === undefined || match[2] === undefined) continue;
-        this.follow(match[1], Number(match[2]), { platform: "discord", chat: thread.id });
+        await this.follow(match[1], Number(match[2]), { platform: "discord", chat: thread.id });
       }
     }
   }
 
-  /** Starts following an issue in a thread, and catches the thread up on its card. */
-  follow(repo: string, number: number, thread: Thread): void {
+  /** Starts following an issue in a thread, and catches the thread up on its card at once. */
+  async follow(repo: string, number: number, thread: Thread): Promise<void> {
     const result = this.db
       .prepare(
         `INSERT INTO chat_threads (repo, number, platform, chat, linked_at) VALUES (?, ?, ?, ?, ?)
@@ -105,13 +105,11 @@ export class RequestThreads {
       .find(
         (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.issueNumber === number,
       );
-    this.queue.push({
+    await this.post(
       thread,
-      text: `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card)}`} Progress shows up here.`,
-    });
+      `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card)}`} Progress shows up here.`,
+    );
   }
-
-  private readonly queue: { thread: Thread; text: string }[] = [];
 
   /** Posts the milestones of followed cards that happened since the last pass. */
   async progress(): Promise<void> {
@@ -129,7 +127,6 @@ export class RequestThreads {
               "SELECT id, card_id AS cardId, at, kind, detail FROM card_events WHERE id > ? ORDER BY id LIMIT 200",
             )
             .all(Number(last)) as CardEvent[]);
-    for (const pending of this.queue.splice(0)) await this.post(pending.thread, pending.text);
     for (const event of events) {
       const card = this.options.cards.get(event.cardId);
       const thread =
