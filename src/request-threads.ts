@@ -8,6 +8,7 @@ import {
   type Card,
   type CardEvent,
   type CardStore,
+  evidenceRefFor,
 } from "./factory/cards.js";
 import type { GitHub } from "./factory/github.js";
 import { getMeta, setMeta } from "./meta.js";
@@ -35,13 +36,10 @@ function namedPr(detail: string): { number: number; head: string } | undefined {
 /** Whether a PR an event names was put up before: never, at another head, or at this head. */
 type PrHistory = "new" | "updated" | "same";
 
-/** Where the engineer pushes evidence for a card: a ref outside every branch. */
-export function evidenceRef(cardId: number): string {
-  return `hephaestus/evidence/card-${String(cardId)}`;
-}
-
 export interface RequestThreadsOptions {
   db: Database;
+  /** This install's id, which scopes each card's evidence ref. */
+  install: string;
   cards: Pick<CardStore, "get" | "list">;
   messaging: Pick<Messaging, "credentials" | "sendTo">;
   github: Pick<GitHub, "evidence">;
@@ -247,7 +245,10 @@ export class RequestThreads {
     const key = `evidence_posted_${String(card.id)}`;
     let evidence;
     try {
-      evidence = await this.options.github.evidence(card.repo, evidenceRef(card.id));
+      evidence = await this.options.github.evidence(
+        card.repo,
+        evidenceRefFor(card, this.options.install),
+      );
     } catch (error) {
       console.error(`Reading the evidence for card ${String(card.id)} failed`, error);
       return;
