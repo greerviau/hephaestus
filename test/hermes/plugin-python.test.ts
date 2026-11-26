@@ -209,7 +209,7 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     expect(output).toEqual([
       {
         refused:
-          "Hermes refused the model (for the factory's planner profile): No usable credentials found",
+          "Hermes refused the model (for one of the factory's profiles): No usable credentials found",
       },
     ]);
     expect(models()).toEqual({ root: "old", planner: "old", lead: "old", improver: "old" });
@@ -317,7 +317,7 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     expect(output).toEqual([
       {
         partial:
-          "Hermes refused the model while saving it (saved for the root, planner so far): LAB_API_KEY is read by another endpoint's block",
+          "Hermes refused the model while saving it (saved for the root and 1 of 3 profiles so far): LAB_API_KEY is read by another endpoint's block",
       },
     ]);
   });
@@ -327,16 +327,18 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
 
     const output = run(["add-key", "--provider", "deepseek", ...PROFILES], "k");
 
-    expect(output[0]?.refused).toMatch(/^Hermes could not open the factory's lead profile/);
+    expect(output).toEqual([
+      { refused: "Hermes could not open one of the factory's profiles. Deploy a config version." },
+    ]);
     expect(state().scopes.root?.env).toEqual({});
     expect(state().scopes.planner?.env).toEqual({});
   });
 
-  it("turns any other refusal Hermes's dashboard code raises into a refusal", () => {
+  it("turns any other refusal Hermes's dashboard code raises into a refusal, without role names", () => {
     seed({ missing: ["planner"] });
 
     expect(run(["catalog", ...PROFILES])).toEqual([
-      { refused: "Profile 'planner' does not exist." },
+      { refused: "A factory profile does not exist." },
     ]);
   });
 
