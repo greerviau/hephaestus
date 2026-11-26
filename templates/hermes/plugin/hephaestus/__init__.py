@@ -14,6 +14,7 @@ never lost in stderr. Secrets arrive on stdin and are never printed.
 
 import asyncio
 import json
+import re
 import sys
 import time
 
@@ -131,9 +132,10 @@ def _check_scopes(args):
         except (ImportError, AttributeError):
             raise
         except Exception as error:
-            # The Model page shows this text, and it never names the factory's roles.
-            where = "the factory root" if scope is None else "one of the factory's profiles"
-            raise Refused(f"Hermes could not open {where}: {_detail(error)} Deploy a config version.") from None
+            if scope is None:
+                raise Refused(f"Hermes could not open the factory root: {_detail(error)} Deploy a config version.") from None
+            # Hermes's reason names the profile, and the Model page never names the factory's roles.
+            raise Refused("Hermes could not open one of the factory's profiles. Deploy a config version.") from None
 
 
 def _add_key(args):
@@ -252,15 +254,24 @@ def _setup(parser):
     set_model.add_argument("--profiles", default="")
 
 
+def _neutral(text, args):
+    """Hermes's reasons can name a profile; the Model page shows them and never names the factory's roles."""
+    names = [name for name in (getattr(args, "profiles", "") or "").split(",") if name]
+    for name in names:
+        text = re.sub(rf"\b[Pp]rofile '{re.escape(name)}'", "A factory profile", text)
+        text = re.sub(rf"'{re.escape(name)}'|\b{re.escape(name)}\b", "a factory profile", text)
+    return text
+
+
 def _handle(args):
     try:
         ACTIONS[args.hephaestus_action](args)
     except Refused as error:
-        _emit({"refused": str(error)})
+        _emit({"refused": _neutral(str(error), args)})
     except Warned as error:
-        _emit({"warning": str(error)})
+        _emit({"warning": _neutral(str(error), args)})
     except Partial as error:
-        _emit({"partial": str(error)})
+        _emit({"partial": _neutral(str(error), args)})
     except (ImportError, AttributeError) as error:
         # Hermes renamed or moved code this plugin calls.
         _emit({"outdated": f"{type(error).__name__}: {error}"})
@@ -268,7 +279,7 @@ def _handle(args):
         # Hermes's dashboard code refuses with an HTTP error that carries a reason.
         if getattr(error, "detail", None) is None:
             raise
-        _emit({"refused": str(error.detail)})
+        _emit({"refused": _neutral(str(error.detail), args)})
 
 
 def register(ctx):

@@ -327,16 +327,18 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
 
     const output = run(["add-key", "--provider", "deepseek", ...PROFILES], "k");
 
-    expect(output[0]?.refused).toMatch(/^Hermes could not open one of the factory's profiles/);
+    expect(output).toEqual([
+      { refused: "Hermes could not open one of the factory's profiles. Deploy a config version." },
+    ]);
     expect(state().scopes.root?.env).toEqual({});
     expect(state().scopes.planner?.env).toEqual({});
   });
 
-  it("turns any other refusal Hermes's dashboard code raises into a refusal", () => {
+  it("turns any other refusal Hermes's dashboard code raises into a refusal, without role names", () => {
     seed({ missing: ["planner"] });
 
     expect(run(["catalog", ...PROFILES])).toEqual([
-      { refused: "Profile 'planner' does not exist." },
+      { refused: "A factory profile does not exist." },
     ]);
   });
 
