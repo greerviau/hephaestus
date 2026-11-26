@@ -387,6 +387,8 @@ describe("worker alerts", () => {
     view = { ...view, blocker: "Sign in Factory Codex.", ownerStep: true };
     await own.sendAlerts();
     expect(sends()).toBe(1);
+    // Nothing else was sent either, such as the deploy or the check.
+    expect(calls).toHaveLength(1);
 
     view = { ...view, codex: "signed-in", blocker: undefined, ownerStep: false };
     await own.sendAlerts();

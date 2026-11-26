@@ -93,11 +93,6 @@ export interface WorkerView extends Worker {
   ownerStep: boolean;
 }
 
-/** The sign-in step for an instance not signed in; a check that is running is Hephaestus's to finish. */
-function signInStep(name: string, state: InstanceState): string {
-  return state === "checking" ? `Checking ${name}'s sign-in.` : `Sign in ${name}.`;
-}
-
 /** The version every worker should run, and the commit its tag points at. */
 export interface DesiredDeploy {
   version: number;
@@ -404,11 +399,11 @@ export class WorkerManager {
         `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again every ${String(LIMIT_RECHECK_MS / MINUTE)} minutes. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
       automatic = true;
     } else if (claude !== "signed-in" && claude !== "limited") {
-      blocker = signInStep("Factory Claude", claude);
-      automatic = claude === "checking";
+      automatic = claude === "checking" && tasks["claude-sign-in"]?.status !== "running";
+      blocker = automatic ? "Checking Factory Claude's sign-in." : "Sign in Factory Claude.";
     } else if (codex !== "signed-in" && codex !== "limited") {
-      blocker = signInStep("Factory Codex", codex);
-      automatic = codex === "checking";
+      automatic = codex === "checking" && tasks["codex-sign-in"]?.status !== "running";
+      blocker = automatic ? "Checking Factory Codex's sign-in." : "Sign in Factory Codex.";
     }
     // A sign-in waiting on the owner's token or device code is theirs even while it runs.
     const signingIn =
