@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MergeOutcomeUnknownError } from "../../src/factory/github.js";
+import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
   MERGE,
@@ -30,6 +31,21 @@ async function toReview(h: Harness, id: number): Promise<void> {
   h.github.prs.set(5, pr(5, SHA));
   h.finish("t1", implementResult(5, SHA));
   await h.pipeline.tick();
+}
+
+/** A finished setup thread, such as a deploy, recorded on worker w1. */
+function setupThread(h: Harness, threadId: string): void {
+  h.events.recordThread({
+    environmentId: "w1",
+    threadId,
+    title: "Hephaestus: deploy config",
+    providerInstanceId: "hephaestus-claude",
+    model: "m",
+    configVersion: 1,
+    cardId: null,
+    kind: "setup",
+  });
+  h.events.setStatus("w1", threadId, "completed");
 }
 
 /** A card the lead restarted while the factory was paused, so its new brief waits to be sent. */
@@ -829,6 +845,7 @@ describe("Pipeline", () => {
     await toReview(h, id);
     // The implement thread has ended, but the card is still in review.
     await h.pipeline.tick();
+    await h.pipeline.settleThreads();
     expect(h.t3.settled).toEqual([]);
 
     h.finish("t2", reviewResult("approve", SHA));
@@ -836,10 +853,10 @@ describe("Pipeline", () => {
     h.github.commits.set(MERGE, checks("success", ["ci"]));
     await h.pipeline.tick();
     expect(h.cards.get(id).stage).toBe("Done");
-    await h.pipeline.tick();
+    await h.pipeline.settleThreads();
     expect(h.t3.settled.sort()).toEqual(["t1", "t2"]);
     // Each thread is settled once.
-    await h.pipeline.tick();
+    await h.pipeline.settleThreads();
     expect(h.t3.settled).toHaveLength(2);
 
     const other = harness();
@@ -848,38 +865,58 @@ describe("Pipeline", () => {
     other.finish("t1", "no result block");
     await other.pipeline.tick();
     expect(other.cards.get(card).stage).toBe("Escalated");
-    await other.pipeline.tick();
+    await other.pipeline.settleThreads();
     expect(other.t3.settled).toEqual([]);
   });
 
-  it("settles a replaced thread and a finished setup thread, and retries when T3 is unreachable", async () => {
+  it("settles a replaced thread and a finished setup thread", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
     h.finish("t2", reviewResult("changes", SHA));
     // A newer review thread replaces the finished one.
     h.cards.update(id, { reviewThread: "t9" });
-    h.events.recordThread({
-      environmentId: "w1",
-      threadId: "setup-1",
-      title: "Hephaestus: deploy config",
-      providerInstanceId: "hephaestus-claude",
-      model: "m",
-      configVersion: 1,
-      cardId: null,
-      kind: "setup",
-    });
-    h.events.setStatus("w1", "setup-1", "completed");
+    setupThread(h, "setup-1");
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled.sort()).toEqual(["setup-1", "t2"]);
+  });
+
+  it("keeps ticking while a settle call hangs", async () => {
+    const h = harness();
+    setupThread(h, "setup-1");
+    h.t3.settle = () => new Promise<void>(() => undefined);
+    const id = admitted(h);
+    await h.pipeline.tick();
+    await h.pipeline.startWork(id, "brief");
+    // A second pass runs although the first settle never returned.
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(1);
+  });
+
+  it("retries a thread after a worker outage, and lets the others through while one keeps failing", async () => {
+    const h = harness();
+    setupThread(h, "setup-1");
+    setupThread(h, "setup-2");
     const settle = h.t3.settle.bind(h.t3);
     let down = true;
     h.t3.settle = (environmentId, threadId) =>
-      down ? Promise.reject(new Error("T3 is unreachable")) : settle(environmentId, threadId);
+      threadId === "setup-1" && down
+        ? Promise.reject(
+            new T3ToolError("t3_thread_organize", "orchestration_error", "the worker is offline"),
+          )
+        : settle(environmentId, threadId);
 
-    await h.pipeline.tick();
-    expect(h.t3.settled).toEqual([]);
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["setup-2"]);
+    expect(h.events.unsettledEnded().map((thread) => thread.threadId)).toEqual(["setup-1"]);
+
+    // It waits out its backoff, then the worker is back.
     down = false;
-    await h.pipeline.tick();
-    expect(h.t3.settled.sort()).toEqual(["setup-1", "t2"]);
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["setup-2"]);
+    h.setClock(Date.parse("2026-11-25T12:05:00Z"));
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["setup-2", "setup-1"]);
   });
 
   it("does not abandon a card that started work", async () => {

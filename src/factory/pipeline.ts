@@ -114,6 +114,9 @@ export class Pipeline {
   private readonly now: () => Date;
   private running: Promise<void> | undefined;
   private foreignCheckedAt = 0;
+  private settling: Promise<void> | undefined;
+  /** Threads whose settling failed, with how often and when they may be tried again. */
+  private readonly settleBackoff = new Map<string, { failures: number; until: number }>();
   private readonly cardLocks = new Map<number, Promise<unknown>>();
   private launches: Promise<unknown> = Promise.resolve();
 
@@ -414,7 +417,8 @@ export class Pipeline {
           });
         }
         await this.flagForeignMerges();
-        await this.settleFinishedThreads();
+        // Settling runs beside the pass, so a T3 call that never returns cannot hold up the cards.
+        void this.settleThreads();
       } finally {
         this.running = undefined;
       }
@@ -1322,6 +1326,17 @@ export class Pipeline {
    * once it is done or abandoned, or once a newer thread replaces them. An
    * escalated card keeps its threads, which the owner or the lead may need.
    */
+  settleThreads(): Promise<void> {
+    this.settling ??= this.settleFinishedThreads()
+      .catch((error: unknown) => {
+        console.error("Settling finished threads failed", error);
+      })
+      .finally(() => {
+        this.settling = undefined;
+      });
+    return this.settling;
+  }
+
   private async settleFinishedThreads(): Promise<void> {
     const held = new Set<string>();
     for (const card of this.cards.list()) {
@@ -1329,17 +1344,23 @@ export class Pipeline {
       if (card.implementThread !== null) held.add(card.implementThread);
       if (card.reviewThread !== null) held.add(card.reviewThread);
     }
-    let settled = 0;
+    const at = this.now().getTime();
+    let tried = 0;
     for (const thread of this.options.events.unsettledEnded()) {
       if (held.has(thread.threadId)) continue;
-      if (settled >= SETTLES_PER_TICK) return;
-      settled += 1;
+      const backoff = this.settleBackoff.get(thread.threadId);
+      if (backoff !== undefined && backoff.until > at) continue;
+      if (tried >= SETTLES_PER_TICK) return;
+      tried += 1;
       try {
         await this.options.threads.settle(thread.environmentId, thread.threadId);
+        this.settleBackoff.delete(thread.threadId);
       } catch (error) {
-        // T3 is unreachable; the next pass tries again.
+        // A thread that keeps failing waits longer each time, so it cannot hold up the others.
+        const failures = (backoff?.failures ?? 0) + 1;
+        const wait = Math.min(SETTLE_BACKOFF_MAX_MS, 60_000 * 2 ** (failures - 1));
+        this.settleBackoff.set(thread.threadId, { failures, until: at + wait });
         console.error(`Settling thread ${thread.threadId} failed`, error);
-        return;
       }
     }
   }
@@ -1487,8 +1508,10 @@ function mergeMarker(card: Card): string {
 
 const TRANSITIONS_TO_DONE = new Set<Stage>(["Implementing", "Reviewing", "Merging"]);
 
-/** Threads one pass settles at most, so a backlog cannot hold up the pipeline. */
+/** Threads one pass tries to settle at most, so a backlog cannot hold up the pipeline. */
 const SETTLES_PER_TICK = 20;
+/** The longest a thread whose settling keeps failing waits before the next try. */
+const SETTLE_BACKOFF_MAX_MS = 60 * 60_000;
 
 /** The stages whose PR the scan for merges made elsewhere reads. */
 const SCANNED: readonly Stage[] = ["Implementing", "Reviewing", "Merging", "Escalated"];

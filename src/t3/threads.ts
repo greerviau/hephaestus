@@ -51,16 +51,16 @@ export class FactoryThreads {
   }
 
   /**
-   * Settles a finished thread in T3 and records that it did. A thread T3
-   * refuses to settle, such as one it no longer has, is recorded too, so it
-   * is not retried forever; a call that could not reach T3 is retried later.
+   * Settles a finished thread in T3 and records that it did. A thread T3 no
+   * longer has is recorded too, so it is not retried forever. Any other
+   * failure, such as a worker that is offline for a while, throws, and the
+   * thread is tried again later.
    */
   async settle(environmentId: string, threadId: string): Promise<void> {
     try {
       await this.t3.settle(environmentId, threadId);
     } catch (error) {
-      if (!(error instanceof T3ToolError)) throw error;
-      console.error(`T3 refused to settle thread ${threadId}`, error);
+      if (!(error instanceof T3ToolError && error.code === "thread_not_found")) throw error;
     }
     this.events.markSettled(environmentId, threadId);
   }
