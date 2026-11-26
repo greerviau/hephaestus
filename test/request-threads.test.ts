@@ -407,6 +407,10 @@ describe("RequestThreads, an updated PR", () => {
     cards.transition(id, "Reviewing", "PR #5 at abd");
     cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
     cards.transition(id, "Merging", "PR #5 at abe; the policy needs no review");
+    cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
+    cards.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
+    cards.transition(id, "Implementing", "the lead restarted the work");
+    cards.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
     await threads.progress();
     expect(
       posts.map((post) => post.text).filter((text) => /review|merges once/.test(text)),
@@ -417,6 +421,8 @@ describe("RequestThreads, an updated PR", () => {
       "The PR is updated and back in review: https://github.com/octo/app/pull/5",
       "The PR is back in review: https://github.com/octo/app/pull/5",
       "The PR is updated; it merges once its checks pass: https://github.com/octo/app/pull/5",
+      "The PR is updated; it merges once its checks pass: https://github.com/octo/app/pull/5",
+      "The PR merges once its checks pass: https://github.com/octo/app/pull/5",
     ]);
   });
 
@@ -434,6 +440,12 @@ describe("RequestThreads, an updated PR", () => {
       reason: null,
       escalatedTo: null,
     });
+    cards.transition(id, "Escalated", "to the owner: the revert has not merged after an hour", {
+      escalatedTo: "owner",
+    });
+    cards.transition(id, "Reverting", "revert PR #12 merged on GitHub");
+    // The card's reason by the time the pass runs is a later one; the escalation keeps its own.
+    cards.update(id, { reason: "yes, carry on" });
     await threads.progress();
     const texts = posts.map((post) => post.text);
     expect(texts.filter((text) => text.includes("being reverted"))).toEqual([
