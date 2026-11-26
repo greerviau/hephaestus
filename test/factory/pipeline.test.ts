@@ -456,6 +456,26 @@ describe("Pipeline", () => {
     expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
   });
 
+  it("keeps the policy in force at approval when the project is removed during the board update", async () => {
+    let removeDuringMirror = false;
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.config.projects["octo/app"] = { policy: { preset: "strict", overrides: {} } };
+    h.github.commits.set(SHA, checks("success", ["ci"]));
+    const board = h.pipeline as unknown as { mirror: (...args: unknown[]) => Promise<void> };
+    const mirror = board.mirror.bind(h.pipeline);
+    board.mirror = async (...args: unknown[]) => {
+      if (removeDuringMirror) delete h.config.projects["octo/app"];
+      return mirror(...args);
+    };
+    removeDuringMirror = true;
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+  });
+
   it("starts no new merge for a removed project, though its review approves", async () => {
     const h = harness();
     const id = admitted(h);

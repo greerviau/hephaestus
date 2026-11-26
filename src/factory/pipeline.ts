@@ -942,6 +942,8 @@ export class Pipeline {
         this.wait(card, `${card.repo} is no longer a factory project.`);
         return;
       }
+      // Recorded before the board update awaits, so a removal during it keeps the policy in force now.
+      this.recordPolicy(card);
       const next = this.cards.transition(card.id, "Merging", `approved at ${review.headSha}`, done);
       await this.mirror(next, "Merging");
       await this.gate(next);
