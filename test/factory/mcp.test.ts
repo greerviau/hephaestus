@@ -126,7 +126,11 @@ describe("FactoryMcp", () => {
         arguments: { repo: "octo/app", title: "Add a flag", body: "B" },
       }),
     );
-    expect(result).toMatchObject({ state: "admitted", card_id: 1 });
+    expect(result).toMatchObject({
+      state: "admitted",
+      card_id: 1,
+      tracking: `Tracking octo/app#${String(result.issue as number)}`,
+    });
     expect(h.github.issues.get(result.issue as number)?.title).toBe("Add a flag");
     expect(mcp.calls()[0]).toMatchObject({ role: "planner", tool: "file_issue", ok: true });
     await c.close();

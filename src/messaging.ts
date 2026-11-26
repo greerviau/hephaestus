@@ -84,6 +84,7 @@ export function neutralize(text: string): string {
 
 const ALERTS_KEY = "messaging_alerts";
 const ALERTS_SENT_KEY = "messaging_alerts_sent";
+const EXTRA_SENT_KEY = "messaging_alerts_extra";
 
 export interface MessagingOptions {
   /** The factory Hermes root, whose profiles hold the chat's credentials. */
@@ -104,6 +105,8 @@ export interface MessagingOptions {
   cards: Pick<CardStore, "notifications">;
   /** The dashboard's address, for the link in each alert. */
   dashboardUrl: () => string;
+  /** Other things that need the owner, such as a proposal or a worker sign-in, each keyed so it is sent once. */
+  extraAlerts?: () => { key: string; text: string }[];
 }
 
 /**
@@ -271,6 +274,13 @@ export class Messaging {
     }
   }
 
+  /** The connected bot's token and home chat, for reads Hephaestus makes as the bot itself. */
+  credentials(name: PlatformName): { token: string; home: string | undefined } | undefined {
+    const token = this.readEnv().get(PLATFORMS[name].token);
+    if (token === undefined || token === "") return undefined;
+    return { token, home: this.states().find((state) => state.platform === name)?.home };
+  }
+
   alertsOn(): boolean {
     return getMeta(this.options.db, ALERTS_KEY) === "on";
   }
@@ -280,6 +290,7 @@ export class Messaging {
     if (on) {
       const newest = this.options.cards.notifications()[0]?.id ?? 0;
       setMeta(this.options.db, ALERTS_SENT_KEY, String(newest));
+      this.saveExtraSent((this.options.extraAlerts?.() ?? []).map((item) => item.key));
     }
     setMeta(this.options.db, ALERTS_KEY, on ? "on" : "off");
   }
@@ -307,6 +318,30 @@ export class Messaging {
       const stored = Number(getMeta(this.options.db, ALERTS_SENT_KEY) ?? "0");
       setMeta(this.options.db, ALERTS_SENT_KEY, String(Math.max(stored, item.id)));
     }
+    const extras = this.options.extraAlerts?.() ?? [];
+    const sentExtra = new Set(this.extraSent());
+    for (const item of extras) {
+      if (sentExtra.has(item.key)) continue;
+      if (!(await this.deliver(item.key, item.text, targets))) break;
+      sentExtra.add(item.key);
+    }
+    // Keys of items that went away are dropped, so an item that comes back is sent again.
+    this.saveExtraSent(extras.map((item) => item.key).filter((key) => sentExtra.has(key)));
+  }
+
+  private extraSent(): string[] {
+    try {
+      const parsed: unknown = JSON.parse(getMeta(this.options.db, EXTRA_SENT_KEY) ?? "[]");
+      return Array.isArray(parsed)
+        ? parsed.filter((key): key is string => typeof key === "string")
+        : [];
+    } catch {
+      return [];
+    }
+  }
+
+  private saveExtraSent(keys: string[]): void {
+    setMeta(this.options.db, EXTRA_SENT_KEY, JSON.stringify(keys.slice(-500)));
   }
 
   /**

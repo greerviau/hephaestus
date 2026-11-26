@@ -248,6 +248,47 @@ export class GitHub {
    * lists are read through the paginated REST API, because `gh pr view`
    * returns at most 100 of each.
    */
+  /**
+   * The files under an evidence ref the engineer pushed, such as screenshots,
+   * or undefined when the ref does not exist. At most `limit` files of up to
+   * `maxBytes` each are read.
+   */
+  async evidence(
+    repo: string,
+    ref: string,
+    limit = 6,
+    maxBytes = 8 * 1024 * 1024,
+  ): Promise<{ commit: string; files: { name: string; data: Buffer }[] } | undefined> {
+    let commit: string;
+    try {
+      commit = (
+        await this.json<{ object: { sha: string } }>(["api", `repos/${repo}/git/ref/${ref}`])
+      ).object.sha;
+    } catch (error) {
+      if (/HTTP 404|Not Found/i.test(String(error))) return undefined;
+      throw error;
+    }
+    const { tree } = await this.json<{ tree: { sha: string } }>([
+      "api",
+      `repos/${repo}/git/commits/${commit}`,
+    ]);
+    const listing = await this.json<{
+      tree: { path: string; type: string; sha: string; size?: number }[];
+    }>(["api", `repos/${repo}/git/trees/${tree.sha}`]);
+    const files: { name: string; data: Buffer }[] = [];
+    for (const entry of listing.tree) {
+      if (files.length >= limit) break;
+      if (entry.type !== "blob" || (entry.size ?? 0) > maxBytes) continue;
+      const blob = await this.json<{ content: string; encoding: string }>([
+        "api",
+        `repos/${repo}/git/blobs/${entry.sha}`,
+      ]);
+      if (blob.encoding !== "base64") continue;
+      files.push({ name: entry.path, data: Buffer.from(blob.content, "base64") });
+    }
+    return { commit, files };
+  }
+
   /** Whether a PR merged, without its files or checks, so a checks outage cannot fail the read. */
   async mergeState(repo: string, number: number): Promise<MergeState> {
     const pr = await this.json<{
