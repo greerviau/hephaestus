@@ -8,6 +8,7 @@ import type { ServiceManager } from "../service.js";
 import { FactoryBoard } from "./board.js";
 import type { HermesRun } from "./cli.js";
 import { gatewayUnitFile } from "./gateway.js";
+import { installModelPlugin } from "./plugin.js";
 import { FactoryProfiles } from "./profiles.js";
 
 import type { RoleName } from "../config/document.js";
@@ -48,6 +49,7 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
   await run(["config", "set", "kanban.auto_decompose", "false"]);
   await run(["config", "set", "kanban.review_dispatch", "false"]);
   await new FactoryBoard(hermes).ensure();
+  await installModelPlugin(hermes);
 
   const version = options.store.current();
   if (version === undefined) throw new Error("There is no config version to apply.");

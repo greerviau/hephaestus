@@ -208,7 +208,7 @@ describe("Overview", () => {
     expect(fresh).toContain("Set up the factory");
     expect(fresh).toContain("2 of 6 done");
     expect(fresh).toContain('href="/projects"');
-    expect(fresh).toContain("HERMES_HOME=~/.hephaestus/hermes hermes model");
+    expect(fresh).toContain('On <a href="/model">Model</a>, pick a provider');
     await dashboard.close();
 
     dashboard = await startDashboard({

@@ -8,6 +8,7 @@ import { analyticsRoutes } from "./analytics.js";
 import { improvementRoutes } from "./improvement.js";
 import { projectsRoutes } from "./projects.js";
 import { messagingRoutes } from "./messaging.js";
+import { modelRoutes } from "./model.js";
 
 /** Every factory page and owner action. */
 export function dashboardRoutes(factory: FactoryPages): Route[] {
@@ -20,6 +21,7 @@ export function dashboardRoutes(factory: FactoryPages): Route[] {
     ...improvementRoutes(factory),
     ...projectsRoutes(factory),
     ...messagingRoutes(factory),
+    ...modelRoutes(factory),
     ...factoryActionRoutes(factory),
   ];
 }

@@ -10,7 +10,9 @@ import { scheduleBackups } from "./config/backup.js";
 import { importSkill } from "./config/defaults.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
+import { FactoryModel, spawnLogin } from "./hermes/factory-model.js";
 import { hermesModel } from "./hermes/model.js";
+import { PLUGIN_NAME } from "./hermes/plugin.js";
 import { Messaging } from "./messaging.js";
 import { RequestThreads } from "./request-threads.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
@@ -500,6 +502,15 @@ async function main(argv: string[]): Promise<number> {
                 ...workerAlerts(workers.views()),
               ],
             });
+      const factoryModel =
+        messaging === undefined || config.hermesPath === undefined
+          ? undefined
+          : new FactoryModel({
+              ready: () => existsSync(join(paths.hermes, "plugins", PLUGIN_NAME, "__init__.py")),
+              run: hermesRunner(config.hermesPath, paths.hermes),
+              restartGateway: () => messaging.restart(),
+              startLogin: spawnLogin(config.hermesPath, paths.hermes),
+            });
       const alerting = setInterval(() => {
         messaging?.sendAlerts().catch((error: unknown) => {
           console.error("Sending alerts failed", error);
@@ -552,6 +563,7 @@ async function main(argv: string[]): Promise<number> {
             configRepo: () => getMeta(db, CONFIG_REPO_KEY),
             hermesModel: () => hermesDefaultModel(paths.hermes),
             ...(messaging === undefined ? {} : { messaging }),
+            ...(factoryModel === undefined ? {} : { model: factoryModel }),
           }),
           ...settingsRoutes(store, (id) => workers.deployVersion(id)),
           ...environmentRoutes(environments, Date.now, {
