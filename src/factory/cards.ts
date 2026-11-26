@@ -1,3 +1,4 @@
+import { installPrefix } from "../config.js";
 import type { PolicySettings } from "../config/policy.js";
 import type { Database } from "better-sqlite3";
 import type { Stage } from "../hermes/board.js";
@@ -486,5 +487,16 @@ export class CardStore {
  * `factory/card-1` would collide with the last install's branch on GitHub.
  */
 export function cardRef(install: string, cardId: number): string {
-  return `${install.slice(0, 8)}-card-${String(cardId)}`;
+  return `${installPrefix(install)}-card-${String(cardId)}`;
+}
+
+/**
+ * The evidence ref a card's engineer was told to push to. It follows the
+ * card's branch, so a card started before branch names carried the install
+ * still finds its evidence under the old `card-<id>` name.
+ */
+export function evidenceRefFor(card: Pick<Card, "id" | "branch">, install: string): string {
+  const named =
+    card.branch === null ? undefined : /^factory\/(.+?)(?:-retry-\d+)?$/.exec(card.branch)?.[1];
+  return `hephaestus/evidence/${named ?? cardRef(install, card.id)}`;
 }

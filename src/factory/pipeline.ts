@@ -1,6 +1,5 @@
 import type { Database } from "better-sqlite3";
 import { projectFor, type FactoryConfig } from "../config/document.js";
-import { evidenceRef } from "../request-threads.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
@@ -12,6 +11,7 @@ import { finalMessage } from "../workers/scripts.js";
 import {
   MERGE_CONFLICT_DETAIL,
   cardRef,
+  evidenceRefFor,
   type Card,
   type CardStore,
   type EscalationTarget,
@@ -634,7 +634,11 @@ export class Pipeline {
 
   private async launchImplement(card: Card): Promise<void> {
     const implementer: Provider = card.implementer ?? "claude";
-    const branch = `factory/${cardRef(this.options.install, card.id)}${card.revertPr === null ? "" : `-retry-${String(card.revertPr)}`}`;
+    // A launch replayed after a lost reply keeps the branch it was first given; a revert retry
+    // starts with no branch and gets a new name.
+    const branch =
+      card.branch ??
+      `factory/${cardRef(this.options.install, card.id)}${card.revertPr === null ? "" : `-retry-${String(card.revertPr)}`}`;
     const request = `hephaestus-implement-${String(card.id)}-${card.revertPr === null ? "0" : String(card.revertPr)}`;
     const started = await this.launch(
       card,
@@ -664,7 +668,7 @@ export class Pipeline {
               issue,
               base,
               branch,
-              evidenceRef(this.options.install, card.id),
+              evidenceRefFor({ id: card.id, branch }, this.options.install),
             ),
             clientRequestId: request,
           },

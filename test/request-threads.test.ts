@@ -202,6 +202,20 @@ describe("RequestThreads, under bad input", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM chat_threads").get()).toEqual({ n: 0 });
   });
 
+  it("reads a card's evidence where its engineer was told, including an older card-<id> name", async () => {
+    const id = card();
+    cards.update(id, { branch: "factory/card-1-retry-9" });
+    await threads.progress();
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    cards.transition(id, "Implementing", "work started");
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Reviewing", "PR #5 at abc");
+    await threads.progress();
+
+    expect(refs).toContain("hephaestus/evidence/card-1");
+    expect(refs).not.toContain("hephaestus/evidence/0123abcd-card-1");
+  });
+
   it("keeps posting milestones when evidence cannot be written, and goes past an unreadable thread", async () => {
     const id = card();
     await threads.progress();

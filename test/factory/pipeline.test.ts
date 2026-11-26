@@ -62,6 +62,18 @@ async function queuedRestart(h: Harness): Promise<number> {
 }
 
 describe("Pipeline", () => {
+  it("launches on the branch a card already has, so a replayed launch matches its thread", async () => {
+    const h = harness();
+    const id = admitted(h);
+    h.cards.update(id, { branch: "factory/card-1" });
+
+    await h.pipeline.startWork(id, "Add the flag to the CLI.");
+
+    expect(h.t3.launches[0]?.workspace).toMatchObject({ branch: "factory/card-1" });
+    expect(h.t3.launches[0]?.message).toContain("refs/hephaestus/evidence/card-1");
+    expect(h.cards.get(id).branch).toBe("factory/card-1");
+  });
+
   it("takes a card from Admitted to Done with review on the other provider and no human step", async () => {
     const h = harness();
     const id = admitted(h);

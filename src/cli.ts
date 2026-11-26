@@ -4,7 +4,7 @@ import { networkInterfaces } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
-import { DEFAULT_PORT, readConfig } from "./config.js";
+import { DEFAULT_PORT, installPrefix, readConfig } from "./config.js";
 import { resolveRoots } from "./baseline.js";
 import { scheduleBackups } from "./config/backup.js";
 import { importSkill } from "./config/defaults.js";
@@ -284,7 +284,7 @@ function workerManager(
             slug,
             gitPath,
             ghPath,
-            `${config.instanceId.slice(0, 8)}-`,
+            `${installPrefix(config.instanceId)}-`,
           );
     },
     instances: (environmentId) => t3.instances(environmentId),
