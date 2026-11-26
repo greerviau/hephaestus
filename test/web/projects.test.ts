@@ -238,21 +238,57 @@ describe("Projects, under concurrent changes", () => {
     expect(dashboard.store.current()?.document.projects["octo/app"]?.policy.preset).toBe("strict");
   });
 
-  it("will not remove a project while one of its merges may still need reverting", async () => {
+  it("removes a project with a merge in flight, and warns that the card comes to the owner", async () => {
     dashboard = await startDashboard({ github, deploy: markDeployed });
     const id = dashboard.h.cards.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
     dashboard.h.cards.transition(id, "Implementing", "started");
     dashboard.h.cards.transition(id, "Reviewing", "PR #5");
     dashboard.h.cards.transition(id, "Merging", "approved");
     dashboard.h.cards.transition(id, "Validating", "merged");
+    expect((await dashboard.get("/projects/edit?repo=octo%2Fapp")).html).toContain(
+      "1 card is merging, validating, or reverting a merge; it comes to you under Needs you",
+    );
     const response = await dashboard.post("/projects/remove", {
       repo: "octo/app",
       parentId: String(dashboard.store.current()?.id ?? 0),
       deploy: "on",
     });
-    expect(response.status).toBe(400);
-    expect(await response.text()).toContain("validating, or reverting a merge");
-    expect(dashboard.store.current()?.document.projects["octo/app"]).toBeDefined();
+    expect(response.headers.get("location")).toBe("/projects?notice=removed");
+  });
+
+  it("checks for a stale form before other errors, and keeps a draft a draft", async () => {
+    dashboard = await startDashboard({ github, deploy: markDeployed });
+    const stale = dashboard.store.current()?.id ?? 0;
+    await dashboard.post("/projects/save", {
+      mode: "edit",
+      repo: "octo/app",
+      parentId: String(stale),
+      preset: "strict",
+      deploy: "on",
+    });
+    // The old form, with a bad number too, comes back with the policy now in force.
+    const html = await (
+      await dashboard.post("/projects/save", {
+        mode: "edit",
+        repo: "octo/app",
+        parentId: String(stale),
+        preset: "standard",
+        openIssueCap: "1001",
+        deploy: "on",
+      })
+    ).text();
+    expect(html).toContain('<option value="strict" selected>strict</option>');
+    expect(html).toContain("The config changed since the page was loaded.");
+
+    const draft = await (
+      await dashboard.post("/projects/save", {
+        mode: "add",
+        repo: "not a repo",
+        parentId: String(dashboard.store.current()?.id ?? 0),
+        preset: "standard",
+      })
+    ).text();
+    expect(draft).toContain('<input type="checkbox" name="deploy"> Approve and deploy now');
   });
 
   it("says when the factory Hermes root was not updated", async () => {
@@ -272,13 +308,27 @@ describe("Projects, under concurrent changes", () => {
 });
 
 describe("parsePolicy", () => {
-  it("takes a typed list even when its selector was left on the preset", () => {
-    const form = new URLSearchParams({
+  it("lets the selector decide a list, and asks when the list changed on the preset", () => {
+    // Switching a custom list back to the preset leaves the shown text in the box.
+    const back = new URLSearchParams({
+      preset: "standard",
+      "escalationPaths.mode": "preset",
+      escalationPaths: "docs/**",
+      "escalationPaths.shown": "docs/**",
+    });
+    expect(parsePolicy(back)).toEqual({
+      policy: { preset: "standard", overrides: {} },
+      errors: [],
+    });
+    const typed = new URLSearchParams({
       preset: "standard",
       "requiredChecks.mode": "preset",
       requiredChecks: "unit",
+      "requiredChecks.shown": "",
     });
-    expect(parsePolicy(form).policy.overrides).toEqual({ requiredChecks: ["unit"] });
+    expect(parsePolicy(typed).errors[0]).toContain(
+      "you changed the list but left it on the preset",
+    );
   });
 
   it("refuses a switch that is not the preset, on, or off, and a number too large", () => {

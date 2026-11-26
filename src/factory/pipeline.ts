@@ -1,5 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type { FactoryConfig } from "../config/document.js";
+import { projectFor, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
@@ -452,13 +452,14 @@ export class Pipeline {
         else await this.afterReview(card);
         return;
       case "Merging":
-        await this.gate(card);
-        return;
       case "Validating":
-        await this.validate(card);
-        return;
       case "Reverting":
-        await this.revert(card);
+        // A project removed while its merge was in flight hands the card to the owner, since its
+        // policy no longer says how to merge, validate, or revert.
+        if (!this.isFactoryProject(card.repo)) return this.removedMidMerge(card);
+        if (card.stage === "Merging") await this.gate(card);
+        else if (card.stage === "Validating") await this.validate(card);
+        else await this.revert(card);
         return;
       default:
         return;
@@ -466,7 +467,7 @@ export class Pipeline {
   }
 
   private policy(card: Card): PolicySettings {
-    const project = this.options.config()?.document.projects[card.repo];
+    const project = projectFor(this.options.config()?.document.projects, card.repo);
     if (project === undefined) throw new Error(`${card.repo} is no longer a factory project.`);
     return resolvePolicy(project.policy);
   }
@@ -576,8 +577,19 @@ export class Pipeline {
     });
   }
 
+  private removedMidMerge(card: Card): Promise<void> {
+    const pr = `PR #${String(card.prNumber ?? 0)}`;
+    const reason =
+      card.stage === "Merging"
+        ? `${card.repo} was removed from the factory before ${pr} merged, so Hephaestus will not merge it. Merge or close it yourself, then abandon the card.`
+        : card.stage === "Validating"
+          ? `${card.repo} was removed from the factory while ${pr}'s merge was being validated, so its checks are no longer watched and it will not be reverted. Check the default branch, then abandon the card.`
+          : `${card.repo} was removed from the factory while revert PR #${String(card.revertPr ?? 0)} was open, so Hephaestus will not merge it. Merge or close it yourself, then abandon the card.`;
+    return this.escalate(card, "owner", reason);
+  }
+
   private isFactoryProject(repo: string): boolean {
-    return this.options.config()?.document.projects[repo] !== undefined;
+    return projectFor(this.options.config()?.document.projects, repo) !== undefined;
   }
 
   private modelOptions(provider: Provider): Pick<LaunchOptions, "model" | "options"> {

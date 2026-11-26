@@ -1,5 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type { FactoryConfig } from "../config/document.js";
+import { projectFor, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
@@ -138,7 +138,7 @@ export class Intake {
   }
 
   private policy(repo: string): ReturnType<typeof resolvePolicy> {
-    const project = this.options.config()?.projects[repo];
+    const project = projectFor(this.options.config()?.projects, repo);
     if (project === undefined) throw new NotAFactoryProjectError(repo);
     return resolvePolicy(project.policy);
   }

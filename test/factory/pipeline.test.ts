@@ -406,6 +406,32 @@ describe("Pipeline", () => {
     expect(h.github.reopened).toEqual([5]);
   });
 
+  it("hands a card to the owner when its project is removed mid-merge, and finds a project by any casing", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Validating");
+    delete h.config.projects["octo/app"];
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    expect(h.cards.get(id).reason).toMatch(
+      /removed from the factory while PR #5's merge was being validated/,
+    );
+    expect(h.github.reverted).toEqual([]);
+
+    // The project comes back under GitHub's spelling; a card recorded as Octo/App still finds it.
+    const other = harness((config) => {
+      config.projects = { "octo/app": { policy: { preset: "standard", overrides: {} } } };
+    });
+    const card = other.cards.create({ repo: "Octo/App", issueNumber: 5, title: "Old casing" }).id;
+    other.github.issues.set(5, { number: 5, title: "x", body: "", author: "x", state: "OPEN" });
+    await other.pipeline.startWork(card, "brief");
+    expect(other.t3.launches).toHaveLength(1);
+  });
+
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
     const h = harness();
     const id = admitted(h);

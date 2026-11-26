@@ -187,6 +187,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
         parentId: version.value?.id,
         repos,
         errors: problem?.errors ?? [],
+        deploy: problem?.deploy,
       }),
     })}${presetCard()}</div>`;
     sendHtml(response, problem === undefined ? 200 : 400, projectsPage("Projects", body));
@@ -219,6 +220,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
         .filter((card) => card.repo === repo && ACTIVE_STAGES.includes(card.stage)),
     );
     const working = active.ok ? active.value.length : 0;
+    const inFlight = active.ok ? active.value.filter(mergeInFlight).length : 0;
     const body = `${pageHead({
       title: repo,
       crumbs: `<a href="/projects">Projects</a><span aria-hidden="true">/</span><span>${escapeHtml(repo)}</span>`,
@@ -232,10 +234,11 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
         parentId: version.value?.id,
         repos: [],
         errors: problem?.errors ?? [],
+        deploy: problem?.deploy,
       }),
     })}${card({
       title: "Remove the project",
-      body: `<p class="lede">The factory stops reading the repo's issues and starts no new work on it.${working === 0 ? "" : ` ${String(working)} active ${working === 1 ? "card waits" : "cards wait"} until you add the repo again or abandon them.`} The repo itself is not changed.</p>${postButton(
+      body: `<p class="lede">The factory stops reading the repo's issues and starts no new work on it.${working === 0 ? "" : ` ${String(working)} active ${working === 1 ? "card waits" : "cards wait"} until you add the repo again or abandon them.`}${inFlight === 0 ? "" : ` ${String(inFlight)} ${inFlight === 1 ? "card is" : "cards are"} merging, validating, or reverting a merge; ${inFlight === 1 ? "it comes" : "they come"} to you under Needs you, since Hephaestus will not finish a merge for a removed project.`} The repo itself is not changed.</p>${postButton(
         "/projects/remove",
         "Remove and deploy",
         {
@@ -259,11 +262,9 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     let repo = (form.get("repo") ?? "").trim();
     const parsed = parsePolicy(form);
     const back = (errors: string[], policy: Policy = parsed.policy): Promise<void> => {
-      const problem = { repo, policy, errors };
+      const problem = { repo, policy, errors, deploy: form.get("deploy") === "on" };
       return mode === "add" ? listPage(context, problem) : editPage(context, problem);
     };
-    if (parsed.errors.length > 0) return back(parsed.errors);
-    if (!REPO.test(repo)) return back([`Name the repo as owner/name, such as you/your-repo.`]);
     const base = current();
     const stale = (): Promise<void> => {
       // An edit form built on an older version comes back with the policy now in force, so a
@@ -279,7 +280,10 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       );
     };
     if (base === undefined) return back(["There is no config version to build on yet."]);
+    // Staleness first, so correcting another error cannot carry an old policy onto a newer version.
     if (String(base.id) !== (form.get("parentId") ?? "")) return stale();
+    if (parsed.errors.length > 0) return back(parsed.errors);
+    if (!REPO.test(repo)) return back([`Name the repo as owner/name, such as you/your-repo.`]);
     if (mode === "add" && factory.github !== undefined) {
       // GitHub's own spelling, so the same repo cannot be added twice under different casing.
       try {
@@ -332,16 +336,6 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     if (String(base.id) !== (form.get("parentId") ?? "")) {
       await back([
         "The config changed since the page was loaded. Check the project and try again.",
-      ]);
-      return;
-    }
-    // A merge that may still need validating or reverting needs the project's policy.
-    const merging = factory.cards
-      .list()
-      .filter((card) => card.repo === repo && mergeInFlight(card));
-    if (merging.length > 0) {
-      await back([
-        `Card ${merging.map((card) => String(card.id)).join(", ")} is merging, validating, or reverting a merge in ${repo}. Remove the project once that finishes, or abandon the card first.`,
       ]);
       return;
     }
@@ -437,6 +431,8 @@ interface Problem {
   repo: string;
   policy: Policy;
   errors: string[];
+  /** Whether the owner asked to approve and deploy, so an error page keeps that choice. */
+  deploy?: boolean;
 }
 
 function projectsPage(title: string, body: string): string {
@@ -495,6 +491,7 @@ function policyForm(options: {
   parentId: number | undefined;
   repos: string[];
   errors: string[];
+  deploy?: boolean | undefined;
 }): string {
   const { policy } = options;
   const errors =
@@ -512,7 +509,7 @@ function policyForm(options: {
 <input type="hidden" name="parentId" value="${escapeHtml(String(options.parentId ?? ""))}">
 ${repoField}${preset}
 <details class="more"${Object.keys(policy.overrides).length > 0 ? " open" : ""}><summary>Change settings from the preset</summary><div class="form-grid">${settings}</div></details>
-<label class="check"><input type="checkbox" name="deploy" checked> Approve and deploy now</label>
+<label class="check"><input type="checkbox" name="deploy"${options.deploy === false ? "" : " checked"}> Approve and deploy now</label>
 <div class="btn-row"><button type="submit" class="btn-primary">${options.mode === "add" ? "Add the project" : "Save the policy"}</button></div>
 </form>`;
 }
@@ -525,7 +522,8 @@ function settingField(setting: (typeof SETTINGS)[number], policy: Policy): strin
   const help = `<span class="meta">${escapeHtml(setting.help)}</span>`;
   if (LIST_SETTINGS.has(name)) {
     const custom = Array.isArray(override);
-    return `<div class="field"><label for="${id}-mode">${escapeHtml(setting.label)}</label><select id="${id}-mode" name="${name}.mode"><option value="preset"${custom ? "" : " selected"}>${fromPreset}</option><option value="custom"${custom ? " selected" : ""}>The list below (empty for none)</option></select><textarea id="${id}" name="${name}" rows="3" aria-label="${escapeHtml(setting.label)}">${escapeHtml(custom ? override.join("\n") : "")}</textarea>${help}</div>`;
+    const shown = custom ? override.join("\n") : "";
+    return `<div class="field"><label for="${id}-mode">${escapeHtml(setting.label)}</label><select id="${id}-mode" name="${name}.mode"><option value="preset"${custom ? "" : " selected"}>${fromPreset}</option><option value="custom"${custom ? " selected" : ""}>The list below (empty for none)</option></select><textarea id="${id}" name="${name}" rows="3" aria-label="${escapeHtml(setting.label)}">${escapeHtml(shown)}</textarea><input type="hidden" name="${name}.shown" value="${escapeHtml(shown)}">${help}</div>`;
   }
   if (NUMBER_SETTINGS.has(name)) {
     return `<div class="field"><label for="${id}">${escapeHtml(setting.label)}</label><input type="number" id="${id}" name="${name}" min="0" step="1" value="${override === undefined ? "" : escapeHtml(String(override))}" placeholder="${fromPreset}">${help}</div>`;
@@ -545,12 +543,22 @@ export function parsePolicy(form: URLSearchParams): { policy: Policy; errors: st
   const overrides: Partial<PolicySettings> = {};
   for (const { name, label } of SETTINGS) {
     if (LIST_SETTINGS.has(name)) {
-      const items = (form.get(name) ?? "")
+      const text = form.get(name) ?? "";
+      const items = text
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line !== "");
-      // Text typed into the list counts even when the selector was left on the preset.
-      if (form.get(`${name}.mode`) !== "custom" && items.length === 0) continue;
+      // The selector decides. A list edited while the selector says preset is ambiguous, so the
+      // owner is asked instead of either the edit or the selector being dropped.
+      if (form.get(`${name}.mode`) !== "custom") {
+        const shown = (form.get(`${name}.shown`) ?? "").replace(/\r\n/g, "\n").trim();
+        if (text.replace(/\r\n/g, "\n").trim() !== shown) {
+          errors.push(
+            `${label}: you changed the list but left it on the preset. Choose "The list below" to use the list, or clear your change.`,
+          );
+        }
+        continue;
+      }
       (overrides as Record<string, unknown>)[name] = items;
     } else if (NUMBER_SETTINGS.has(name)) {
       const text = (form.get(name) ?? "").trim();
