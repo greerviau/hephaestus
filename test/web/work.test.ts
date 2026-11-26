@@ -66,6 +66,17 @@ describe("Work items", () => {
     expect(dashboard.h.cards.list()).toHaveLength(1);
   });
 
+  it("accepts a long request in any script", async () => {
+    dashboard = await startDashboard();
+    const response = await dashboard.post("/work/issues/file", {
+      repo: "octo/app",
+      title: "長い依頼",
+      body: "設計".repeat(2000),
+      back: "/work",
+    });
+    expect(response.headers.get("location")).toBe("/work?notice=issue-filed");
+  });
+
   it("says when an issue could not be filed", async () => {
     dashboard = await startDashboard();
     const response = await dashboard.post("/work/issues/file", {

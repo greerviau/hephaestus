@@ -58,7 +58,7 @@ export function factorySettingsForm(
 <fieldset><legend>Limits</legend>${numbers}${autoStart}</fieldset>
 <fieldset><legend>Models</legend>${models}</fieldset>
 ${jobs === "" ? "" : `<fieldset><legend>Schedules</legend>${jobs}</fieldset>`}
-<label class="check"><input type="checkbox" name="deploy" checked> Approve and deploy now</label>
+<label class="check"><input type="checkbox" name="deploy"${submitted !== undefined && submitted.get("deploy") !== "on" ? "" : " checked"}> Approve and deploy now</label>
 <div class="btn-row"><button type="submit" class="btn-primary">Save the factory settings</button></div>
 </form>`;
 }
@@ -149,7 +149,8 @@ function model(
 /** How an option shows in the form: a switch as true or false, and a string that would read as one, quoted. */
 function optionText(value: string | boolean): string {
   if (typeof value === "boolean") return String(value);
-  return value === "true" || value === "false" || value.startsWith('"') || value.trim() !== value
+  // Quoted whenever the bare text would read back differently: as a switch, as several lines, or trimmed.
+  return value === "true" || value === "false" || /["\r\n]/.test(value) || value.trim() !== value
     ? JSON.stringify(value)
     : value;
 }

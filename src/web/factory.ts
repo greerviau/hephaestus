@@ -241,7 +241,7 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
   "issue-waiting": {
     kind: "info",
     title: "Issue filed, and waiting for you",
-    text: "The project changed while the issue was filed, so it was not admitted. Admit it below when you want it worked.",
+    text: "The project was removed while the issue was filed, so it was not admitted. Add the project back on Projects to work on it, or reject the issue.",
   },
   "file-failed": {
     kind: "err",
@@ -301,9 +301,15 @@ export function here(url: URL): string {
 
 const MAX_FORM_BYTES = 16 * 1024;
 
-async function form({ request }: RouteContext): Promise<URLSearchParams> {
-  return new URLSearchParams((await readBody(request, MAX_FORM_BYTES)) ?? "");
+async function form(
+  { request }: RouteContext,
+  maxBytes = MAX_FORM_BYTES,
+): Promise<URLSearchParams> {
+  return new URLSearchParams((await readBody(request, maxBytes)) ?? "");
 }
+
+/** A work request's form: its details can be long, and form encoding can triple their bytes. */
+const MAX_REQUEST_BYTES = 128 * 1024;
 
 /**
  * Runs an owner action and returns to the page it came from with a notice.
@@ -443,7 +449,7 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
       method: "POST",
       path: /^\/work\/issues\/file$/,
       handle: async (context) => {
-        const fields = await form(context);
+        const fields = await form(context, MAX_REQUEST_BYTES);
         const back = backTo(fields.get("back"), "/work");
         let notice: keyof typeof NOTICES = "file-failed";
         try {

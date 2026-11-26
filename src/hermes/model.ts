@@ -37,7 +37,14 @@ function scalar(raw: string): string | undefined {
   } else {
     value = value.replace(/\s+#.*$/, "").trim();
   }
-  if (value === "" || value === "~" || value === "null" || value === "|" || value === ">") {
+  if (
+    value === "" ||
+    value.startsWith("#") ||
+    value === "~" ||
+    value === "null" ||
+    value === "|" ||
+    value === ">"
+  ) {
     return undefined;
   }
   return value;

@@ -397,6 +397,8 @@ describe("Factory settings form", () => {
     // The form comes back with what was typed.
     expect(html).toContain('name="limits.threadsPerWorker" min="0" step="1" value="-1"');
     expect(html).toContain(">effort</textarea>");
+    // A draft stays a draft: the box comes back unticked.
+    expect(html).toContain('<input type="checkbox" name="deploy"> Approve and deploy now');
     expect(html).toContain("write each as id=value, not effort");
 
     const stale = await post("/settings/factory", { ...fields, parentId: "7" });
@@ -406,7 +408,10 @@ describe("Factory settings form", () => {
 
   it("keeps a string option that reads like a switch a string", async () => {
     const quoted = sampleConfig();
-    quoted.factory.models.codex = { model: "gpt-6.2-sol", options: { mode: "false", fast: true } };
+    quoted.factory.models.codex = {
+      model: "gpt-6.2-sol",
+      options: { mode: "false", fast: true, note: "first\nfast=true" },
+    };
     const second = store.createVersion({
       document: quoted,
       author: "owner",
@@ -416,7 +421,7 @@ describe("Factory settings form", () => {
     store.approve(second.id);
     store.markDeployed(second.id);
     const html = await (await get("/settings")).text();
-    expect(html).toContain("mode=&quot;false&quot;\nfast=true");
+    expect(html).toContain("mode=&quot;false&quot;\nfast=true\nnote=&quot;first\\nfast=true&quot;");
 
     await post("/settings/factory", {
       parentId: String(second.id),
@@ -426,12 +431,16 @@ describe("Factory settings form", () => {
       autoStartMinutes: "10",
       "claude.model": "claude-sonnet-5-5",
       "codex.model": "gpt-6.2-sol",
-      "codex.options": 'mode="false"\nfast=true',
+      "codex.options": 'mode="false"\nfast=true\nnote="first\\nfast=true"',
       "setup.model": "claude-sonnet-5-5",
       "setup.instanceId": "claudeAgent",
     });
     const saved = store.list()[0]?.document.factory;
-    expect(saved?.models.codex.options).toEqual({ mode: "false", fast: true });
+    expect(saved?.models.codex.options).toEqual({
+      mode: "false",
+      fast: true,
+      note: "first\nfast=true",
+    });
     expect(saved?.limits.threads).toBe(0);
   });
 });

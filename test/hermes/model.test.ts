@@ -19,6 +19,7 @@ describe("hermesModel", () => {
     ["model:\n  options:\n    default: nested\n"],
     ["# model:\n#   default: claude\n"],
     ["model: ~\n"],
+    ["model: # provider settings\n  provider: anthropic\n"],
   ])("finds no model in %j", (text) => {
     expect(hermesModel(text)).toBeUndefined();
   });
