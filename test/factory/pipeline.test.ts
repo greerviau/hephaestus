@@ -974,6 +974,23 @@ describe("Pipeline", () => {
     expect(h.t3.settled).toContain("healthy");
   });
 
+  it("settles a thread that ends while a pass's slow calls are out, before the rest of the pass", async () => {
+    const h = harness();
+    for (let index = 0; index < 5; index += 1) setupThread(h, `slow-${String(index)}`);
+    const order: string[] = [];
+    const settle = h.t3.settle.bind(h.t3);
+    h.t3.settle = (environmentId, threadId) => {
+      order.push(threadId);
+      // The healthy thread ends while the first slow call is out.
+      if (threadId === "slow-0") setupThread(h, "healthy");
+      return threadId.startsWith("slow-")
+        ? Promise.reject(new Error("timed out"))
+        : settle(environmentId, threadId);
+    };
+    await h.pipeline.settleThreads();
+    expect(order[1]).toBe("healthy");
+  });
+
   it("does not abandon a card that started work", async () => {
     const h = harness();
     const id = admitted(h);

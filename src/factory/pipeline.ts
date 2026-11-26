@@ -1341,21 +1341,12 @@ export class Pipeline {
   }
 
   private async settleFinishedThreads(): Promise<void> {
-    let tried = 0;
-    // A thread never tried goes first, then the one tried longest ago, so threads whose calls fail
-    // slowly cannot keep a healthy one from its turn.
-    const queue = this.options.events
-      .unsettledEnded()
-      .map((thread) => ({ thread, last: this.settleBackoff.get(thread.threadId)?.last ?? 0 }))
-      .sort((a, b) => a.last - b.last)
-      .map(({ thread }) => thread);
-    for (const thread of queue) {
+    const tried = new Set<string>();
+    while (tried.size < SETTLES_PER_TICK) {
+      const thread = this.nextToSettle(tried);
+      if (thread === undefined) return;
+      tried.add(thread.threadId);
       const backoff = this.settleBackoff.get(thread.threadId);
-      if (backoff !== undefined && backoff.until > this.now().getTime()) continue;
-      // Checked right before each call, since a pass can run while a card picks a thread up again.
-      if (!this.settleable(thread.environmentId, thread.threadId)) continue;
-      if (tried >= SETTLES_PER_TICK) return;
-      tried += 1;
       try {
         await this.options.threads.settle(thread.environmentId, thread.threadId);
         this.settleBackoff.delete(thread.threadId);
@@ -1373,6 +1364,28 @@ export class Pipeline {
         console.error(`Settling thread ${thread.threadId} failed`, error);
       }
     }
+  }
+
+  /**
+   * The thread to settle next, chosen afresh before each call, so one that ended while a slow
+   * call was out still gets its turn: a thread never tried first, then the one tried longest ago.
+   */
+  private nextToSettle(
+    tried: Set<string>,
+  ): { environmentId: string; threadId: string } | undefined {
+    const at = this.now().getTime();
+    let best: { environmentId: string; threadId: string; last: number } | undefined;
+    for (const thread of this.options.events.unsettledEnded()) {
+      if (tried.has(thread.threadId)) continue;
+      const backoff = this.settleBackoff.get(thread.threadId);
+      if (backoff !== undefined && backoff.until > at) continue;
+      const last = backoff?.last ?? 0;
+      if (best !== undefined && best.last <= last) continue;
+      // Checked right before each call, since a pass can run while a card picks a thread up again.
+      if (!this.settleable(thread.environmentId, thread.threadId)) continue;
+      best = { environmentId: thread.environmentId, threadId: thread.threadId, last };
+    }
+    return best;
   }
 
   /** Whether a thread is still ended and no active card uses it as its implement or review thread. */
