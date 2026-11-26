@@ -105,7 +105,11 @@ export class RequestThreads {
     }
   }
 
-  /** Starts following an issue in a thread, and catches the thread up on its card at once. */
+  /**
+   * Starts following an issue in a thread, and catches the thread up on its card at once.
+   * No progress pass may run meanwhile, or a step could be posted before the catch-up and
+   * again in it; the service runs link and progress one after the other.
+   */
   async follow(repo: string, number: number, thread: Thread): Promise<void> {
     // Only an issue Hephaestus tracks can be followed, so a stray line cannot claim another repo's.
     const tracked = this.db
@@ -237,9 +241,15 @@ export class RequestThreads {
   }
 }
 
+/** A reason as a clause: trimmed, kept short, and without its final stop, which the caller adds. */
+function sentence(reason: string): string {
+  const text = reason.trim().replace(/[.!?]+$/, "");
+  return text.length > 300 ? `${text.slice(0, 300)} (cut short; the card has it all)` : text;
+}
+
 /** What the card is doing now, in a few words, for a thread that starts following it late. */
 function stageText(card: Card, dashboard: string): string {
-  const why = card.reason === null ? "" : `: ${card.reason.replace(/\.$/, "")}`;
+  const why = card.reason === null ? "" : `: ${sentence(card.reason)}`;
   switch (card.stage) {
     case "Admitted":
       return "it is admitted and waiting to start.";
@@ -298,8 +308,11 @@ export function milestone(event: CardEvent, card: Card, dashboard: string): stri
       return `Checks failed on the default branch after the merge, so it is being reverted with ${pr(card.revertPr)}.`;
     case "stage:Escalated":
       return detail.startsWith("to the owner")
-        ? `This needs you: ${card.reason ?? detail}\n${dashboard}work/${String(card.id)}`
+        ? `This needs you: ${sentence(card.reason ?? detail)}.\n${dashboard}work/${String(card.id)}`
         : undefined;
+    // The lead handing a card it was given on to the owner.
+    case "escalated:owner":
+      return `This needs you: ${sentence(detail)}.\n${dashboard}work/${String(card.id)}`;
     case "stage:Abandoned":
       return `Stopped: ${card.reason ?? detail}.`;
     default:

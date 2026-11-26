@@ -228,7 +228,7 @@ const MIGRATIONS = [
      linked_at TEXT NOT NULL,
      PRIMARY KEY (repo, number)
    );`,
-  // The newest card event when the thread was linked; its catch-up already covers those.
+  // The newest card event the thread's catch-up covered; 0 until the catch-up is sent.
   `ALTER TABLE chat_threads ADD COLUMN after_event INTEGER NOT NULL DEFAULT 0;`,
 ];
 
