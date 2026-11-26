@@ -75,6 +75,27 @@ export function testTurnMessage(): string {
   return `Hephaestus sign-in check. Reply with exactly ${TEST_REPLY} and nothing else. Do not run any tools.`;
 }
 
+/**
+ * The provider's message when a thread ended on a usage or rate limit, such
+ * as "You've hit your usage limit ... try again at 8:02 AM", else undefined.
+ */
+export function usageLimit(items: ThreadItem[]): string | undefined {
+  const last = items.filter((item) => item.type === "error").at(-1);
+  return limitText(last?.text ?? "");
+}
+
+/** The text, trimmed, when it reports a provider's usage or rate limit, else undefined. */
+export function limitText(text: string): string | undefined {
+  const trimmed = text.trim();
+  // Claude Code says "You've hit your limit · resets 8pm" or "5-hour limit reached"; Codex says
+  // "You've hit your usage limit".
+  return /usage limit|rate limit|quota|too many requests|hit your (\w+ )?limit|limit reached|\blimit\b[^\n]{0,40}\bresets?\b/i.test(
+    trimmed,
+  )
+    ? trimmed.slice(0, 300)
+    : undefined;
+}
+
 /** The text of the thread's last assistant message. */
 export function finalMessage(items: ThreadItem[]): string | undefined {
   return items.filter((item) => item.type === "assistant_message").at(-1)?.text;
