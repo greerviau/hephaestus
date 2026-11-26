@@ -645,9 +645,60 @@ describe("Pipeline", () => {
     expect(h.cards.get(id).stage).toBe("Implementing");
     expect(h.cards.get(id).pendingMessage).not.toBeNull();
     h.github.mergedWith = marker;
+    // The scan for outside merges runs every few minutes and hands on a card waiting to send.
+    h.setClock(Date.parse("2026-11-25T12:10:00Z"));
     await h.pipeline.tick();
     await h.pipeline.tick();
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
+  });
+
+  it("reads no merge state for a queued message while a pause holds it", async () => {
+    const h = harness();
+    await queuedRestart(h);
+    const state = h.github.mergeState.bind(h.github);
+    let reads = 0;
+    h.github.mergeState = (repo, number) => {
+      reads += 1;
+      return state(repo, number);
+    };
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(reads).toBe(0);
+  });
+
+  it("sends nothing on a read that went stale while another card held the launch queue", async () => {
+    const h = harness();
+    const id = await queuedRestart(h);
+    h.cards.transition(id, "Escalated", "to the lead: again", { escalatedTo: "lead" });
+    h.pipeline.setPaused(false);
+    // Another card's launch holds the launch queue until released.
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const launch = h.t3.launchThread.bind(h.t3);
+    h.t3.launchThread = async (options) => {
+      await held;
+      return launch(options);
+    };
+    h.github.issues.set(6, { number: 6, title: "Other", body: "", author: "x", state: "OPEN" });
+    const other = h.cards.create({ repo: "octo/app", issueNumber: 6, title: "Other" }).id;
+    const otherStart = h.pipeline.startWork(other, "brief");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+
+    const sends = h.t3.sends.length;
+    const restart = h.pipeline.startWork(id, "newer brief");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    // GitHub reports the merge while the restart waits for the queue.
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    release();
+    await otherStart;
+    await restart.catch(() => undefined);
+
+    expect(h.t3.sends).toHaveLength(sends);
+    expect(h.cards.get(id).stage).not.toBe("Implementing");
   });
 
   it("says why a queued message waits when the PR cannot be read, and sends nothing", async () => {
