@@ -1,4 +1,10 @@
-import { MessagingError, PLATFORMS, type PlatformName, type PlatformState } from "../messaging.js";
+import {
+  MessagingError,
+  PLATFORMS,
+  RestartError,
+  type PlatformName,
+  type PlatformState,
+} from "../messaging.js";
 import type { FactoryPages } from "./factory.js";
 import { banner, card, empty, escapeHtml, layout, pageHead, pill, postButton } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
@@ -30,6 +36,11 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
     title: "Disconnected",
     text: "The bot's credentials were removed.",
   },
+  restarted: {
+    kind: "info",
+    title: "Reconnected",
+    text: "The messaging gateway restarted with the saved settings.",
+  },
   tested: { kind: "info", title: "Test message sent", text: "Check the chat for it." },
   "alerts-on": {
     kind: "info",
@@ -57,6 +68,22 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     },
     {
       method: "POST",
+      path: /^\/messaging\/restart$/,
+      handle: async ({ response }) => {
+        if (messaging === undefined) {
+          redirect(response, "/messaging");
+          return;
+        }
+        try {
+          await messaging.restart();
+          redirect(response, "/messaging?notice=restarted");
+        } catch (error) {
+          sendHtml(response, 400, page("", { text: messageOf(error), restart: true }));
+        }
+      },
+    },
+    {
+      method: "POST",
       path: /^\/messaging\/alerts\/(on|off)$/,
       handle: ({ response, params }) => {
         if (messaging === undefined) {
@@ -81,33 +108,35 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     const form = new URLSearchParams(body);
     try {
       if (action === "connect") {
-        messaging.connect(platform, {
+        await messaging.connect(platform, {
           token: form.get("token") ?? "",
           users: form.get("users") ?? "",
           home: form.get("channel") ?? "",
         });
         redirect(response, "/messaging?notice=connected");
       } else if (action === "disconnect") {
-        messaging.disconnect(platform);
+        await messaging.disconnect(platform);
         redirect(response, "/messaging?notice=disconnected");
       } else {
         await messaging.send(platform, "Hephaestus is connected. Ask for work here.");
         redirect(response, "/messaging?notice=tested");
       }
     } catch (error) {
-      // A refusal names what to fix; anything else is logged, since it may carry details.
-      if (!(error instanceof MessagingError)) console.error("A messaging action failed", error);
-      const text =
-        error instanceof MessagingError
-          ? error.message
-          : "Hephaestus could not change the connection. The service log has the error.";
-      sendHtml(response, 400, page("", { platform, text }));
+      sendHtml(
+        response,
+        400,
+        page("", {
+          label: PLATFORMS[platform].label,
+          text: messageOf(error),
+          restart: error instanceof RestartError,
+        }),
+      );
     }
   }
 
   function page(
     notice: string,
-    problem: { platform: PlatformName; text: string } | undefined,
+    problem: { label?: string; text: string; restart: boolean } | undefined,
   ): string {
     const head = pageHead({
       title: "Messaging",
@@ -139,7 +168,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
       body:
         connected.length === 0
           ? empty("Connect a platform first.")
-          : `<p class="lede">Posts each new item that needs you, such as an escalation, a revert, or a sign-in, to ${escapeHtml(connected.map((state) => state.label).join(" and "))}, with a link to the dashboard.</p>${postButton(
+          : `<p class="lede">Posts each new item that needs you, such as an escalation, a revert, or an outside merge, to ${escapeHtml(connected.map((state) => state.label).join(" and "))}, with a link to the dashboard.</p>${postButton(
               `/messaging/alerts/${alerts ? "off" : "on"}`,
               alerts ? "Turn alerts off" : "Turn alerts on",
               { variant: alerts ? "secondary" : "primary", small: false },
@@ -148,7 +177,11 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     const body = `${head}${shown === undefined ? "" : banner(shown.kind, shown.title, shown.text)}${
       problem === undefined
         ? ""
-        : banner("err", `${PLATFORMS[problem.platform].label}: not changed`, problem.text)
+        : `${banner("err", problem.restart ? "Saved, but not reconnected" : `${problem.label ?? "Messaging"}: not changed`, problem.text)}${
+            problem.restart
+              ? `<div class="btn-row">${postButton("/messaging/restart", "Restart the gateway", { variant: "primary", small: false })}</div>`
+              : ""
+          }`
     }<div class="grid">${states.map((state) => platformCard(state)).join("")}${alertsCard}</div>`;
     return layout("Messaging", body, { section: "/messaging" });
   }
@@ -182,4 +215,11 @@ function platformCard(state: PlatformState): string {
 <div class="btn-row"><button type="submit" class="btn-primary">Connect</button></div>
 </form>`,
   });
+}
+
+/** What to tell the owner: a refusal says what to fix; anything else is logged, since it may carry details. */
+function messageOf(error: unknown): string {
+  if (error instanceof MessagingError) return error.message;
+  console.error("A messaging action failed", error);
+  return "Hephaestus could not change the connection. The service log has the error.";
 }

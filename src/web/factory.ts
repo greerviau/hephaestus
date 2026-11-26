@@ -38,7 +38,7 @@ export interface FactoryPages {
   /** The chat Hephaestus talks to the owner in; absent without the factory's Hermes. */
   messaging?: Pick<
     Messaging,
-    "ready" | "states" | "connect" | "disconnect" | "send" | "alertsOn" | "setAlerts"
+    "ready" | "states" | "connect" | "disconnect" | "send" | "alertsOn" | "setAlerts" | "restart"
   >;
   /** The config repo named on Workers, for the setup checklist. */
   configRepo?: () => string | undefined;

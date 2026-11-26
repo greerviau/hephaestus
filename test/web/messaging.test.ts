@@ -28,7 +28,7 @@ async function withMessaging(sent: string[] = []): Promise<Dashboard> {
       sent.push(options?.input ?? "");
       return Promise.resolve("");
     },
-    restartGateway: () => undefined,
+    restartGateway: () => Promise.resolve(),
     get db() {
       if (holder.dashboard === undefined) throw new Error("not started");
       return holder.dashboard.h.db;
@@ -72,6 +72,7 @@ describe("Messaging page", () => {
     expect(sent).toEqual(["Hephaestus is connected. Ask for work here."]);
     const alerts = await dashboard.post("/messaging/alerts/on");
     expect(alerts.headers.get("location")).toBe("/messaging?notice=alerts-on");
+    expect((await dashboard.get("/messaging")).html).toContain("Turn alerts off");
   });
 
   it("says what to fix when the token is malformed", async () => {

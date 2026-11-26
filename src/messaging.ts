@@ -68,6 +68,20 @@ export interface PlatformState {
 
 export class MessagingError extends Error {}
 
+/** The credentials were saved or removed, but the gateway did not reconnect. */
+export class RestartError extends MessagingError {}
+
+/** Failed sends of one alert retried on later passes before it is given up. */
+const ALERT_ATTEMPTS = 3;
+
+/**
+ * Text from outside, such as an escalation's reason, cannot attach a file:
+ * Hermes reads `MEDIA:<path>` in a message as an attachment.
+ */
+export function neutralize(text: string): string {
+  return text.replace(/MEDIA:/gi, "MEDIA :");
+}
+
 const ALERTS_KEY = "messaging_alerts";
 const ALERTS_SENT_KEY = "messaging_alerts_sent";
 
@@ -75,8 +89,12 @@ export interface MessagingOptions {
   /** The factory Hermes root, whose profiles hold the chat's credentials. */
   root: string;
   run: HermesRun;
-  /** Restarts the factory gateway, so a connected bot starts answering. */
-  restartGateway: () => void;
+  /**
+   * Reconnects the chat profile's bots with its current settings. When absent,
+   * `hermes -p <profile> gateway restart` does it, which leaves the other
+   * profiles' work running.
+   */
+  restartGateway?: () => Promise<void>;
   db: Database;
   cards: Pick<CardStore, "notifications">;
   /** The dashboard's address, for the link in each alert. */
@@ -90,7 +108,24 @@ export interface MessagingOptions {
  * read, and never in a config version or on a command line.
  */
 export class Messaging {
+  /** The pass of alerts that is running, so passes never overlap. */
+  private sending: Promise<void> | undefined;
+  /** Failed sends of each alert, by key, so a later pass retries it. */
+  private readonly attempts = new Map<string, number>();
+
   constructor(private readonly options: MessagingOptions) {}
+
+  /** Reconnects the chat profile's bots, so a change of credentials takes effect. */
+  async restart(): Promise<void> {
+    try {
+      if (this.options.restartGateway !== undefined) await this.options.restartGateway();
+      else await this.options.run(["-p", CHAT_ROLE, "gateway", "restart", "--yes"]);
+    } catch (error) {
+      throw new RestartError(
+        `The settings were saved, but the messaging gateway did not restart: ${this.scrub(error instanceof Error ? error.message : String(error))}`,
+      );
+    }
+  }
 
   private get profileDir(): string {
     return join(this.options.root, "profiles", CHAT_ROLE);
@@ -126,7 +161,10 @@ export class Messaging {
   }
 
   /** Saves the bot's credentials and restarts the gateway, so the bot starts answering. */
-  connect(name: PlatformName, input: { token: string; users: string; home: string }): void {
+  async connect(
+    name: PlatformName,
+    input: { token: string; users: string; home: string },
+  ): Promise<void> {
     if (!this.ready()) {
       throw new MessagingError("Deploy a config version first; it sets up the factory's Hermes.");
     }
@@ -161,10 +199,10 @@ export class Messaging {
       [platform.home]: home === "" ? undefined : home,
       ...platform.channelSettings(home === "" ? undefined : home),
     });
-    this.options.restartGateway();
+    await this.restart();
   }
 
-  disconnect(name: PlatformName): void {
+  async disconnect(name: PlatformName): Promise<void> {
     const platform = PLATFORMS[name];
     this.writeEnv({
       [platform.token]: undefined,
@@ -172,27 +210,36 @@ export class Messaging {
       [platform.home]: undefined,
       ...platform.channelSettings(undefined),
     });
-    this.options.restartGateway();
+    await this.restart();
   }
 
-  /** Sends a message through the platform, which proves the token and the chat work. */
+  /** Sends a message to the platform's home chat, which proves the token and the chat work. */
   async send(name: PlatformName, text: string): Promise<void> {
     const state = this.states().find((entry) => entry.platform === name);
-    if (state?.connected !== true)
+    if (state?.connected !== true) {
       throw new MessagingError(`${PLATFORMS[name].label} is not connected.`);
+    }
     if (state.home === undefined) {
       throw new MessagingError(
         `Name a ${PLATFORMS[name].label} channel for alerts, so Hephaestus knows where to post.`,
       );
     }
+    await this.sendTo(name, state.home, text);
+  }
+
+  /**
+   * Sends a message to one chat or thread on the platform. With `attachments`,
+   * a line `MEDIA:<path>` in the text attaches that file; otherwise such a tag
+   * is neutralized, so outside text cannot attach one.
+   */
+  async sendTo(name: PlatformName, chat: string, text: string, attachments = false): Promise<void> {
+    if (!PLATFORMS[name].idShape.test(chat)) throw new MessagingError(`${chat} is not a chat ID.`);
     try {
-      // The token stays in the profile's .env; the command line carries only the target.
-      await this.options.run(
-        ["-p", CHAT_ROLE, "send", "--quiet", "--to", `${name}:${state.home}`],
-        {
-          input: text,
-        },
-      );
+      // The token stays in the profile's .env; the command line carries only the target. Hermes
+      // reports why a send failed only without --quiet.
+      await this.options.run(["-p", CHAT_ROLE, "send", "--to", `${name}:${chat}`], {
+        input: attachments ? text : neutralize(text),
+      });
     } catch (error) {
       throw new MessagingError(
         `${PLATFORMS[name].label} did not take the message: ${this.scrub(error instanceof Error ? error.message : String(error))}`,
@@ -214,7 +261,14 @@ export class Messaging {
   }
 
   /** Posts each notification newer than the last one sent to every connected platform. */
-  async sendAlerts(): Promise<void> {
+  sendAlerts(): Promise<void> {
+    this.sending ??= this.alertPass().finally(() => {
+      this.sending = undefined;
+    });
+    return this.sending;
+  }
+
+  private async alertPass(): Promise<void> {
     if (!this.alertsOn()) return;
     const targets = this.states().filter((state) => state.connected && state.home !== undefined);
     if (targets.length === 0) return;
@@ -224,17 +278,40 @@ export class Messaging {
       .filter((item) => item.id > sent)
       .sort((a, b) => a.id - b.id);
     for (const item of pending) {
-      const text = `Hephaestus: ${item.text}\n${this.options.dashboardUrl()}`;
-      for (const target of targets) {
-        try {
-          await this.send(target.platform, text);
-        } catch (error) {
-          // The notification stays on the dashboard; the next pass does not retry it.
-          console.error(`Sending an alert to ${target.label} failed`, error);
-        }
-      }
-      setMeta(this.options.db, ALERTS_SENT_KEY, String(item.id));
+      if (!(await this.deliver(`notice-${String(item.id)}`, item.text, targets))) return;
+      // Never backwards, though only one pass runs at a time.
+      const stored = Number(getMeta(this.options.db, ALERTS_SENT_KEY) ?? "0");
+      setMeta(this.options.db, ALERTS_SENT_KEY, String(Math.max(stored, item.id)));
     }
+  }
+
+  /**
+   * Sends one alert to every target. A failed send is retried on later passes,
+   * up to a limit, and stops this pass so alerts keep their order. Returns true
+   * once the alert is done with.
+   */
+  private async deliver(key: string, text: string, targets: PlatformState[]): Promise<boolean> {
+    let failed = false;
+    for (const target of targets) {
+      try {
+        await this.send(target.platform, `Hephaestus: ${text}\n${this.options.dashboardUrl()}`);
+      } catch (error) {
+        failed = true;
+        console.error(`Sending an alert to ${target.label} failed`, error);
+      }
+    }
+    if (!failed) {
+      this.attempts.delete(key);
+      return true;
+    }
+    const tries = (this.attempts.get(key) ?? 0) + 1;
+    if (tries >= ALERT_ATTEMPTS) {
+      // Given up; the item is still on the dashboard.
+      this.attempts.delete(key);
+      return true;
+    }
+    this.attempts.set(key, tries);
+    return false;
   }
 
   private readEnv(): Map<string, string> {
@@ -243,7 +320,7 @@ export class Messaging {
     for (const line of readFileSync(this.envPath, "utf8").split("\n")) {
       const at = line.indexOf("=");
       if (at <= 0 || line.trimStart().startsWith("#")) continue;
-      env.set(line.slice(0, at).trim(), line.slice(at + 1).trim());
+      env.set(envKey(line), unquote(line.slice(at + 1)));
     }
     return env;
   }
@@ -255,7 +332,7 @@ export class Messaging {
     const lines = existsSync(this.envPath)
       ? readFileSync(this.envPath, "utf8")
           .split("\n")
-          .filter((line) => line !== "" && !keys.has(line.slice(0, line.indexOf("=")).trim()))
+          .filter((line) => line !== "" && !keys.has(envKey(line)))
       : [];
     for (const [key, value] of Object.entries(changes)) {
       if (value !== undefined) lines.push(`${key}=${value}`);
@@ -275,4 +352,22 @@ export class Messaging {
     }
     return clean.slice(0, 300);
   }
+}
+
+/** A .env line's key, without an `export` in front. */
+function envKey(line: string): string {
+  return line
+    .slice(0, Math.max(0, line.indexOf("=")))
+    .trim()
+    .replace(/^export\s+/, "");
+}
+
+/** A .env value without its quotes, or without a trailing comment when it is unquoted. */
+function unquote(raw: string): string {
+  const value = raw.trim();
+  const quote = value[0];
+  if ((quote === '"' || quote === "'") && value.lastIndexOf(quote) > 0) {
+    return value.slice(1, value.lastIndexOf(quote));
+  }
+  return value.replace(/\s+#.*$/, "");
 }
