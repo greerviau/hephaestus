@@ -35,6 +35,17 @@ function signInWorker(): WorkerView {
   };
 }
 
+function readyWorker(): WorkerView {
+  return {
+    ...signInWorker(),
+    claude: "signed-in",
+    codex: "signed-in",
+    ready: true,
+    blocker: undefined,
+    ownerStep: false,
+  };
+}
+
 describe("Overview", () => {
   it("counts and lists everything that needs the owner, each with its action", async () => {
     dashboard = await startDashboard({
@@ -189,6 +200,32 @@ describe("Overview", () => {
     });
     expect(response.headers.get("location")).toBe("/?notice=merge-validating");
     expect(dashboard.h.cards.get(card).stage).toBe("Merging");
+  });
+
+  it("shows the setup steps until each is done, then hides them", async () => {
+    dashboard = await startDashboard();
+    const fresh = (await dashboard.get("/")).html;
+    expect(fresh).toContain("Set up the factory");
+    expect(fresh).toContain("2 of 6 done");
+    expect(fresh).toContain('href="/projects"');
+    expect(fresh).toContain("HERMES_HOME=~/.hephaestus/hermes hermes model");
+    await dashboard.close();
+
+    dashboard = await startDashboard({
+      configRepo: "octo/hephaestus-config",
+      hermesModel: "claude-sonnet-5",
+      workers: [readyWorker()],
+    });
+    expect((await dashboard.get("/")).html).not.toContain("Set up the factory");
+    await dashboard.close();
+
+    // A routine redeploy leaves a signed-in worker not ready; its sign-in step stays done.
+    dashboard = await startDashboard({
+      configRepo: "octo/hephaestus-config",
+      hermesModel: "claude-sonnet-5",
+      workers: [{ ...readyWorker(), ready: false, blocker: "Deploying version 2." }],
+    });
+    expect((await dashboard.get("/")).html).not.toContain("Set up the factory");
   });
 
   it("dismisses a notification", async () => {

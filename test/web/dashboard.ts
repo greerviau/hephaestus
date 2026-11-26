@@ -54,6 +54,8 @@ export interface DashboardOptions {
   deploy?: Deploy;
   t3WaitMs?: number;
   github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
+  configRepo?: string;
+  hermesModel?: string;
 }
 
 /** A dashboard on a factory harness. Sessions live in a database of their own, so tests can break the factory's. */
@@ -90,6 +92,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       environments: options.environments ?? { environments: () => Promise.resolve(linked()) },
       ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
       ...(options.github === undefined ? {} : { github: options.github }),
+      configRepo: () => options.configRepo,
+      hermesModel: () => options.hermesModel,
       now: () => NOW,
       t3WaitMs: options.t3WaitMs ?? 1000,
     }),

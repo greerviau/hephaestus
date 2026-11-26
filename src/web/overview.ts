@@ -1,3 +1,4 @@
+import { setupCard } from "./setup.js";
 import type { Card } from "../factory/cards.js";
 import type { TrackedIssue } from "../factory/intake.js";
 import type { StoredThread } from "../t3/events.js";
@@ -102,7 +103,7 @@ export function issueActions(issue: TrackedIssue, back: string): string {
 
 export function issueWhy(issue: TrackedIssue): string {
   return issue.state === "held-cap"
-    ? `Filed by the ${escapeHtml(issue.filedBy ?? "factory")} role and held: the project's cap on open factory-filed issues is reached.`
+    ? `${issue.filedBy === "owner" ? "Requested on Work items" : `Filed by the ${escapeHtml(issue.filedBy ?? "factory")} role`} and held: the project's cap on open factory-filed issues is reached.`
     : `Opened by ${escapeHtml(issue.author)} outside Hephaestus. The factory works on it only if you admit it.`;
 }
 
@@ -300,6 +301,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
                     )}</ul>${t3.state === "loading" ? loading("Checking T3 links...") : ""}`;
 
         const body = [
+          setupCard(factory, workers.ok ? workers.value : []),
           card({
             title: "Needs you",
             className: needs.length > 0 ? "needbox" : undefined,

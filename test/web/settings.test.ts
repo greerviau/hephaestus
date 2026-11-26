@@ -301,7 +301,8 @@ describe("large configs", () => {
     store.markDeployed(2);
 
     const page = await (await get("/settings")).text();
-    const text = page.slice(page.indexOf('spellcheck="false">') + 19, page.indexOf("</textarea>"));
+    const start = page.indexOf('spellcheck="false">') + 19;
+    const text = page.slice(start, page.indexOf("</textarea>", start));
     const unescaped = text
       .replace(/&quot;/g, '"')
       .replace(/&amp;/g, "&")
@@ -315,5 +316,131 @@ describe("large configs", () => {
     });
 
     expect(response.status).toBe(303);
+  });
+});
+
+describe("Factory settings form", () => {
+  it("shows the factory's limits, models, and schedules", async () => {
+    const html = await (await get("/settings")).text();
+    expect(html).toContain('name="limits.threads" min="0" step="1" value="4"');
+    expect(html).toContain('name="codex.model" value="gpt-6.2-sol"');
+    expect(html).toContain('action="/settings/factory"');
+  });
+
+  it("saves changed limits, model options, and a schedule as an approved version", async () => {
+    const withCron = sampleConfig();
+    withCron.roles.improver.cron = [{ name: "nightly", schedule: "0 3 * * *", prompt: "Improve." }];
+    const second = store.createVersion({
+      document: withCron,
+      author: "owner",
+      message: "",
+      parentId: 1,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    const html = await (await get("/settings")).text();
+    expect(html).toContain('name="cron.improver.nightly" value="0 3 * * *"');
+
+    const response = await post("/settings/factory", {
+      parentId: String(second.id),
+      "limits.threadsPerWorker": "1",
+      "limits.threads": "2",
+      "limits.startsPerDay": "10",
+      autoStartMinutes: "0",
+      "claude.model": "claude-opus-5-5",
+      "claude.options": "",
+      "codex.model": "gpt-6.2-sol",
+      "codex.options": "effort=high\nfast=false",
+      "setup.model": "claude-sonnet-5-5",
+      "setup.options": "",
+      "setup.instanceId": "claudeAgent",
+      "cron.improver.nightly": "every 12h",
+      deploy: "on",
+    });
+
+    expect(response.status).toBe(303);
+    // Without a deploy step, the approved version's page offers the deploy.
+    expect(response.headers.get("location")).toBe(`/settings/versions/${String(second.id + 1)}`);
+    const saved = store.list()[0];
+    expect(saved?.state).toBe("approved");
+    expect(saved?.message).toBe("Change the factory settings");
+    expect(saved?.document.factory.limits).toEqual({
+      threadsPerWorker: 1,
+      threads: 2,
+      startsPerDay: 10,
+    });
+    expect(saved?.document.factory.autoStartMinutes).toBe(0);
+    expect(saved?.document.factory.models).toEqual({
+      claude: { model: "claude-opus-5-5" },
+      codex: { model: "gpt-6.2-sol", options: { effort: "high", fast: false } },
+    });
+    expect(saved?.document.roles.improver.cron?.[0]?.schedule).toBe("every 12h");
+  });
+
+  it("refuses a bad number, a malformed option, and a stale form, and saves nothing", async () => {
+    const fields = {
+      parentId: "1",
+      "limits.threadsPerWorker": "-1",
+      "limits.threads": "4",
+      "limits.startsPerDay": "40",
+      autoStartMinutes: "10",
+      "claude.model": "claude-sonnet-5-5",
+      "claude.options": "effort",
+      "codex.model": "gpt-6.2-sol",
+      "setup.model": "claude-sonnet-5-5",
+      "setup.instanceId": "claudeAgent",
+    };
+    const bad = await post("/settings/factory", fields);
+    const html = await bad.text();
+    expect(bad.status).toBe(400);
+    expect(html).toContain("Running factory threads per worker: give a whole number of 0 or more.");
+    // The form comes back with what was typed.
+    expect(html).toContain('name="limits.threadsPerWorker" min="0" step="1" value="-1"');
+    expect(html).toContain(">effort</textarea>");
+    // A draft stays a draft: the box comes back unticked.
+    expect(html).toContain('<input type="checkbox" name="deploy"> Approve and deploy now');
+    expect(html).toContain("write each as id=value, not effort");
+
+    const stale = await post("/settings/factory", { ...fields, parentId: "7" });
+    expect(await stale.text()).toContain("The config changed since the page was loaded.");
+    expect(store.list()).toHaveLength(1);
+  });
+
+  it("keeps a string option that reads like a switch a string", async () => {
+    const quoted = sampleConfig();
+    quoted.factory.models.codex = {
+      model: "gpt-6.2-sol",
+      options: { mode: "false", fast: true, note: "first\nfast=true" },
+    };
+    const second = store.createVersion({
+      document: quoted,
+      author: "owner",
+      message: "",
+      parentId: 1,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    const html = await (await get("/settings")).text();
+    expect(html).toContain("mode=&quot;false&quot;\nfast=true\nnote=&quot;first\\nfast=true&quot;");
+
+    await post("/settings/factory", {
+      parentId: String(second.id),
+      "limits.threadsPerWorker": "2",
+      "limits.threads": "0",
+      "limits.startsPerDay": "40",
+      autoStartMinutes: "10",
+      "claude.model": "claude-sonnet-5-5",
+      "codex.model": "gpt-6.2-sol",
+      "codex.options": 'mode="false"\nfast=true\nnote="first\\nfast=true"',
+      "setup.model": "claude-sonnet-5-5",
+      "setup.instanceId": "claudeAgent",
+    });
+    const saved = store.list()[0]?.document.factory;
+    expect(saved?.models.codex.options).toEqual({
+      mode: "false",
+      fast: true,
+      note: "first\nfast=true",
+    });
+    expect(saved?.limits.threads).toBe(0);
   });
 });

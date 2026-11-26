@@ -44,6 +44,49 @@ describe("Work items", () => {
     expect(html).toContain("No issue is waiting for you.");
   });
 
+  it("files an issue as the owner's request, which is admitted under the cap", async () => {
+    dashboard = await startDashboard();
+    const page = (await dashboard.get("/work")).html;
+    expect(page).toContain('action="/work/issues/file"');
+    expect(page).toContain('<option value="octo/app" selected>octo/app</option>');
+
+    const response = await dashboard.post("/work/issues/file", {
+      repo: "octo/app",
+      title: "Add a --verbose flag",
+      body: "Print each step.",
+      back: "/work",
+    });
+    expect(response.headers.get("location")).toBe("/work?notice=issue-filed");
+    const [issue] = dashboard.h.intake.issues(["admitted"]);
+    expect(issue).toMatchObject({
+      provenance: "factory",
+      filedBy: "owner",
+      title: "Add a --verbose flag",
+    });
+    expect(dashboard.h.cards.list()).toHaveLength(1);
+  });
+
+  it("accepts a long request in any script", async () => {
+    dashboard = await startDashboard();
+    const response = await dashboard.post("/work/issues/file", {
+      repo: "octo/app",
+      title: "長い依頼",
+      body: "設計".repeat(2000),
+      back: "/work",
+    });
+    expect(response.headers.get("location")).toBe("/work?notice=issue-filed");
+  });
+
+  it("says when an issue could not be filed", async () => {
+    dashboard = await startDashboard();
+    const response = await dashboard.post("/work/issues/file", {
+      repo: "octo/other",
+      title: "Anything",
+      back: "/work",
+    });
+    expect(response.headers.get("location")).toBe("/work?notice=file-failed");
+  });
+
   it("filters by project and stage", async () => {
     dashboard = await startDashboard();
     runningCard(dashboard.h);

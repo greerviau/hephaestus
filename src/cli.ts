@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { accessSync, constants, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -9,6 +9,7 @@ import { scheduleBackups } from "./config/backup.js";
 import { importSkill } from "./config/defaults.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
+import { hermesModel } from "./hermes/model.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
@@ -490,6 +491,8 @@ async function main(argv: string[]): Promise<number> {
             environments,
             deploy: (id) => workers.deployVersion(id),
             github: engine.github,
+            configRepo: () => getMeta(db, CONFIG_REPO_KEY),
+            hermesModel: () => hermesDefaultModel(paths.hermes),
           }),
           ...settingsRoutes(store, (id) => workers.deployVersion(id)),
           ...environmentRoutes(environments, Date.now, {
@@ -565,4 +568,26 @@ function executablePath(path: string): string {
     throw new Error(`${absolute} is not an executable file.`);
   }
   return absolute;
+}
+
+/**
+ * The model the factory Hermes roles run, for the setup checklist: the root's
+ * default model, while every profile that exists names a model too. A
+ * profile without one gets the root's at the next deploy.
+ */
+function hermesDefaultModel(hermesHome: string): string | undefined {
+  const read = (path: string): string => {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const model = hermesModel(read(join(hermesHome, "config.yaml")));
+  if (model === undefined) return undefined;
+  for (const role of ROLE_NAMES) {
+    const path = join(hermesHome, "profiles", role, "config.yaml");
+    if (existsSync(path) && hermesModel(read(path)) === undefined) return undefined;
+  }
+  return model;
 }

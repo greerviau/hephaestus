@@ -15,7 +15,7 @@ import type { Deploy } from "./settings.js";
 /** What the factory pages read and act on. */
 export interface FactoryPages {
   cards: CardStore;
-  intake: Pick<Intake, "issues" | "approve" | "reject">;
+  intake: Pick<Intake, "issues" | "approve" | "reject" | "fileIssue">;
   pipeline: Pick<
     Pipeline,
     | "paused"
@@ -34,6 +34,10 @@ export interface FactoryPages {
   environments: EnvironmentSource;
   /** Publishes a version and deploys it to every worker; Improvement approval calls it. */
   deploy?: Deploy;
+  /** The config repo named on Workers, for the setup checklist. */
+  configRepo?: () => string | undefined;
+  /** The factory Hermes root's default model, when one is set, for the setup checklist. */
+  hermesModel?: () => string | undefined;
   /** GitHub reads for the Projects page: repo suggestions, and a check that a new repo is readable. */
   github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
   now?: () => number;
@@ -224,6 +228,26 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     text: "GitHub could not confirm that the issue is still open. The service log has the error.",
   },
   rejected: { kind: "info", title: "Issue rejected", text: "The factory will not work on it." },
+  "issue-filed": {
+    kind: "info",
+    title: "Issue filed and admitted",
+    text: "It has a card. The lead starts it, or Hephaestus does after the auto-start delay.",
+  },
+  "issue-held": {
+    kind: "info",
+    title: "Issue filed, and held at the project's cap",
+    text: "The project already has its limit of factory-filed issues waiting for work. Admit it below when you want it worked.",
+  },
+  "issue-waiting": {
+    kind: "info",
+    title: "Issue filed, and waiting for you",
+    text: "The project was removed while the issue was filed, so it was not admitted. Add the project back on Projects to work on it, or reject the issue.",
+  },
+  "file-failed": {
+    kind: "err",
+    title: "The issue was not filed",
+    text: "The repo is not a factory project, the title is missing, or GitHub refused the issue. The service log has the error.",
+  },
   dismissed: { kind: "info", title: "Notification dismissed", text: "It no longer needs you." },
   "action-failed": {
     kind: "err",
@@ -277,9 +301,15 @@ export function here(url: URL): string {
 
 const MAX_FORM_BYTES = 16 * 1024;
 
-async function form({ request }: RouteContext): Promise<URLSearchParams> {
-  return new URLSearchParams((await readBody(request, MAX_FORM_BYTES)) ?? "");
+async function form(
+  { request }: RouteContext,
+  maxBytes = MAX_FORM_BYTES,
+): Promise<URLSearchParams> {
+  return new URLSearchParams((await readBody(request, maxBytes)) ?? "");
 }
+
+/** A work request's form: its details can be long, and form encoding can triple their bytes. */
+const MAX_REQUEST_BYTES = 128 * 1024;
 
 /**
  * Runs an owner action and returns to the page it came from with a notice.
@@ -413,6 +443,35 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
           admit ? "admitted" : "rejected",
           admit ? "admit-failed" : "action-failed",
         );
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/work\/issues\/file$/,
+      handle: async (context) => {
+        const fields = await form(context, MAX_REQUEST_BYTES);
+        const back = backTo(fields.get("back"), "/work");
+        let notice: keyof typeof NOTICES = "file-failed";
+        try {
+          const title = text(fields, "title");
+          if (title.length > 256) throw new Error("The title is longer than GitHub allows.");
+          // Filed as the owner's request: factory-filed, so it is admitted unless the cap is reached.
+          const issue = await intake.fileIssue(
+            "owner",
+            text(fields, "repo"),
+            title,
+            (fields.get("body") ?? "").trim(),
+          );
+          notice =
+            issue.state === "admitted"
+              ? "issue-filed"
+              : issue.state === "held-cap"
+                ? "issue-held"
+                : "issue-waiting";
+        } catch (error) {
+          console.error("Filing an issue from the dashboard failed", error);
+        }
+        redirect(context.response, withNotice(back, notice));
       },
     },
     {

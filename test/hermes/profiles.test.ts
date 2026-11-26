@@ -252,4 +252,55 @@ describe("FactoryProfiles.sync", () => {
   it("runs every command against the factory root only", () => {
     expect(profiles.root).toBe(root);
   });
+
+  it("gives a profile without a model the root's model and provider, and leaves a chosen one", async () => {
+    writeFileSync(
+      join(root, "config.yaml"),
+      "model:\n  default: claude-sonnet-5\n  provider: anthropic\n",
+    );
+    mkdirSync(join(root, "profiles", "lead"), { recursive: true });
+    writeFileSync(
+      join(root, "profiles", "lead", "config.yaml"),
+      "model:\n  default: gpt-6.2-sol\n",
+    );
+    await profiles.sync(sampleConfig(), 1, mcp);
+    const sets = hermes.calls
+      .map((call) => call.args.join(" "))
+      .filter((args) => args.includes("config set model."));
+    expect(sets).toEqual([
+      "-p planner config set model.default claude-sonnet-5",
+      "-p planner config set model.provider anthropic",
+      "-p improver config set model.default claude-sonnet-5",
+      "-p improver config set model.provider anthropic",
+    ]);
+  });
+
+  it("copies a keyless custom endpoint's whole model block, and leaves keys and named providers to the owner", async () => {
+    writeFileSync(
+      join(root, "config.yaml"),
+      "model:\n  default: local-model\n  provider: custom\n  base_url: http://localhost:8080/v1\n  api_mode: chat_completions\n",
+    );
+    await profiles.sync(sampleConfig(), 1, mcp);
+    const lead = hermes.calls
+      .map((call) => call.args.join(" "))
+      .filter((args) => args.startsWith("-p lead config set model."));
+    expect(lead).toEqual([
+      "-p lead config set model.default local-model",
+      "-p lead config set model.provider custom",
+      "-p lead config set model.base_url http://localhost:8080/v1",
+      "-p lead config set model.api_mode chat_completions",
+    ]);
+
+    for (const text of [
+      "model:\n  default: m\n  provider: custom:my-box\n",
+      "model:\n  default: m\n  provider: custom\n  base_url: https://llm.example/v1\n  api_key: ${LLM_KEY}\n",
+    ]) {
+      hermes.calls.length = 0;
+      writeFileSync(join(root, "config.yaml"), text);
+      await profiles.sync(sampleConfig(), 2, mcp);
+      expect(hermes.calls.some((call) => call.args.join(" ").includes("config set model."))).toBe(
+        false,
+      );
+    }
+  });
 });
