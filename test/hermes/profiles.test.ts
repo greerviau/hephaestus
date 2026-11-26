@@ -110,6 +110,14 @@ describe("FactoryProfiles.sync", () => {
     );
   });
 
+  it("keeps tool-progress lines out of every role's chat replies", async () => {
+    await profiles.sync(sampleConfig(), 1, mcp);
+
+    for (const role of ["planner", "lead", "improver"]) {
+      expect(hermes.lines()).toContain(`-p ${role} config set --force display.tool_progress off`);
+    }
+  });
+
   it("writes the MCP token to the profile's .env without passing it as an argument", async () => {
     mkdirSync(join(root, "profiles", "lead"), { recursive: true });
     writeFileSync(join(root, "profiles", "lead", ".env"), "OTHER=1\nHEPHAESTUS_MCP_TOKEN=old\n");

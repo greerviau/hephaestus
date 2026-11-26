@@ -129,6 +129,9 @@ export class FactoryProfiles {
       "agent.disabled_toolsets",
       `[${DISABLED_TOOLSETS.join(", ")}]`,
     ]);
+    // Hermes would otherwise post a line per tool call, naming the factory's MCP tools, in the chat.
+    // Its gateway reads this key, but `config set` does not list it, so --force skips that notice.
+    await run(["-p", role, "config", "set", "--force", "display.tool_progress", "off"]);
     await run(["-p", role, "config", "set", `mcp_servers.${MCP_SERVER_NAME}.url`, mcp.url]);
     await run([
       "-p",

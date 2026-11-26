@@ -10,7 +10,7 @@ node dist/cli.js hermes sync
 
 - It turns off model-driven triage and Hermes's own review dispatch, so cards move only through Hephaestus.
 - It creates the factory board.
-- It brings each role's profile in line with the current config version: the persona and skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script.
+- It brings each role's profile in line with the current config version: the persona and skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script. Tool-progress messages are off too, so the chat never shows a line per tool call.
 - It installs and enables the `hephaestus` Hermes plugin in the factory root, which the Model page uses (see below).
 - It installs and starts `hephaestus-hermes-gateway.service`, the factory's own gateway, which serves only the factory profiles and the factory board.
 
