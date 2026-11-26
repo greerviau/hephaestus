@@ -479,6 +479,54 @@ describe("Pipeline", () => {
     expect(other.cards.mergedByHephaestus("octo/app", 5)).toBe(true);
   });
 
+  it("validates its own merge that a restarted implementer reports, and says when it cannot tell", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    // Hephaestus merged PR 5 on an earlier attempt, and the reply was lost.
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    const read = h.github.mergedWith.bind(h.github);
+    h.github.mergedWith = () => Promise.resolve(undefined);
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({
+      stage: "Implementing",
+      waiting: "reading back whether the merge was Hephaestus's",
+    });
+
+    h.github.mergedWith = read;
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
+  });
+
+  it("skips a card abandoned while the scan for outside merges reads another, and goes on", async () => {
+    const h = harness();
+    // Three cards whose PRs Hephaestus merged; the scan reads them newest first.
+    const ids = [5, 6, 7].map((number) => {
+      const id = h.cards.create({ repo: "octo/app", issueNumber: number, title: "Work" }).id;
+      const sha = String(number).repeat(40);
+      h.cards.transition(id, "Implementing", "work started", { prNumber: number, headSha: sha });
+      h.github.prs.set(number, pr(number, sha, { state: "MERGED", mergeSha: sha }));
+      h.github.ownMerges.add(sha);
+      return id;
+    });
+    const [oldest, middle, newest] = ids as [number, number, number];
+    const read = h.github.pullRequest.bind(h.github);
+    h.github.pullRequest = async (repo, number) => {
+      if (number === 7 && h.cards.get(middle).stage !== "Abandoned") {
+        await h.pipeline.abandon(middle, "not needed");
+      }
+      return read(repo, number);
+    };
+
+    await h.pipeline.tick();
+    expect(h.cards.get(middle).stage).toBe("Abandoned");
+    expect(h.cards.get(newest).stage).not.toBe("Done");
+    expect(h.cards.get(oldest).stage).not.toBe("Implementing");
+  });
+
   it("does not abandon a card that started work", async () => {
     const h = harness();
     const id = admitted(h);

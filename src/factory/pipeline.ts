@@ -691,7 +691,7 @@ export class Pipeline {
     const pr = await this.options.github.pullRequest(card.repo, parsed.pr ?? 0);
     const wrong = this.foreignPullRequest(card, pr);
     if (wrong !== undefined) return this.escalate(card, "lead", wrong, done);
-    if (pr.state === "MERGED") return this.foreignMerge(card, pr.mergeSha, done);
+    if (pr.state === "MERGED") return this.mergedPullRequest(card, pr, done);
     if (pr.state !== "OPEN") {
       return this.escalate(
         card,
@@ -1229,9 +1229,11 @@ export class Pipeline {
     const at = this.now().getTime();
     if (at - this.foreignCheckedAt < FOREIGN_CHECK_MS) return;
     this.foreignCheckedAt = at;
-    for (const { id } of this.cards.list(["Implementing", "Reviewing", "Merging", "Escalated"])) {
+    for (const { id } of this.cards.list(SCANNED)) {
       await this.withCard(id, async () => {
         const card = this.cards.get(id);
+        // The card may have moved since the list was read.
+        if (!SCANNED.includes(card.stage)) return;
         if (card.stage === "Escalated" && card.reverting && card.revertPr !== null) {
           // A revert PR merged on GitHub while it waited for the owner completes the revert.
           let revert;
@@ -1258,28 +1260,43 @@ export class Pipeline {
         } catch {
           return;
         }
-        if (pr.state !== "MERGED") return;
-        // A merge Hephaestus made, whose reply was lost, carries its marker; the merge step
-        // records it and validates the merge commit.
-        const ours =
-          pr.mergeSha === null
-            ? false
-            : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
-        if (ours === undefined) return;
-        if (!ours) {
-          await this.foreignMerge(card, pr.mergeSha);
-          return;
-        }
-        if (card.stage === "Merging") return;
-        const next = this.cards.transition(card.id, "Merging", "found merged by Hephaestus", {
-          escalatedTo: null,
-          ownerAction: null,
-          reason: null,
-          waiting: null,
-        });
-        await this.mirror(next, "Merging");
+        if (pr.state === "MERGED") await this.mergedPullRequest(card, pr);
+      }).catch((error: unknown) => {
+        console.error(`Checking card ${String(id)} for a merge made elsewhere failed`, error);
       });
     }
+  }
+
+  /**
+   * A factory PR found merged. A merge Hephaestus made, whose reply was lost,
+   * carries its marker and goes to the merge step, which records it and
+   * validates the merge commit; any other merge is foreign.
+   */
+  private async mergedPullRequest(
+    card: Card,
+    pr: PullRequest,
+    extra: Partial<Card> = {},
+  ): Promise<void> {
+    const ours =
+      pr.mergeSha === null
+        ? false
+        : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
+    if (ours === undefined) {
+      this.wait(card, "reading back whether the merge was Hephaestus's");
+      return;
+    }
+    if (!ours) return this.foreignMerge(card, pr.mergeSha, extra);
+    if (card.stage === "Merging") return;
+    const next = this.cards.transition(card.id, "Merging", "found merged by Hephaestus", {
+      ...extra,
+      prNumber: pr.number,
+      headSha: pr.headSha,
+      escalatedTo: null,
+      ownerAction: null,
+      reason: null,
+      waiting: null,
+    });
+    await this.mirror(next, "Merging");
   }
 
   private async escalate(
@@ -1333,6 +1350,9 @@ function mergeMarker(card: Card): string {
 }
 
 const TRANSITIONS_TO_DONE = new Set<Stage>(["Implementing", "Reviewing", "Merging"]);
+
+/** The stages whose PR the scan for merges made elsewhere reads. */
+const SCANNED: readonly Stage[] = ["Implementing", "Reviewing", "Merging", "Escalated"];
 
 interface IssueText {
   number: number;
