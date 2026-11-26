@@ -1260,7 +1260,10 @@ export class Pipeline {
         } catch {
           return;
         }
-        if (pr.state === "MERGED") await this.mergedPullRequest(card, pr);
+        // Only an escalated card is handed on; in any other stage the card's own step reads
+        // the same merge and marks the thread result it acted on as handled.
+        if (pr.state === "MERGED")
+          await this.mergedPullRequest(card, pr, {}, card.stage === "Escalated");
       }).catch((error: unknown) => {
         console.error(`Checking card ${String(id)} for a merge made elsewhere failed`, error);
       });
@@ -1276,6 +1279,7 @@ export class Pipeline {
     card: Card,
     pr: PullRequest,
     extra: Partial<Card> = {},
+    handOn = true,
   ): Promise<void> {
     const ours =
       pr.mergeSha === null
@@ -1285,8 +1289,14 @@ export class Pipeline {
       this.wait(card, "reading back whether the merge was Hephaestus's");
       return;
     }
-    if (!ours) return this.foreignMerge(card, pr.mergeSha, extra);
-    if (card.stage === "Merging") return;
+    if (!ours) {
+      return this.foreignMerge(card, pr.mergeSha, {
+        ...extra,
+        prNumber: pr.number,
+        headSha: pr.headSha,
+      });
+    }
+    if (card.stage === "Merging" || !handOn) return;
     const next = this.cards.transition(card.id, "Merging", "found merged by Hephaestus", {
       ...extra,
       prNumber: pr.number,

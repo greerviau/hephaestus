@@ -501,30 +501,71 @@ describe("Pipeline", () => {
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
   });
 
-  it("skips a card abandoned while the scan for outside merges reads another, and goes on", async () => {
+  it("skips a card abandoned while the scan for outside merges reads another, and goes on after an error", async () => {
     const h = harness();
-    // Three cards whose PRs Hephaestus merged; the scan reads them newest first.
+    // Three escalated cards whose PRs Hephaestus merged; the scan reads them newest first.
     const ids = [5, 6, 7].map((number) => {
       const id = h.cards.create({ repo: "octo/app", issueNumber: number, title: "Work" }).id;
       const sha = String(number).repeat(40);
       h.cards.transition(id, "Implementing", "work started", { prNumber: number, headSha: sha });
+      h.cards.transition(id, "Escalated", "to the owner: check the PR", {
+        escalatedTo: "owner",
+        reason: "check the PR",
+      });
       h.github.prs.set(number, pr(number, sha, { state: "MERGED", mergeSha: sha }));
       h.github.ownMerges.add(sha);
       return id;
     });
-    const [oldest, middle, newest] = ids as [number, number, number];
+    const [oldest, middle] = ids as [number, number, number];
+    const reads: number[] = [];
     const read = h.github.pullRequest.bind(h.github);
     h.github.pullRequest = async (repo, number) => {
-      if (number === 7 && h.cards.get(middle).stage !== "Abandoned") {
-        await h.pipeline.abandon(middle, "not needed");
-      }
+      reads.push(number);
+      if (number === 7) await h.pipeline.abandon(middle, "not needed");
       return read(repo, number);
     };
+    const marker = h.github.mergedWith.bind(h.github);
+    h.github.mergedWith = (repo, sha) =>
+      sha === "7".repeat(40) ? Promise.reject(new Error("unexpected")) : marker(repo, sha);
 
     await h.pipeline.tick();
+    expect(reads).not.toContain(6);
     expect(h.cards.get(middle).stage).toBe("Abandoned");
-    expect(h.cards.get(newest).stage).not.toBe("Done");
-    expect(h.cards.get(oldest).stage).not.toBe("Implementing");
+    expect(h.cards.get(oldest).stage).not.toBe("Escalated");
+  });
+
+  it("marks the implementer's result handled when its own merge is found, whichever read sees the marker", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    // A restarted card still carries the PR of its earlier attempt, which the scan reads.
+    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    const marker = h.github.mergedWith.bind(h.github);
+    let calls = 0;
+    h.github.mergedWith = (repo, sha) => {
+      calls += 1;
+      return calls === 1 ? Promise.resolve(undefined) : marker(repo, sha);
+    };
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+
+    expect(h.cards.get(id).stage).toBe("Validating");
+    expect(h.cards.get(id).handled.t1).toBeDefined();
+  });
+
+  it("leaves a card whose implementer has a result to its own step, and records an outside merge it reports", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    // Someone merged the PR by hand before the implementer reported it.
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Done", foreignMerge: true, prNumber: 5 });
   });
 
   it("does not abandon a card that started work", async () => {
