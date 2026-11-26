@@ -17,7 +17,10 @@ afterEach(async () => {
   root = undefined;
 });
 
-async function withMessaging(sent: string[] = []): Promise<Dashboard> {
+async function withMessaging(
+  sent: string[] = [],
+  restart: () => Promise<void> = () => Promise.resolve(),
+): Promise<Dashboard> {
   root = mkdtempSync(join(tmpdir(), "hephaestus-messaging-page-"));
   mkdirSync(join(root, "profiles", "planner"), { recursive: true });
   const holder: { dashboard?: Dashboard } = {};
@@ -28,7 +31,7 @@ async function withMessaging(sent: string[] = []): Promise<Dashboard> {
       sent.push(options?.input ?? "");
       return Promise.resolve("");
     },
-    restartGateway: () => Promise.resolve(),
+    restartGateway: restart,
     get db() {
       if (holder.dashboard === undefined) throw new Error("not started");
       return holder.dashboard.h.db;
@@ -84,5 +87,29 @@ describe("Messaging page", () => {
     });
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("does not look like a Discord bot token");
+  });
+
+  it("says the settings were saved when the restart fails, and retries it", async () => {
+    let restarts = 0;
+    let fail = true;
+    dashboard = await withMessaging([], () => {
+      restarts += 1;
+      return fail ? Promise.reject(new Error("exit 1")) : Promise.resolve();
+    });
+    const response = await dashboard.post("/messaging/discord/connect", {
+      token: TOKEN,
+      users: "284102345871466496",
+      channel: "1234567890123456789",
+    });
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain("Saved, but not reconnected");
+    expect(html).not.toContain("not changed");
+    expect(html).toContain('action="/messaging/restart"');
+
+    fail = false;
+    const retried = await dashboard.post("/messaging/restart");
+    expect(retried.headers.get("location")).toBe("/messaging?notice=restarted");
+    expect(restarts).toBe(2);
   });
 });

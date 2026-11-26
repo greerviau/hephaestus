@@ -95,6 +95,8 @@ export interface MessagingOptions {
    * profiles' work running.
    */
   restartGateway?: () => Promise<void>;
+  /** Starts the factory gateway when it is not running, so the chat profile is served at all. */
+  startGateway?: () => void;
   db: Database;
   cards: Pick<CardStore, "notifications">;
   /** The dashboard's address, for the link in each alert. */
@@ -111,7 +113,7 @@ export class Messaging {
   /** The pass of alerts that is running, so passes never overlap. */
   private sending: Promise<void> | undefined;
   /** Failed sends of each alert, by key, so a later pass retries it. */
-  private readonly attempts = new Map<string, number>();
+  private readonly attempts = new Map<string, { tries: number; done: Set<PlatformName> }>();
 
   constructor(private readonly options: MessagingOptions) {}
 
@@ -121,8 +123,26 @@ export class Messaging {
       if (this.options.restartGateway !== undefined) await this.options.restartGateway();
       else await this.options.run(["-p", CHAT_ROLE, "gateway", "restart", "--yes"]);
     } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      // With the factory gateway stopped, a profile cannot restart alone; starting the gateway
+      // serves the profile with its saved settings.
+      if (/does not get a gateway of its own|not running|exit(ed)? (with )?78/i.test(message)) {
+        if (this.options.startGateway !== undefined) {
+          try {
+            this.options.startGateway();
+            return;
+          } catch (start) {
+            throw new RestartError(
+              `The settings were saved, but the factory gateway is not running and did not start: ${this.scrub(start instanceof Error ? start.message : String(start))}`,
+            );
+          }
+        }
+        throw new RestartError(
+          "The settings were saved, but the factory gateway is not running. Start it, then restart.",
+        );
+      }
       throw new RestartError(
-        `The settings were saved, but the messaging gateway did not restart: ${this.scrub(error instanceof Error ? error.message : String(error))}`,
+        `The settings were saved, but the messaging gateway did not restart: ${this.scrub(message)}`,
       );
     }
   }
@@ -291,26 +311,26 @@ export class Messaging {
    * once the alert is done with.
    */
   private async deliver(key: string, text: string, targets: PlatformState[]): Promise<boolean> {
+    const record = this.attempts.get(key) ?? { tries: 0, done: new Set<PlatformName>() };
     let failed = false;
     for (const target of targets) {
+      // A retry goes only to the platforms that did not take the alert yet.
+      if (record.done.has(target.platform)) continue;
       try {
         await this.send(target.platform, `Hephaestus: ${text}\n${this.options.dashboardUrl()}`);
+        record.done.add(target.platform);
       } catch (error) {
         failed = true;
         console.error(`Sending an alert to ${target.label} failed`, error);
       }
     }
-    if (!failed) {
+    record.tries += 1;
+    if (!failed || record.tries >= ALERT_ATTEMPTS) {
+      // Delivered, or given up; the item is still on the dashboard either way.
       this.attempts.delete(key);
       return true;
     }
-    const tries = (this.attempts.get(key) ?? 0) + 1;
-    if (tries >= ALERT_ATTEMPTS) {
-      // Given up; the item is still on the dashboard.
-      this.attempts.delete(key);
-      return true;
-    }
-    this.attempts.set(key, tries);
+    this.attempts.set(key, record);
     return false;
   }
 

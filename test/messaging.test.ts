@@ -210,4 +210,81 @@ describe("Messaging", () => {
     expect(calls[0]?.input).not.toContain("MEDIA:/");
     expect(calls[0]?.input).toContain("MEDIA :/home");
   });
+
+  it("retries only the platform that failed, gives up after three tries, and never moves the marker back", async () => {
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("telegram", {
+      token: `123456789:${"A".repeat(35)}`,
+      users: "987654321",
+      home: "",
+    });
+    messaging.setAlerts(true);
+    cards.notify("first");
+    cards.notify("second");
+    const real = calls;
+    const failing = new Messaging({
+      root,
+      run: (args, options) => {
+        real.push({ args, input: options?.input });
+        return args.at(-1)?.startsWith("telegram:") === true
+          ? Promise.reject(new Error("Forbidden: the user never started the bot"))
+          : Promise.resolve("");
+      },
+      restartGateway: () => Promise.resolve(),
+      db,
+      cards,
+      dashboardUrl: () => "",
+    });
+    calls.length = 0;
+    for (let pass = 0; pass < 6; pass += 1) await failing.sendAlerts();
+    const discord = calls.filter((call) => call.args.at(-1)?.startsWith("discord:") === true);
+    expect(discord.map((call) => call.input?.split("\n")[0])).toEqual([
+      "Hephaestus: first",
+      "Hephaestus: second",
+    ]);
+    // Three tries each on Telegram, then both alerts are given up and the marker passes them.
+    expect(calls.filter((call) => call.args.at(-1)?.startsWith("telegram:") === true)).toHaveLength(
+      6,
+    );
+
+    // A marker moved ahead meanwhile is not set back.
+    db.prepare(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES ('messaging_alerts_sent', '999')",
+    ).run();
+    cards.notify("third");
+    await failing.sendAlerts();
+    expect(
+      (
+        db.prepare("SELECT value FROM meta WHERE key = 'messaging_alerts_sent'").get() as {
+          value: string;
+        }
+      ).value,
+    ).toBe("999");
+  });
+
+  it("starts a stopped factory gateway instead of failing the restart", async () => {
+    let started = 0;
+    const own = new Messaging({
+      root,
+      run: () =>
+        Promise.reject(new Error("Profile 'planner' does not get a gateway of its own. exit 78")),
+      startGateway: () => {
+        started += 1;
+      },
+      db,
+      cards,
+      dashboardUrl: () => "",
+    });
+    await own.restart();
+    expect(started).toBe(1);
+
+    const unstartable = new Messaging({
+      root,
+      run: () => Promise.reject(new Error("Profile 'planner' does not get a gateway of its own.")),
+      db,
+      cards,
+      dashboardUrl: () => "",
+    });
+    await expect(unstartable.restart()).rejects.toThrow(/factory gateway is not running/);
+  });
 });
