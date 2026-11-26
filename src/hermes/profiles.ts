@@ -76,9 +76,10 @@ export class FactoryProfiles {
     if (hermesModel(read(join(profileDir, "config.yaml"))) !== undefined) return;
     const root = hermesModelBlock(read(join(this.hermes.root, "config.yaml")));
     if ((root.default ?? root.model) === undefined) return;
-    // A named custom provider also needs its custom_providers entry, which a key cannot carry;
-    // the owner sets the model on each profile, and the setup checklist says so.
-    if (root.provider?.startsWith("custom:") === true) return;
+    // A named custom provider also needs its custom_providers entry, and a key lives in the root's
+    // .env, which a profile does not read; copying either would mean copying a secret. The owner
+    // sets the model on each such profile, and the setup checklist says so.
+    if (root.provider?.startsWith("custom:") === true || root.api_key !== undefined) return;
     // Every key, so a custom endpoint's base_url, api_key, and api_mode come along.
     for (const [key, value] of Object.entries(root)) {
       await this.hermes.run(["-p", role, "config", "set", `model.${key}`, value]);
