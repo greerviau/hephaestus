@@ -150,7 +150,9 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     const notice = NOTICES[url.searchParams.get("notice") ?? ""];
     const rows = projects.map(([repo, project]) => {
       const settings = resolvePolicy(project.policy);
-      const working = active.ok ? active.value.filter((card) => card.repo === repo).length : 0;
+      const working = active.ok
+        ? active.value.filter((card) => card.repo.toLowerCase() === repo.toLowerCase()).length
+        : 0;
       return [
         externalLink(`https://github.com/${repo}`, repo),
         `${pill(project.policy.preset === "strict" ? "you" : project.policy.preset === "yolo" ? "off" : "run", project.policy.preset)}${Object.keys(project.policy.overrides).length === 0 ? "" : `<span class="sub">${String(Object.keys(project.policy.overrides).length)} changed</span>`}`,
@@ -407,11 +409,17 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     return new URLSearchParams(body);
   }
 
-  /** A note when a version newer than the one edits build on is waiting, naming both. */
+  /**
+   * A note when the projects shown are not the ones the factory works on: no version is deployed
+   * yet, or a version newer than the one edits build on is waiting.
+   */
   function pending(): string {
     const latest = read("versions", () => factory.store.list()[0]);
     const base = read("config", () => current());
     if (!latest.ok || !base.ok || latest.value === undefined) return "";
+    if (base.value !== undefined && base.value.state !== "deployed") {
+      return `<div class="banner err" role="alert"><strong class="status s-crit">Not deployed yet</strong><p>Version ${String(base.value.id)} is ${base.value.state}, and no version is deployed, so the factory works on none of these projects yet. Name the config repo on <a href="/environments">Workers</a>, then deploy version ${String(base.value.id)} from <a href="/settings/versions/${String(base.value.id)}">Settings</a>.</p></div>`;
+    }
     const { id, state } = latest.value;
     if ((state !== "draft" && state !== "approved") || id === base.value?.id) return "";
     const what = state === "draft" ? "is a draft" : "is approved but not deployed";

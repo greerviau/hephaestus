@@ -298,6 +298,19 @@ describe("Projects, under concurrent changes", () => {
     expect(draft).toContain('<input type="checkbox" name="deploy"> Approve and deploy now');
   });
 
+  it("says when no version is deployed, so the projects listed are not live yet", async () => {
+    dashboard = await startDashboard({
+      github,
+      deploy: () => Promise.reject(new Error("no config repo")),
+    });
+    // As on a fresh install: the only version is approved, none deployed.
+    dashboard.h.db.prepare("UPDATE config_versions SET state = 'approved'").run();
+    await dashboard.post("/projects/save", added("octo/lib", dashboard.store.current()?.id ?? 0));
+    const html = (await dashboard.get("/projects")).html;
+    expect(html).toContain("Not deployed yet");
+    expect(html).toContain("the factory works on none of these projects yet");
+  });
+
   it("says when the factory Hermes root was not updated", async () => {
     dashboard = await startDashboard({
       github,
