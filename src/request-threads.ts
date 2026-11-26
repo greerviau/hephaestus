@@ -14,7 +14,7 @@ export function trackingLine(repo: string, number: number): string {
 }
 
 /** A tracking line on its own line, perhaps in backticks; quoted text inside a sentence does not count. */
-const TRACKING = /^[ \t>*_-]*`?Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)`?[ \t.]*$/gm;
+const TRACKING = /^[ \t>*_-]*`?Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)`?[ \t.*_]*$/gm;
 const CURSOR_KEY = "request_threads_event";
 
 /** Where the engineer pushes evidence for a card: a ref outside every branch. */
@@ -182,7 +182,7 @@ export class RequestThreads {
     }
   }
 
-  /** Attaches the evidence the engineer pushed for the card, once per version of it. */
+  /** Attaches the evidence the engineer pushed for the card, once per set of files. */
   private async postEvidence(thread: Thread, card: Card): Promise<void> {
     const key = `evidence_posted_${String(card.id)}`;
     let evidence;
@@ -193,7 +193,7 @@ export class RequestThreads {
       return;
     }
     if (evidence === undefined || evidence.files.length === 0) return;
-    if (getMeta(this.db, key) === evidence.commit) return;
+    if (getMeta(this.db, key) === evidence.tree) return;
     let folder: string | undefined;
     try {
       folder = mkdtempSync(join(tmpdir(), "hephaestus-evidence-"));
@@ -208,7 +208,7 @@ export class RequestThreads {
         writeFileSync(path, file.data, { mode: 0o600 });
         if (await this.post(thread, `Evidence: ${name}\nMEDIA:${path}`, true)) attached += 1;
       }
-      if (attached > 0) setMeta(this.db, key, evidence.commit);
+      if (attached > 0) setMeta(this.db, key, evidence.tree);
     } catch (error) {
       console.error(`Attaching the evidence for card ${String(card.id)} failed`, error);
     } finally {

@@ -4,6 +4,7 @@ import type { Database } from "better-sqlite3";
 import type { CardStore } from "./factory/cards.js";
 import type { HermesRun } from "./hermes/cli.js";
 import { getMeta, setMeta } from "./meta.js";
+import type { WorkerView } from "./workers/manager.js";
 
 /** The factory role that talks to the owner in a chat; the owner never needs its name. */
 const CHAT_ROLE = "planner";
@@ -86,6 +87,20 @@ const ALERTS_KEY = "messaging_alerts";
 const ALERTS_SENT_KEY = "messaging_alerts_sent";
 const EXTRA_SENT_KEY = "messaging_alerts_extra";
 
+/**
+ * Something that needs the owner, outside the card notifications. An item is
+ * sent once per key while its group keeps appearing; a quiet item is never
+ * sent, and only keeps its group's sent keys, such as a worker whose checks
+ * are running again.
+ */
+export interface ExtraAlert {
+  key: string;
+  text: string;
+  /** Items about the same thing; the key alone when absent. */
+  group?: string;
+  quiet?: boolean;
+}
+
 export interface MessagingOptions {
   /** The factory Hermes root, whose profiles hold the chat's credentials. */
   root: string;
@@ -106,7 +121,7 @@ export interface MessagingOptions {
   /** The dashboard's address, for the link in each alert. */
   dashboardUrl: () => string;
   /** Other things that need the owner, such as a proposal or a worker sign-in, each keyed so it is sent once. */
-  extraAlerts?: () => { key: string; text: string }[];
+  extraAlerts?: () => ExtraAlert[];
 }
 
 /**
@@ -290,7 +305,11 @@ export class Messaging {
     if (on) {
       const newest = this.options.cards.notifications()[0]?.id ?? 0;
       setMeta(this.options.db, ALERTS_SENT_KEY, String(newest));
-      this.saveExtraSent((this.options.extraAlerts?.() ?? []).map((item) => item.key));
+      this.saveExtraSent(
+        (this.options.extraAlerts?.() ?? [])
+          .filter((item) => item.quiet !== true)
+          .map((item) => this.extraKey(item)),
+      );
     }
     setMeta(this.options.db, ALERTS_KEY, on ? "on" : "off");
   }
@@ -321,12 +340,18 @@ export class Messaging {
     const extras = this.options.extraAlerts?.() ?? [];
     const sentExtra = new Set(this.extraSent());
     for (const item of extras) {
-      if (sentExtra.has(item.key)) continue;
+      if (item.quiet === true || sentExtra.has(this.extraKey(item))) continue;
       if (!(await this.deliver(item.key, item.text, targets))) break;
-      sentExtra.add(item.key);
+      sentExtra.add(this.extraKey(item));
     }
-    // Keys of items that went away are dropped, so an item that comes back is sent again.
-    this.saveExtraSent(extras.map((item) => item.key).filter((key) => sentExtra.has(key)));
+    // Keys of groups that went away are dropped, so an item that comes back is sent again.
+    const groups = new Set(extras.map((item) => item.group ?? item.key));
+    this.saveExtraSent([...sentExtra].filter((key) => groups.has(key.split("\n")[0] ?? "")));
+  }
+
+  /** The stored form of a sent item: its group, a line break, and its key. */
+  private extraKey(item: ExtraAlert): string {
+    return `${item.group ?? item.key}\n${item.key}`;
   }
 
   private extraSent(): string[] {
@@ -430,3 +455,24 @@ function unquote(raw: string): string {
   }
   return value.replace(/\s+#.*$/, "");
 }
+
+/**
+ * The sign-in or setup steps workers wait on the owner for. A worker whose
+ * checks are running asks for nothing yet, and keeps what it last asked for,
+ * so a recheck does not send the same ask again.
+ */
+export function workerAlerts(views: WorkerAlertView[]): ExtraAlert[] {
+  return views.flatMap((view) => {
+    const group = `worker-${view.environmentId}`;
+    if ([view.claude, view.codex].some((state) => state === "checking" || state === "unknown")) {
+      return [{ key: `${group}-checking`, text: "", group, quiet: true }];
+    }
+    if (!view.ownerStep || view.blocker === undefined) return [];
+    return [{ key: `${group}-${view.blocker}`, text: `${view.label}: ${view.blocker}`, group }];
+  });
+}
+
+export type WorkerAlertView = Pick<
+  WorkerView,
+  "environmentId" | "label" | "claude" | "codex" | "blocker" | "ownerStep"
+>;

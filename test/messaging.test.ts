@@ -4,7 +4,13 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CardStore } from "../src/factory/cards.js";
-import { Messaging, MessagingError, RestartError } from "../src/messaging.js";
+import {
+  Messaging,
+  MessagingError,
+  RestartError,
+  workerAlerts,
+  type WorkerAlertView,
+} from "../src/messaging.js";
 import { openStore } from "../src/store.js";
 
 const DISCORD_TOKEN = `${"M".repeat(24)}.${"G".repeat(6)}.${"x".repeat(27)}`;
@@ -334,5 +340,66 @@ describe("Messaging", () => {
     await expect(unstartable.restart()).rejects.toThrow(
       /not running and did not start: unit not found/,
     );
+  });
+});
+
+describe("worker alerts", () => {
+  it("asks once for a sign-in, across rechecks, and again only after the worker was ready", async () => {
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    let view: WorkerAlertView = {
+      environmentId: "env-1",
+      label: "mark-01",
+      claude: "limited",
+      codex: "signed-out",
+      blocker: "Sign in Factory Codex.",
+      ownerStep: true,
+    };
+    const own = new Messaging({
+      root,
+      run: (args, options) => {
+        calls.push({ args, input: options?.input });
+        return Promise.resolve("");
+      },
+      restartGateway: () => Promise.resolve(),
+      db,
+      cards,
+      dashboardUrl: () => "",
+      extraAlerts: () => workerAlerts([view]),
+    });
+    // Turned on directly, since turning alerts on marks what is already waiting as sent.
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('messaging_alerts', 'on')").run();
+    calls.length = 0;
+    const sends = (): number =>
+      calls.filter((call) => call.input?.includes("Sign in Factory Codex") === true).length;
+
+    await own.sendAlerts();
+    for (let recheck = 0; recheck < 3; recheck += 1) {
+      view = { ...view, claude: "checking", blocker: "Checking Claude." };
+      await own.sendAlerts();
+      view = { ...view, claude: "limited", blocker: "Sign in Factory Codex." };
+      await own.sendAlerts();
+    }
+    expect(sends()).toBe(1);
+
+    view = { ...view, codex: "signed-in", blocker: undefined, ownerStep: false };
+    await own.sendAlerts();
+    view = { ...view, codex: "signed-out", blocker: "Sign in Factory Codex.", ownerStep: true };
+    await own.sendAlerts();
+    expect(sends()).toBe(2);
+  });
+
+  it("sends nothing for a worker whose checks are running, or whose next step is Hephaestus's", () => {
+    const base: WorkerAlertView = {
+      environmentId: "env-1",
+      label: "mark-01",
+      claude: "signed-in",
+      codex: "signed-in",
+      blocker: "Sign in.",
+      ownerStep: true,
+    };
+    expect(workerAlerts([{ ...base, codex: "unknown" }])).toEqual([
+      { key: "worker-env-1-checking", text: "", group: "worker-env-1", quiet: true },
+    ]);
+    expect(workerAlerts([{ ...base, ownerStep: false }])).toEqual([]);
   });
 });

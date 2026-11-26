@@ -1619,9 +1619,9 @@ ${card.brief ?? "(none)"}
 4. If the change can be seen, such as a page, a command's output, or a generated file, show it: save screenshots, a short recording, or the output to files outside the repository, then push them where the owner's chat picks them up. Run this from the repository, with your file paths in place of the examples:
    \`\`\`sh
    tree=$(for f in /tmp/evidence/screen.png /tmp/evidence/output.txt; do printf '100644 blob %s\\t%s\\n' "$(git hash-object -w "$f")" "$(basename "$f")"; done | git mktree)
-   git push --force origin "$(git commit-tree "$tree" -m "Evidence for card ${String(card.id)}"):refs/${evidenceRef(card.id)}"
+   commit=$(git commit-tree "$tree" -m "Evidence for card ${String(card.id)}") && git push --force origin "$commit:refs/${evidenceRef(card.id)}"
    \`\`\`
-   This ref holds only the evidence files and is not a branch. Skip this step when there is nothing to show.
+   Give each file a different name. This ref holds only the evidence files and is not a branch. Skip this step when there is nothing to show.
 5. End your final message with this block, filled in:
 
 ${RESULT_FENCE}hephaestus-result

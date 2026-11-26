@@ -258,7 +258,7 @@ export class GitHub {
     ref: string,
     limit = 6,
     maxBytes = 8 * 1024 * 1024,
-  ): Promise<{ commit: string; files: { name: string; data: Buffer }[] } | undefined> {
+  ): Promise<{ tree: string; files: { name: string; data: Buffer }[] } | undefined> {
     let commit: string;
     try {
       commit = (
@@ -286,7 +286,8 @@ export class GitHub {
       if (blob.encoding !== "base64") continue;
       files.push({ name: entry.path, data: Buffer.from(blob.content, "base64") });
     }
-    return { commit, files };
+    // The tree, which stays the same when the same files are pushed again.
+    return { tree: tree.sha, files };
   }
 
   /** Whether a PR merged, without its files or checks, so a checks outage cannot fail the read. */

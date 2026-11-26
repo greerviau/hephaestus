@@ -11,7 +11,7 @@ import { importSkill } from "./config/defaults.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
 import { hermesModel } from "./hermes/model.js";
-import { Messaging } from "./messaging.js";
+import { Messaging, workerAlerts } from "./messaging.js";
 import { RequestThreads } from "./request-threads.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
@@ -496,21 +496,7 @@ async function main(argv: string[]): Promise<number> {
                     key: `proposal-${String(version.id)}`,
                     text: `Config version ${String(version.id)} is proposed and waits for your approval on Improvement.`,
                   })),
-                ...workers
-                  .views()
-                  // A worker whose checks are still running is not asking for anything yet.
-                  .filter(
-                    (view) =>
-                      view.ownerStep &&
-                      view.blocker !== undefined &&
-                      ![view.claude, view.codex].some(
-                        (state) => state === "checking" || state === "unknown",
-                      ),
-                  )
-                  .map((view) => ({
-                    key: `worker-${view.environmentId}-${view.blocker ?? ""}`,
-                    text: `${view.label}: ${view.blocker ?? ""}`,
-                  })),
+                ...workerAlerts(workers.views()),
               ],
             });
       const alerting = setInterval(() => {

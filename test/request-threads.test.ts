@@ -16,7 +16,7 @@ let cards: CardStore;
 let posts: { chat: string; text: string; attachments: boolean }[];
 let unreadable: Set<string>;
 let messages: Record<string, { id: string; content: string; author: { id: string } }[]>;
-let evidence: { commit: string; files: { name: string; data: Buffer }[] } | undefined;
+let evidence: { tree: string; files: { name: string; data: Buffer }[] } | undefined;
 let threads: RequestThreads;
 
 const fetcher: Fetch = (url) => {
@@ -135,7 +135,7 @@ describe("RequestThreads", () => {
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     evidence = {
-      commit: "c1",
+      tree: "t1",
       files: [{ name: "../screen shot.png", data: Buffer.from("png") }],
     };
     cards.transition(id, "Implementing", "work started");
@@ -165,7 +165,7 @@ describe("RequestThreads, under bad input", () => {
     messages[THREAD] = [
       {
         id: "10",
-        content: `Filed two issues.\n${trackingLine("octo/app", 7)}\n\`${trackingLine("octo/app", 8)}\``,
+        content: `Filed two issues.\n**${trackingLine("octo/app", 7)}**\n\`${trackingLine("octo/app", 8)}\``,
         author: { id: BOT },
       },
     ];
@@ -191,7 +191,7 @@ describe("RequestThreads, under bad input", () => {
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     // A name too long for the file system, as far as the folder is concerned, is cut short.
-    evidence = { commit: "c1", files: [{ name: "x".repeat(400), data: Buffer.from("a") }] };
+    evidence = { tree: "t1", files: [{ name: "x".repeat(400), data: Buffer.from("a") }] };
     cards.transition(id, "Implementing", "work started");
     cards.update(id, { prNumber: 5 });
     cards.transition(id, "Reviewing", "PR #5 at abc");
