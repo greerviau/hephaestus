@@ -13,7 +13,8 @@ export function trackingLine(repo: string, number: number): string {
   return `Tracking ${repo}#${String(number)}`;
 }
 
-const TRACKING = /Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)/;
+/** A tracking line on its own line, perhaps in backticks; quoted text inside a sentence does not count. */
+const TRACKING = /^[ \t>*_-]*`?Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)`?[ \t.]*$/gm;
 const CURSOR_KEY = "request_threads_event";
 
 /** Where the engineer pushes evidence for a card: a ref outside every branch. */
@@ -69,30 +70,47 @@ export class RequestThreads {
       };
     }
     const { id: botId, guild } = this.bot;
-    const followed = new Set(
-      (
-        this.db.prepare("SELECT chat FROM chat_threads WHERE platform = 'discord'").all() as {
-          chat: string;
-        }[]
-      ).map((row) => row.chat),
-    );
     const threads = (await api.activeThreads(guild)).filter(
-      (thread) => thread.parent_id === credentials.home && !followed.has(thread.id),
+      (thread) => thread.parent_id === credentials.home,
     );
     for (const thread of threads) {
-      const messages = await api.messages(thread.id);
+      // Each thread is read from the last message seen, so a request that files a second
+      // issue later is followed for that one too.
+      const seenKey = `thread_seen_${thread.id}`;
+      const seen = getMeta(this.db, seenKey);
+      let messages;
+      try {
+        messages = await api.messages(thread.id, 50, seen);
+      } catch (error) {
+        // One thread the bot cannot read does not stop the others.
+        console.error(`Reading thread ${thread.id} failed`, error);
+        continue;
+      }
+      const newest = messages.reduce<string | undefined>(
+        (top, message) =>
+          top === undefined || BigInt(message.id) > BigInt(top) ? message.id : top,
+        seen,
+      );
       // Only the bot's own words count, so nobody else can point the factory at a thread.
       for (const message of messages) {
         if (message.author.id !== botId) continue;
-        const match = TRACKING.exec(message.content);
-        if (match?.[1] === undefined || match[2] === undefined) continue;
-        await this.follow(match[1], Number(match[2]), { platform: "discord", chat: thread.id });
+        for (const match of message.content.matchAll(TRACKING)) {
+          if (match[1] === undefined || match[2] === undefined) continue;
+          await this.follow(match[1], Number(match[2]), { platform: "discord", chat: thread.id });
+        }
       }
+      if (newest !== undefined) setMeta(this.db, seenKey, newest);
     }
   }
 
   /** Starts following an issue in a thread, and catches the thread up on its card at once. */
   async follow(repo: string, number: number, thread: Thread): Promise<void> {
+    // Only an issue Hephaestus tracks can be followed, so a stray line cannot claim another repo's.
+    const tracked = this.db
+      .prepare("SELECT repo FROM issues WHERE repo = ? COLLATE NOCASE AND number = ?")
+      .get(repo, number) as { repo: string } | undefined;
+    if (tracked === undefined) return;
+    repo = tracked.repo;
     const result = this.db
       .prepare(
         `INSERT INTO chat_threads (repo, number, platform, chat, linked_at) VALUES (?, ?, ?, ?, ?)
@@ -133,13 +151,15 @@ export class RequestThreads {
         card.issueNumber === null ? undefined : this.threadFor(card.repo, card.issueNumber);
       const text =
         thread === undefined ? undefined : milestone(event, card, this.options.dashboardUrl());
-      if (thread !== undefined && text !== undefined) {
-        await this.post(thread, text);
-        if (event.kind === "stage:Reviewing" || event.kind === "stage:Done") {
-          await this.postEvidence(thread, card);
-        }
-      }
+      if (thread !== undefined && text !== undefined) await this.post(thread, text);
+      // Saved before the evidence, so a failure there cannot hold the feed on this event.
       setMeta(this.db, CURSOR_KEY, String(event.id));
+      const opened =
+        event.kind === "stage:Reviewing" ||
+        (event.kind === "stage:Merging" && event.detail.includes("needs no review"));
+      if (thread !== undefined && text !== undefined && (opened || event.kind === "stage:Done")) {
+        await this.postEvidence(thread, card);
+      }
     }
   }
 
@@ -150,13 +170,15 @@ export class RequestThreads {
     return row?.platform === "discord" ? { platform: "discord", chat: row.chat } : undefined;
   }
 
-  /** Posts to a thread; only Hephaestus's own evidence lines may attach files. */
-  private async post(thread: Thread, text: string, attachments = false): Promise<void> {
+  /** Posts to a thread; only Hephaestus's own evidence lines may attach files. True when sent. */
+  private async post(thread: Thread, text: string, attachments = false): Promise<boolean> {
     try {
       await this.options.messaging.sendTo(thread.platform, thread.chat, text, attachments);
+      return true;
     } catch (error) {
       // A thread that cannot be reached loses this update; the dashboard still has it.
       console.error(`Posting to thread ${thread.chat} failed`, error);
+      return false;
     }
   }
 
@@ -172,18 +194,25 @@ export class RequestThreads {
     }
     if (evidence === undefined || evidence.files.length === 0) return;
     if (getMeta(this.db, key) === evidence.commit) return;
-    const folder = mkdtempSync(join(tmpdir(), "hephaestus-evidence-"));
+    let folder: string | undefined;
     try {
+      folder = mkdtempSync(join(tmpdir(), "hephaestus-evidence-"));
+      let attached = 0;
       for (const file of evidence.files) {
-        // Only the file's own name, so a path in the tree cannot write outside the folder.
-        const name = file.name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_");
+        // Only the file's own name, short, so a path in the tree cannot write outside the folder.
+        const name = file.name
+          .replace(/[^A-Za-z0-9._-]/g, "_")
+          .replace(/^\.+/, "_")
+          .slice(-100);
         const path = join(folder, name);
         writeFileSync(path, file.data, { mode: 0o600 });
-        await this.post(thread, `Evidence: ${name}\nMEDIA:${path}`, true);
+        if (await this.post(thread, `Evidence: ${name}\nMEDIA:${path}`, true)) attached += 1;
       }
-      setMeta(this.db, key, evidence.commit);
+      if (attached > 0) setMeta(this.db, key, evidence.commit);
+    } catch (error) {
+      console.error(`Attaching the evidence for card ${String(card.id)} failed`, error);
     } finally {
-      rmSync(folder, { recursive: true, force: true });
+      if (folder !== undefined) rmSync(folder, { recursive: true, force: true });
     }
   }
 }
@@ -232,6 +261,9 @@ export function milestone(event: CardEvent, card: Card, dashboard: string): stri
     case "stage:Reviewing":
       return `PR opened, now in review: ${pr(card.prNumber)}`;
     case "stage:Merging":
+      if (detail.includes("needs no review")) {
+        return `PR opened; it merges once its checks pass: ${pr(card.prNumber)}`;
+      }
       return detail.startsWith("approved") ? "The review approved it." : undefined;
     case "stage:Validating":
       return "Merged. Checks are running on the default branch.";

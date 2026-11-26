@@ -498,7 +498,15 @@ async function main(argv: string[]): Promise<number> {
                   })),
                 ...workers
                   .views()
-                  .filter((view) => view.ownerStep && view.blocker !== undefined)
+                  // A worker whose checks are still running is not asking for anything yet.
+                  .filter(
+                    (view) =>
+                      view.ownerStep &&
+                      view.blocker !== undefined &&
+                      ![view.claude, view.codex].some(
+                        (state) => state === "checking" || state === "unknown",
+                      ),
+                  )
                   .map((view) => ({
                     key: `worker-${view.environmentId}-${view.blocker ?? ""}`,
                     text: `${view.label}: ${view.blocker ?? ""}`,

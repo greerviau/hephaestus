@@ -56,7 +56,10 @@ export class DiscordApi {
       .threads;
   }
 
-  async messages(channel: string, limit = 50): Promise<DiscordMessage[]> {
-    return this.get<DiscordMessage[]>(`/channels/${channel}/messages?limit=${String(limit)}`);
+  /** A channel's messages, newest first, or only those after `after` when it is given. */
+  async messages(channel: string, limit = 50, after?: string): Promise<DiscordMessage[]> {
+    return this.get<DiscordMessage[]>(
+      `/channels/${channel}/messages?limit=${String(limit)}${after === undefined ? "" : `&after=${after}`}`,
+    );
   }
 }

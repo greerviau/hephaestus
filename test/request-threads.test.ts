@@ -13,7 +13,8 @@ const OTHER = "555555555555555555";
 
 let db: Database;
 let cards: CardStore;
-let posts: { chat: string; text: string }[];
+let posts: { chat: string; text: string; attachments: boolean }[];
+let unreadable: Set<string>;
 let messages: Record<string, { id: string; content: string; author: { id: string } }[]>;
 let evidence: { commit: string; files: { name: string; data: Buffer }[] } | undefined;
 let threads: RequestThreads;
@@ -31,7 +32,13 @@ const fetcher: Fetch = (url) => {
       ],
     };
   } else if (path.startsWith("/channels/")) {
-    body = messages[path.split("/")[2] ?? ""] ?? [];
+    const id = path.split("/")[2] ?? "";
+    const after = /after=(\d+)/.exec(path)?.[1];
+    body = unreadable.has(id)
+      ? undefined
+      : (messages[id] ?? []).filter(
+          (message) => after === undefined || BigInt(message.id) > BigInt(after),
+        );
   }
   return Promise.resolve({
     ok: body !== undefined,
@@ -44,6 +51,7 @@ beforeEach(() => {
   db = openStore(":memory:");
   cards = new CardStore(db);
   posts = [];
+  unreadable = new Set();
   messages = {};
   evidence = undefined;
   threads = new RequestThreads({
@@ -52,9 +60,7 @@ beforeEach(() => {
     messaging: {
       credentials: () => ({ token: "token", home: CHANNEL }),
       sendTo: (_platform, chat, text, attachments) => {
-        posts.push({ chat, text });
-        if (text.includes("MEDIA:") && attachments !== true)
-          throw new Error("media without consent");
+        posts.push({ chat, text, attachments: attachments === true });
         return Promise.resolve();
       },
     },
@@ -68,8 +74,13 @@ afterEach(() => {
   db.close();
 });
 
-function card(): number {
-  return cards.create({ repo: "octo/app", issueNumber: 7, title: "Add a flag" }).id;
+/** An issue Hephaestus tracks, and its card. */
+function card(number = 7): number {
+  db.prepare(
+    `INSERT INTO issues (repo, number, title, author, provenance, filed_by, state, created_at, updated_at)
+     VALUES ('octo/app', ?, 't', 'x', 'factory', 'planner', 'admitted', 'x', 'x')`,
+  ).run(number);
+  return cards.create({ repo: "octo/app", issueNumber: number, title: "Add a flag" }).id;
 }
 
 describe("RequestThreads", () => {
@@ -94,6 +105,7 @@ describe("RequestThreads", () => {
     await threads.progress();
 
     expect(posts.map((post) => post.chat)).toEqual(Array<string>(6).fill(THREAD));
+    expect(posts.some((post) => post.attachments)).toBe(false);
     expect(posts.map((post) => post.text)).toEqual([
       "Following octo/app#7: it is admitted and waiting to start. Progress shows up here.",
       "Work started.",
@@ -132,6 +144,7 @@ describe("RequestThreads", () => {
     await threads.progress();
     const attached = posts.filter((post) => post.text.startsWith("Evidence:"));
     expect(attached).toHaveLength(1);
+    expect(attached[0]?.attachments).toBe(true);
     expect(attached[0]?.text).toMatch(
       /^Evidence: __screen_shot\.png\nMEDIA:\/.+\/__screen_shot\.png$/,
     );
@@ -140,6 +153,76 @@ describe("RequestThreads", () => {
     cards.transition(id, "Reviewing", "PR #5 at abd");
     await threads.progress();
     expect(posts.filter((post) => post.text.startsWith("Evidence:"))).toHaveLength(1);
+  });
+});
+
+describe("RequestThreads, under bad input", () => {
+  it("follows every issue a request files, including one filed later", async () => {
+    card(7);
+    card(8);
+    card(9);
+    await threads.progress();
+    messages[THREAD] = [
+      {
+        id: "10",
+        content: `Filed two issues.\n${trackingLine("octo/app", 7)}\n\`${trackingLine("octo/app", 8)}\``,
+        author: { id: BOT },
+      },
+    ];
+    await threads.link();
+    messages[THREAD].push({ id: "11", content: trackingLine("octo/app", 9), author: { id: BOT } });
+    await threads.link();
+    const rows = db.prepare("SELECT number FROM chat_threads ORDER BY number").all();
+    expect(rows).toEqual([{ number: 7 }, { number: 8 }, { number: 9 }]);
+  });
+
+  it("ignores a tracking reference inside a sentence and an issue Hephaestus does not track", async () => {
+    card(7);
+    messages[THREAD] = [
+      { id: "1", content: "I am not Tracking octo/app#7 here", author: { id: BOT } },
+      { id: "2", content: trackingLine("other/repo", 99), author: { id: BOT } },
+    ];
+    await threads.link();
+    expect(db.prepare("SELECT COUNT(*) AS n FROM chat_threads").get()).toEqual({ n: 0 });
+  });
+
+  it("keeps posting milestones when evidence cannot be written, and goes past an unreadable thread", async () => {
+    const id = card();
+    await threads.progress();
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    // A name too long for the file system, as far as the folder is concerned, is cut short.
+    evidence = { commit: "c1", files: [{ name: "x".repeat(400), data: Buffer.from("a") }] };
+    cards.transition(id, "Implementing", "work started");
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Reviewing", "PR #5 at abc");
+    cards.transition(id, "Merging", "approved at abc");
+    await threads.progress();
+    await threads.progress();
+    const texts = posts.map((post) => post.text.split("\n")[0]);
+    expect(texts.filter((text) => text?.startsWith("PR opened"))).toHaveLength(1);
+    expect(texts).toContain("The review approved it.");
+
+    unreadable.add(THREAD);
+    await expect(threads.link()).resolves.toBeUndefined();
+  });
+
+  it("posts the PR link when a policy needs no review", () => {
+    const store = new CardStore(openStore(":memory:"));
+    const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;
+    const merging = store.update(id, { prNumber: 5 });
+    expect(
+      milestone(
+        {
+          id: 1,
+          cardId: id,
+          at: "",
+          kind: "stage:Merging",
+          detail: "PR #5 at abc; the policy needs no review",
+        },
+        merging,
+        "",
+      ),
+    ).toBe("PR opened; it merges once its checks pass: https://github.com/octo/app/pull/5");
   });
 });
 
