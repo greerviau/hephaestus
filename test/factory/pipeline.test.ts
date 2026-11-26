@@ -592,10 +592,38 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
 
-    await expect(h.pipeline.sendToLead(id, "start over")).rejects.toThrow(/has merged/);
-    await h.pipeline.approveMerge(id, SHA, "merge");
+    // Sending it to the lead settles the merge instead of restarting work on top of it.
+    await expect(h.pipeline.sendToLead(id, "start over")).rejects.toThrow(/validate the merge/);
+    expect(h.cards.get(id).stage).toBe("Merging");
     await h.pipeline.tick();
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
+  });
+
+  it("settles an unrecorded merge when the lead restarts the card, whoever merged it", async () => {
+    const h = harness();
+    const ours = admitted(h);
+    await h.pipeline.startWork(ours, "brief");
+    h.cards.update(ours, { prNumber: 5, headSha: SHA });
+    // The hand-back's read saw the PR still open; by start_work, GitHub reports the merge.
+    await h.pipeline.escalateToOwner(ours, "check the PR");
+    h.github.prs.set(5, pr(5, SHA));
+    await h.pipeline.sendToLead(ours, "go on");
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    await expect(h.pipeline.startWork(ours, "new brief")).rejects.toThrow(/validate the merge/);
+    expect(h.cards.get(ours).stage).toBe("Merging");
+
+    // Merged by hand: the owner is told the card is done, not to approve it.
+    const other = harness();
+    const theirs = admitted(other);
+    await other.pipeline.startWork(theirs, "brief");
+    other.cards.update(theirs, { prNumber: 5, headSha: SHA });
+    await other.pipeline.escalateToOwner(theirs, "checks fail");
+    other.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    await expect(other.pipeline.sendToLead(theirs, "fix it")).rejects.toThrow(
+      /outside Hephaestus, so the card is done/,
+    );
+    expect(other.cards.get(theirs)).toMatchObject({ stage: "Done", foreignMerge: true });
   });
 
   it("does not abandon a card that started work", async () => {
