@@ -557,15 +557,37 @@ describe("Pipeline", () => {
     expect(h.cards.get(id).handled.t1).toBeDefined();
   });
 
-  it("leaves a card whose implementer has a result to its own step, and records an outside merge it reports", async () => {
+  it("records the PR and head of an outside merge a restarted implementer reports", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
-    // Someone merged the PR by hand before the implementer reported it.
+    // The card still names the PR of an earlier attempt; the implementer reports a new one,
+    // which someone merged by hand.
+    h.cards.update(id, { prNumber: 4, headSha: SHA2 });
+    h.github.prs.set(4, pr(4, SHA2));
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Done", foreignMerge: true, prNumber: 5 });
+    expect(h.cards.get(id)).toMatchObject({
+      stage: "Done",
+      foreignMerge: true,
+      prNumber: 5,
+      headSha: SHA,
+    });
+    expect(h.cards.notifications()[0]?.text).toContain("PR #5 ");
+  });
+
+  it("validates its own merge on a card whose thread never reports again", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    // Restarted after a lost merge reply; the implement thread is still running.
+    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
   });
 
   it("does not abandon a card that started work", async () => {

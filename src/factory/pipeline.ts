@@ -660,6 +660,17 @@ export class Pipeline {
   }
 
   /** Marks a thread's result handled, as part of the change it caused. */
+  /** Marks every result the card's threads have left as handled. */
+  private settled(card: Card): { handled: Record<string, string> } {
+    const handled = { ...this.cards.get(card.id).handled };
+    for (const thread of [card.implementThread, card.reviewThread]) {
+      if (thread === null) continue;
+      const result = this.newResult(card, thread);
+      if (result !== undefined) handled[thread] = result.itemId;
+    }
+    return { handled };
+  }
+
   private handled(
     card: Card,
     threadId: string,
@@ -869,7 +880,7 @@ export class Pipeline {
         return;
       }
       if (ours && pr.mergeSha !== null) return this.recordOwnMerge(card, pr, pr.mergeSha);
-      return this.foreignMerge(card, pr.mergeSha);
+      return this.foreignMerge(card, pr.mergeSha, { headSha: pr.headSha });
     }
     if (pr.state !== "OPEN")
       return this.escalate(card, "lead", `PR #${String(pr.number)} was closed`);
@@ -1209,7 +1220,7 @@ export class Pipeline {
     extra: Partial<Card> = {},
   ): Promise<void> {
     if (card.prNumber === null && extra.prNumber === undefined) return;
-    const number = card.prNumber ?? extra.prNumber;
+    const number = extra.prNumber ?? card.prNumber;
     this.cards.notify(
       `PR #${String(number)} in ${card.repo} (card ${String(card.id)}) was merged outside Hephaestus.`,
       card.id,
@@ -1260,10 +1271,8 @@ export class Pipeline {
         } catch {
           return;
         }
-        // Only an escalated card is handed on; in any other stage the card's own step reads
-        // the same merge and marks the thread result it acted on as handled.
-        if (pr.state === "MERGED")
-          await this.mergedPullRequest(card, pr, {}, card.stage === "Escalated");
+        // A result its threads left is settled by the merge, so a later run cannot replay it.
+        if (pr.state === "MERGED") await this.mergedPullRequest(card, pr, this.settled(card));
       }).catch((error: unknown) => {
         console.error(`Checking card ${String(id)} for a merge made elsewhere failed`, error);
       });
@@ -1279,7 +1288,6 @@ export class Pipeline {
     card: Card,
     pr: PullRequest,
     extra: Partial<Card> = {},
-    handOn = true,
   ): Promise<void> {
     const ours =
       pr.mergeSha === null
@@ -1296,7 +1304,7 @@ export class Pipeline {
         headSha: pr.headSha,
       });
     }
-    if (card.stage === "Merging" || !handOn) return;
+    if (card.stage === "Merging") return;
     const next = this.cards.transition(card.id, "Merging", "found merged by Hephaestus", {
       ...extra,
       prNumber: pr.number,
