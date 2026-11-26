@@ -1009,7 +1009,8 @@ export class Pipeline {
         `the PR head moved to ${pr.headSha} after ${card.headSha} was reviewed`,
       );
     }
-    // GitHub starts no checks for a head that conflicts with its base, so the conflict is named first.
+    // A conflicting head may never get its pull_request checks, so the conflict is named before
+    // the gate waits on them.
     if (pr.mergeable === "CONFLICTING") return this.conflicted(card, pr);
     const decision = decideMerge({
       policy: this.policy(card),
@@ -1078,7 +1079,7 @@ export class Pipeline {
     return this.escalate(
       card,
       "owner",
-      `revert PR #${String(number)} conflicts with the default branch, so it cannot merge; resolve it on GitHub, then approve the revert merge`,
+      `revert PR #${String(number)} conflicts with the default branch, so it cannot merge; resolve it on GitHub, then approve the revert merge to resume it; the resolved head goes through the gate again`,
       { ownerAction: "revert-merge" },
     );
   }
@@ -1244,6 +1245,8 @@ export class Pipeline {
         reviewThread: null,
       });
     }
+    // Before the review, so the owner hears of the conflict without waiting on a review of it.
+    if (pr.mergeable === "CONFLICTING") return this.revertConflicted(card, pr.number);
     const policy = this.policy(card);
     // The deadline comes before the review, so a stalled rollback always reaches the owner.
     if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS) && card.waiting !== null) {
@@ -1286,7 +1289,6 @@ export class Pipeline {
       });
       card = this.cards.update(card.id, done);
     }
-    if (pr.mergeable === "CONFLICTING") return this.revertConflicted(card, pr.number);
     const decision = decideMerge({
       policy,
       checks: pr.checks,

@@ -145,6 +145,10 @@ describe("GitHub", () => {
       MergeConflictError,
     );
     await expect(merge(exec("OPEN", "MERGEABLE", null))).rejects.not.toThrow(MergeConflictError);
+    // A head that moved under the merge is not a conflict to send back.
+    await expect(
+      new GitHub("gh", exec("OPEN", "CONFLICTING", null)).merge("octo/app", 5, "old", "m"),
+    ).rejects.not.toThrow(MergeConflictError);
   });
 
   it("tells a merge refused for conflicts from other failures", async () => {

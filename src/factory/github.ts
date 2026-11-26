@@ -396,6 +396,8 @@ export class GitHub {
         // The refusal's wording varies, and mergeable can lag; either one names a conflict.
         if (
           current.state === "OPEN" &&
+          // A head that moved is the gate's to handle, not a conflict to send back.
+          current.headSha === headSha &&
           (current.mergeable === "CONFLICTING" || /merge conflict/i.test(String(error)))
         ) {
           throw new MergeConflictError(number, { cause: error });

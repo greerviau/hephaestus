@@ -337,6 +337,23 @@ describe("Pipeline", () => {
     }
   });
 
+  it("tells the owner of a conflicting revert PR before reviewing it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    const launches = h.t3.launches.length;
+    const revert = h.github.prs.get(9);
+    if (revert === undefined) throw new Error("no revert PR");
+    h.github.prs.set(9, { ...revert, mergeable: "CONFLICTING" });
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(launches);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "revert-merge" });
+  });
+
   it("counts a revert PR the owner merged by hand", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {
