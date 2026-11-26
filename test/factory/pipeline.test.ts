@@ -257,6 +257,10 @@ describe("Pipeline", () => {
     const review = h.t3.launches.at(-1);
     expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
     expect(review?.message).toContain("#9");
+    // The revert is reviewed as a rollback, not against the issue it undoes.
+    expect(review?.message).toContain("It reverts PR #5");
+    expect(review?.message).toContain("do not judge this PR against the issue");
+    expect(review?.message).not.toContain("does what the issue asks");
     h.finish(`t${String(h.t3.launches.length)}`, reviewResult("approve", SHA2));
     await h.pipeline.tick();
 
