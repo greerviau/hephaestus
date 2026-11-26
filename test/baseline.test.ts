@@ -209,6 +209,8 @@ describe("takeBaseline", () => {
       write(`${skills}/.curator_ledger.jsonl`, "{}\n");
       write(`${skills}/.locks/abc.lock`, "");
       write(`${skills}/.curator_backups/2026-11-26/skills.tar.gz`, "x");
+      write(`${skills}/.hub/index-cache/search.json`, "{}\n");
+      write(`${skills}/.bundled_manifest`, "x\n");
     }
 
     const keys = Object.keys(takeBaseline(home).entries);
