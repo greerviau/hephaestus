@@ -406,7 +406,7 @@ describe("Pipeline", () => {
     expect(h.github.reopened).toEqual([5]);
   });
 
-  it("hands a card to the owner when its project is removed mid-merge, and finds a project by any casing", async () => {
+  it("finishes a merge in flight under its last policy when its project is removed, and finds a project by any casing", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
@@ -414,13 +414,19 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.cards.get(id).stage).toBe("Validating");
     delete h.config.projects["octo/app"];
+    // The merge fails its checks after the project is gone: it is still reverted.
     h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
-    expect(h.cards.get(id).reason).toMatch(
-      /removed from the factory while PR #5's merge was being validated/,
-    );
-    expect(h.github.reverted).toEqual([]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
+    expect(h.github.reverted).toEqual([5]);
+    await h.pipeline.tick();
+    h.finish(`t${String(h.t3.launches.length)}`, reviewResult("approve", SHA2));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([5, 9]);
+    expect(h.github.reopened).toEqual([5]);
+    // Back in Implementing, new work waits until the project is added again.
+    await h.pipeline.tick();
+    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
 
     // The project comes back under GitHub's spelling; a card recorded as Octo/App still finds it.
     const other = harness((config) => {

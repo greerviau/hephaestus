@@ -238,7 +238,7 @@ describe("Projects, under concurrent changes", () => {
     expect(dashboard.store.current()?.document.projects["octo/app"]?.policy.preset).toBe("strict");
   });
 
-  it("removes a project with a merge in flight, and warns that the card comes to the owner", async () => {
+  it("removes a project with a merge in flight, and says the merge finishes under its policy", async () => {
     dashboard = await startDashboard({ github, deploy: markDeployed });
     const id = dashboard.h.cards.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
     dashboard.h.cards.transition(id, "Implementing", "started");
@@ -246,7 +246,7 @@ describe("Projects, under concurrent changes", () => {
     dashboard.h.cards.transition(id, "Merging", "approved");
     dashboard.h.cards.transition(id, "Validating", "merged");
     expect((await dashboard.get("/projects/edit?repo=octo%2Fapp")).html).toContain(
-      "1 card is merging, validating, or reverting a merge; it comes to you under Needs you",
+      "1 card is merging, validating, or reverting a merge; it finishes under the policy it started with.",
     );
     const response = await dashboard.post("/projects/remove", {
       repo: "octo/app",
@@ -326,9 +326,10 @@ describe("parsePolicy", () => {
       requiredChecks: "unit",
       "requiredChecks.shown": "",
     });
-    expect(parsePolicy(typed).errors[0]).toContain(
-      "you changed the list but left it on the preset",
-    );
+    const parsed = parsePolicy(typed);
+    expect(parsed.errors[0]).toContain("you changed the list but left it on the preset");
+    // The form comes back with the typed list, so resubmitting keeps it.
+    expect(parsed.policy.overrides).toEqual({ requiredChecks: ["unit"] });
   });
 
   it("refuses a switch that is not the preset, on, or off, and a number too large", () => {

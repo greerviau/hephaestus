@@ -366,6 +366,19 @@ describe("Intake", () => {
     expect((await h.intake.fileIssue("planner", "octo/app", "two", "")).state).toBe("admitted");
   });
 
+  it("files under the config's spelling, so another casing shares the cap", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: { openIssueCap: 1 } },
+      };
+    });
+    expect((await h.intake.fileIssue("planner", "octo/app", "one", "")).state).toBe("admitted");
+    const second = await h.intake.fileIssue("planner", "Octo/App", "two", "");
+    expect(second).toMatchObject({ repo: "octo/app", state: "held-cap" });
+    await h.intake.poll();
+    expect(h.intake.issues().filter((issue) => issue.number === second.number)).toHaveLength(1);
+  });
+
   it("refuses a repo that is not a factory project", async () => {
     const h = harness();
     await expect(h.intake.fileIssue("planner", "octo/other", "x", "")).rejects.toThrow(

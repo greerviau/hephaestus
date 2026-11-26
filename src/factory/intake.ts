@@ -1,5 +1,5 @@
 import type { Database } from "better-sqlite3";
-import { projectFor, type FactoryConfig } from "../config/document.js";
+import { projectFor, projectKey, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
@@ -146,6 +146,8 @@ export class Intake {
   /** Files an issue for a factory role and admits it when the project's cap allows. */
   fileIssue(role: string, repo: string, title: string, body: string): Promise<TrackedIssue> {
     return this.serial(async () => {
+      // The config's spelling, so the same repo under another casing shares its cap and record.
+      repo = projectKey(this.options.config()?.projects, repo) ?? repo;
       this.policy(repo);
       const number = await this.options.github.createIssue(repo, title, body);
       this.record({

@@ -78,11 +78,18 @@ export function projectFor(
   projects: Record<string, ProjectConfig> | undefined,
   repo: string,
 ): ProjectConfig | undefined {
+  const key = projectKey(projects, repo);
+  return key === undefined ? undefined : projects?.[key];
+}
+
+/** The config's own spelling of a project's repo, found without regard to case. */
+export function projectKey(
+  projects: Record<string, ProjectConfig> | undefined,
+  repo: string,
+): string | undefined {
   if (projects === undefined) return undefined;
-  const exact = projects[repo];
-  if (exact !== undefined) return exact;
-  const key = Object.keys(projects).find((name) => name.toLowerCase() === repo.toLowerCase());
-  return key === undefined ? undefined : projects[key];
+  if (projects[repo] !== undefined) return repo;
+  return Object.keys(projects).find((name) => name.toLowerCase() === repo.toLowerCase());
 }
 
 export class ConfigValidationError extends Error {

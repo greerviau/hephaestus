@@ -217,6 +217,8 @@ const MIGRATIONS = [
    ALTER TABLE issues ADD COLUMN read_order INTEGER NOT NULL DEFAULT 0;`,
   // When Hephaestus settled a finished thread in T3, so each is settled once.
   `ALTER TABLE factory_threads ADD COLUMN settled_at TEXT;`,
+  // The policy a card last ran under, so a merge in flight can finish if its project is removed.
+  `ALTER TABLE cards ADD COLUMN policy TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

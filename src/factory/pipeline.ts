@@ -452,14 +452,13 @@ export class Pipeline {
         else await this.afterReview(card);
         return;
       case "Merging":
+        await this.gate(card);
+        return;
       case "Validating":
+        await this.validate(card);
+        return;
       case "Reverting":
-        // A project removed while its merge was in flight hands the card to the owner, since its
-        // policy no longer says how to merge, validate, or revert.
-        if (!this.isFactoryProject(card.repo)) return this.removedMidMerge(card);
-        if (card.stage === "Merging") await this.gate(card);
-        else if (card.stage === "Validating") await this.validate(card);
-        else await this.revert(card);
+        await this.revert(card);
         return;
       default:
         return;
@@ -468,8 +467,17 @@ export class Pipeline {
 
   private policy(card: Card): PolicySettings {
     const project = projectFor(this.options.config()?.document.projects, card.repo);
-    if (project === undefined) throw new Error(`${card.repo} is no longer a factory project.`);
-    return resolvePolicy(project.policy);
+    if (project === undefined) {
+      // A merge in flight finishes under the policy it started under.
+      if (card.policy !== null && mergeInFlight(card)) return card.policy;
+      throw new Error(`${card.repo} is no longer a factory project.`);
+    }
+    const settings = resolvePolicy(project.policy);
+    const current = this.cards.get(card.id).policy;
+    if (JSON.stringify(current) !== JSON.stringify(settings)) {
+      this.cards.update(card.id, { policy: settings });
+    }
+    return settings;
   }
 
   private wait(card: Card, reason: string): void {
@@ -540,7 +548,7 @@ export class Pipeline {
         this.wait(card, "No config version is deployed.");
         return undefined;
       }
-      if (!this.isFactoryProject(card.repo)) {
+      if (!this.works(card)) {
         this.wait(card, `${card.repo} is no longer a factory project.`);
         return undefined;
       }
@@ -559,7 +567,7 @@ export class Pipeline {
       if (!still(current)) return undefined;
       // Everything is checked again after the preparation's awaits, on the same worker.
       const again = pending === undefined ? this.pickWorker(current) : worker;
-      const blocked = !this.isFactoryProject(card.repo)
+      const blocked = !this.works(current)
         ? `${card.repo} is no longer a factory project.`
         : typeof again === "string" || again.environmentId !== worker.environmentId
           ? "The card's worker changed or is not ready."
@@ -577,15 +585,13 @@ export class Pipeline {
     });
   }
 
-  private removedMidMerge(card: Card): Promise<void> {
-    const pr = `PR #${String(card.prNumber ?? 0)}`;
-    const reason =
-      card.stage === "Merging"
-        ? `${card.repo} was removed from the factory before ${pr} merged, so Hephaestus will not merge it. Merge or close it yourself, then abandon the card.`
-        : card.stage === "Validating"
-          ? `${card.repo} was removed from the factory while ${pr}'s merge was being validated, so its checks are no longer watched and it will not be reverted. Check the default branch, then abandon the card.`
-          : `${card.repo} was removed from the factory while revert PR #${String(card.revertPr ?? 0)} was open, so Hephaestus will not merge it. Merge or close it yourself, then abandon the card.`;
-    return this.escalate(card, "owner", reason);
+  /**
+   * Whether the pipeline may work on the card: its project is a factory
+   * project, or the card's merge is in flight and finishes under the policy
+   * it last ran under, though the project was removed meanwhile.
+   */
+  private works(card: Card): boolean {
+    return this.isFactoryProject(card.repo) || (card.policy !== null && mergeInFlight(card));
   }
 
   private isFactoryProject(repo: string): boolean {
@@ -1624,4 +1630,14 @@ End your final message with this block, filled in:
 ${RESULT_FENCE}hephaestus-result
 {"verdict": "approve" or "changes", "headSha": "${headSha}", "findings": "<numbered findings, each with file:line and the fix; empty when you approve>"}
 ${RESULT_FENCE}`;
+}
+
+/** A card whose merge is in flight: merging, validating, or reverting it. */
+function mergeInFlight(card: Card): boolean {
+  return (
+    card.stage === "Merging" ||
+    card.stage === "Validating" ||
+    card.stage === "Reverting" ||
+    card.reverting
+  );
 }

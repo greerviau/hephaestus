@@ -217,7 +217,10 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     const active = read("cards", () =>
       factory.cards
         .list()
-        .filter((card) => card.repo === repo && ACTIVE_STAGES.includes(card.stage)),
+        .filter(
+          (card) =>
+            card.repo.toLowerCase() === repo.toLowerCase() && ACTIVE_STAGES.includes(card.stage),
+        ),
     );
     const working = active.ok ? active.value.length : 0;
     const inFlight = active.ok ? active.value.filter(mergeInFlight).length : 0;
@@ -238,7 +241,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       }),
     })}${card({
       title: "Remove the project",
-      body: `<p class="lede">The factory stops reading the repo's issues and starts no new work on it.${working === 0 ? "" : ` ${String(working)} active ${working === 1 ? "card waits" : "cards wait"} until you add the repo again or abandon them.`}${inFlight === 0 ? "" : ` ${String(inFlight)} ${inFlight === 1 ? "card is" : "cards are"} merging, validating, or reverting a merge; ${inFlight === 1 ? "it comes" : "they come"} to you under Needs you, since Hephaestus will not finish a merge for a removed project.`} The repo itself is not changed.</p>${postButton(
+      body: `<p class="lede">The factory stops reading the repo's issues and starts no new work on it.${working === 0 ? "" : ` ${String(working)} active ${working === 1 ? "card waits" : "cards wait"} until you add the repo again or abandon them.`}${inFlight === 0 ? "" : ` ${String(inFlight)} ${inFlight === 1 ? "card is" : "cards are"} merging, validating, or reverting a merge; ${inFlight === 1 ? "it finishes" : "they finish"} under the policy ${inFlight === 1 ? "it" : "they"} started with.`} The repo itself is not changed.</p>${postButton(
         "/projects/remove",
         "Remove and deploy",
         {
@@ -553,8 +556,10 @@ export function parsePolicy(form: URLSearchParams): { policy: Policy; errors: st
       if (form.get(`${name}.mode`) !== "custom") {
         const shown = (form.get(`${name}.shown`) ?? "").replace(/\r\n/g, "\n").trim();
         if (text.replace(/\r\n/g, "\n").trim() !== shown) {
+          // Nothing is saved; the form comes back with the typed list, so a resubmit keeps it.
+          (overrides as Record<string, unknown>)[name] = items;
           errors.push(
-            `${label}: you changed the list but left it on the preset. Choose "The list below" to use the list, or clear your change.`,
+            `${label}: you changed the list but left it on the preset. The form now uses your list; save again to keep it, or choose the preset.`,
           );
         }
         continue;
