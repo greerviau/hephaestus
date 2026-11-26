@@ -110,6 +110,20 @@ describe("FactoryProfiles.sync", () => {
     );
   });
 
+  it("keeps tool names out of every role's chat replies", async () => {
+    await profiles.sync(sampleConfig(), 1, mcp);
+
+    for (const role of ["planner", "lead", "improver"]) {
+      expect(hermes.lines()).toEqual(
+        expect.arrayContaining([
+          `-p ${role} config set --force display.tool_progress off`,
+          `-p ${role} config set --force display.busy_ack_detail false`,
+          `-p ${role} config set --force display.long_running_notifications generic`,
+        ]),
+      );
+    }
+  });
+
   it("writes the MCP token to the profile's .env without passing it as an argument", async () => {
     mkdirSync(join(root, "profiles", "lead"), { recursive: true });
     writeFileSync(join(root, "profiles", "lead", ".env"), "OTHER=1\nHEPHAESTUS_MCP_TOKEN=old\n");

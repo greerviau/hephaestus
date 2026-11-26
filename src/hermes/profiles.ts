@@ -26,6 +26,18 @@ export interface McpEntry {
 /** Toolsets a factory profile never gets. `cronjob` can schedule scripts, which would bring the shell back. */
 export const DISABLED_TOOLSETS = ["terminal", "code_execution", "cronjob"];
 export const MCP_SERVER_NAME = "hephaestus";
+
+/**
+ * Display settings that keep the factory's MCP tool names out of the chat:
+ * no line per tool call, no running tool in the reply to a message sent
+ * mid-turn, and a long turn's heartbeat that says only that it is working.
+ * A per-platform override in a profile's config.yaml would still win.
+ */
+const CHAT_DISPLAY = [
+  ["tool_progress", "off"],
+  ["busy_ack_detail", "false"],
+  ["long_running_notifications", "generic"],
+] as const;
 const CRON_PREFIX = "hephaestus-";
 
 function yamlString(value: string): string {
@@ -129,6 +141,10 @@ export class FactoryProfiles {
       "agent.disabled_toolsets",
       `[${DISABLED_TOOLSETS.join(", ")}]`,
     ]);
+    for (const [key, value] of CHAT_DISPLAY) {
+      // The gateway reads these keys, but `config set` does not list them, so --force skips that notice.
+      await run(["-p", role, "config", "set", "--force", `display.${key}`, value]);
+    }
     await run(["-p", role, "config", "set", `mcp_servers.${MCP_SERVER_NAME}.url`, mcp.url]);
     await run([
       "-p",
