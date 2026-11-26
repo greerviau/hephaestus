@@ -208,6 +208,7 @@ describe("takeBaseline", () => {
       write(`${skills}/.curator_state`, "{}\n");
       write(`${skills}/.curator_ledger.jsonl`, "{}\n");
       write(`${skills}/.locks/abc.lock`, "");
+      write(`${skills}/.curator_backups/2026-11-26/skills.tar.gz`, "x");
     }
 
     const keys = Object.keys(takeBaseline(home).entries);
@@ -215,6 +216,34 @@ describe("takeBaseline", () => {
     expect(keys.filter((key) => key.includes("/skills/"))).toEqual([
       ".hermes/skills/review/SKILL.md",
     ]);
+  });
+
+  it("still records bookkeeping names that are not directly under a skills folder", () => {
+    write(".hermes/skills/review/.usage.json", "{}\n");
+    write(".hermes/hooks/.locks/pre.sh", "#!/bin/sh\n");
+
+    const baseline = takeBaseline(home);
+
+    expect(baseline.entries[".hermes/skills/review/.usage.json"]).toMatch(/^sha256:/);
+    expect(baseline.entries[".hermes/hooks/.locks/pre.sh"]).toMatch(/^sha256:/);
+  });
+
+  it("leaves out Hermes skill bookkeeping when HERMES_HOME is outside the home folder", () => {
+    const outside = mkdtempSync(join(tmpdir(), "hephaestus-hermes-"));
+    try {
+      writeFileSync(join(outside, "config.yaml"), "model: x\n");
+      mkdirSync(join(outside, "skills/.locks"), { recursive: true });
+      writeFileSync(join(outside, "skills/.usage.json"), "{}\n");
+      writeFileSync(join(outside, "skills/.locks/abc.lock"), "");
+      const roots = resolveRoots({ HERMES_HOME: outside }, home);
+
+      const keys = Object.keys(takeBaseline(home, roots).entries);
+
+      expect(keys).toContain(join(outside, "config.yaml"));
+      expect(keys.filter((key) => key.startsWith(join(outside, "skills")))).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });
 

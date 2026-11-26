@@ -35,14 +35,18 @@ export function resolveRoots(env: NodeJS.ProcessEnv, home: string): ConfigRoots 
 const HERMES_PROFILE_PATHS = ["config.yaml", ".env", "SOUL.md", "skills", "hooks"];
 
 /**
- * Usage counts, curator state, and locks that Hermes rewrites in a skills
- * folder whenever it uses or curates a skill, so they would show as drift on every run.
+ * Usage counts, curator state and backups, and locks that Hermes rewrites in a
+ * skills folder whenever it uses or curates a skill, so they would show as
+ * drift on every run. They are skipped directly under any covered folder named
+ * `skills`, so a Claude or Codex skills folder linked to the Hermes one
+ * compares cleanly too.
  */
 const HERMES_SKILL_BOOKKEEPING = new Set([
   ".usage.json",
   ".usage.json.lock",
   ".curator_state",
   ".curator_ledger.jsonl",
+  ".curator_backups",
   ".locks",
 ]);
 
