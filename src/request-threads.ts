@@ -16,6 +16,8 @@ export function trackingLine(repo: string, number: number): string {
 /** A tracking line on its own line, perhaps in backticks; quoted text inside a sentence does not count. */
 const TRACKING = /^[ \t>*_-]*`?Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)`?[ \t.*_]*$/gm;
 const CURSOR_KEY = "request_threads_event";
+/** Stages whose PR is open or merged, where a late thread is shown the evidence. */
+const EVIDENCE_STAGES = new Set<Card["stage"]>(["Reviewing", "Merging", "Validating", "Done"]);
 
 /** Where the engineer pushes evidence for a card: a ref outside every branch. */
 export function evidenceRef(cardId: number): string {
@@ -111,16 +113,16 @@ export class RequestThreads {
       .get(repo, number) as { repo: string } | undefined;
     if (tracked === undefined) return;
     repo = tracked.repo;
-    // The catch-up tells where the card stands now, so events up to now are not posted again.
+    // Events up to now are covered by the catch-up, once it is sent; until then every one is posted.
     const newest =
       (this.db.prepare("SELECT MAX(id) AS id FROM card_events").get() as { id: number | null })
         .id ?? 0;
     const result = this.db
       .prepare(
-        `INSERT INTO chat_threads (repo, number, platform, chat, linked_at, after_event)
-         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (repo, number) DO NOTHING`,
+        `INSERT INTO chat_threads (repo, number, platform, chat, linked_at) VALUES (?, ?, ?, ?, ?)
+         ON CONFLICT (repo, number) DO NOTHING`,
       )
-      .run(repo, number, thread.platform, thread.chat, this.now().toISOString(), newest);
+      .run(repo, number, thread.platform, thread.chat, this.now().toISOString());
     if (result.changes === 0) return;
     const card = this.options.cards
       .list()
@@ -129,10 +131,14 @@ export class RequestThreads {
       );
     const sent = await this.post(
       thread,
-      `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card)}`} Progress shows up here.`,
+      `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card, this.options.dashboardUrl())}`} Progress shows up here.`,
     );
-    // A card already past opening its PR may have evidence the thread has not seen.
-    if (sent && card !== undefined && card.prNumber !== null && card.stage !== "Implementing") {
+    if (!sent) return;
+    this.db
+      .prepare("UPDATE chat_threads SET after_event = ? WHERE repo = ? AND number = ?")
+      .run(newest, repo, number);
+    // A card past opening its PR, and not sent back or stopped, may have evidence the thread has not seen.
+    if (card !== undefined && card.prNumber !== null && EVIDENCE_STAGES.has(card.stage)) {
       await this.postEvidence(thread, card);
     }
   }
@@ -232,7 +238,8 @@ export class RequestThreads {
 }
 
 /** What the card is doing now, in a few words, for a thread that starts following it late. */
-function stageText(card: Card): string {
+function stageText(card: Card, dashboard: string): string {
+  const why = card.reason === null ? "" : `: ${card.reason.replace(/\.$/, "")}`;
   switch (card.stage) {
     case "Admitted":
       return "it is admitted and waiting to start.";
@@ -245,13 +252,15 @@ function stageText(card: Card): string {
     case "Validating":
       return "it merged, and checks are running on the default branch.";
     case "Reverting":
-      return "its merge is being reverted.";
+      return `its merge failed checks on the default branch, so it is being reverted${card.revertPr === null ? "" : ` with PR #${String(card.revertPr)}`}.`;
     case "Escalated":
-      return "it is waiting for a decision.";
+      return card.escalatedTo === "owner"
+        ? `it needs you${why}. ${dashboard}work/${String(card.id)}`
+        : `it is waiting for a decision${why}.`;
     case "Done":
       return "it is done.";
     case "Abandoned":
-      return "it was abandoned.";
+      return `it was stopped${why}.`;
   }
 }
 

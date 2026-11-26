@@ -15,6 +15,7 @@ let db: Database;
 let cards: CardStore;
 let posts: { chat: string; text: string; attachments: boolean }[];
 let unreadable: Set<string>;
+let failPosts: number;
 let messages: Record<string, { id: string; content: string; author: { id: string } }[]>;
 let evidence: { tree: string; files: { name: string; data: Buffer }[] } | undefined;
 let threads: RequestThreads;
@@ -52,6 +53,7 @@ beforeEach(() => {
   cards = new CardStore(db);
   posts = [];
   unreadable = new Set();
+  failPosts = 0;
   messages = {};
   evidence = undefined;
   threads = new RequestThreads({
@@ -60,6 +62,10 @@ beforeEach(() => {
     messaging: {
       credentials: () => ({ token: "token", home: CHANNEL }),
       sendTo: (_platform, chat, text, attachments) => {
+        if (failPosts > 0) {
+          failPosts -= 1;
+          return Promise.reject(new Error("Discord is down"));
+        }
         posts.push({ chat, text, attachments: attachments === true });
         return Promise.resolve();
       },
@@ -271,5 +277,38 @@ describe("RequestThreads, linked late", () => {
     cards.transition(id, "Merging", "approved at abc");
     await threads.progress();
     expect(posts.at(-1)?.text).toBe("The review approved it.");
+  });
+
+  it("posts every step of the window when the catch-up itself was not sent", async () => {
+    const id = card();
+    await threads.progress();
+    cards.transition(id, "Implementing", "work started");
+    failPosts = 1;
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    await threads.progress();
+    expect(posts.map((post) => post.text)).toEqual(["Work started."]);
+  });
+
+  it("gives the reason and link of a card that needs the owner, and no evidence for one sent back", async () => {
+    const id = card();
+    await threads.progress();
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Implementing", "work started");
+    evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    expect(posts.map((post) => post.text)).toEqual([
+      "Following octo/app#7: the engineer is working on it. Progress shows up here.",
+    ]);
+
+    card(8);
+    const other = cards.list().find((item) => item.issueNumber === 8)?.id ?? 0;
+    cards.transition(other, "Escalated", "to the owner: pick", {
+      escalatedTo: "owner",
+      reason: "pick a database.",
+    });
+    await threads.follow("octo/app", 8, { platform: "discord", chat: OTHER });
+    expect(posts.at(-1)?.text).toBe(
+      `Following octo/app#8: it needs you: pick a database. http://host:7700/work/${String(other)} Progress shows up here.`,
+    );
   });
 });
