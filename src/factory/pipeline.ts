@@ -9,11 +9,18 @@ import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import type { FactoryThreads } from "../t3/threads.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/manager.js";
 import { finalMessage } from "../workers/scripts.js";
-import type { Card, CardStore, EscalationTarget, Provider } from "./cards.js";
+import {
+  MERGE_CONFLICT_DETAIL,
+  type Card,
+  type CardStore,
+  type EscalationTarget,
+  type Provider,
+} from "./cards.js";
 import { decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
 import { createHash } from "node:crypto";
 import {
   AlreadyMergedError,
+  MergeConflictError,
   MergeOutcomeUnknownError,
   type GitHub,
   type MergeState,
@@ -1002,6 +1009,9 @@ export class Pipeline {
         `the PR head moved to ${pr.headSha} after ${card.headSha} was reviewed`,
       );
     }
+    // A conflicting head may never get its pull_request checks, so the conflict is named before
+    // the gate waits on them.
+    if (pr.mergeable === "CONFLICTING") return this.conflicted(card, pr);
     const decision = decideMerge({
       policy: this.policy(card),
       checks: pr.checks,
@@ -1049,6 +1059,7 @@ export class Pipeline {
       );
     } catch (error) {
       if (error instanceof AlreadyMergedError) return this.foreignMerge(card, error.mergeSha);
+      if (error instanceof MergeConflictError) return this.conflicted(card, pr);
       if (error instanceof MergeOutcomeUnknownError) {
         return this.escalate(
           card,
@@ -1061,6 +1072,35 @@ export class Pipeline {
       throw error;
     }
     await this.recordOwnMerge(card, pr, mergeSha);
+  }
+
+  /** A revert PR that conflicts with its base needs a person: a later change touched the same lines. */
+  private revertConflicted(card: Card, number: number): Promise<void> {
+    return this.escalate(
+      card,
+      "owner",
+      `revert PR #${String(number)} conflicts with the default branch, so it cannot merge; resolve it on GitHub, then approve the revert merge to resume it; the resolved head goes through the gate again`,
+      { ownerAction: "revert-merge" },
+    );
+  }
+
+  /** Sends a PR that no longer merges cleanly back to its engineer, as one more round. */
+  private async conflicted(card: Card, pr: PullRequest): Promise<void> {
+    const policy = this.policy(card);
+    if (card.rounds >= policy.maxReviewRounds) {
+      return this.escalate(
+        card,
+        "lead",
+        `PR #${String(pr.number)} conflicts with ${pr.baseBranch} after ${String(card.rounds)} rounds`,
+      );
+    }
+    const next = this.cards.transition(card.id, "Implementing", MERGE_CONFLICT_DETAIL, {
+      rounds: card.rounds + 1,
+      reviewThread: null,
+      pendingMessage: `GitHub cannot merge PR #${String(pr.number)}: it conflicts with \`${pr.baseBranch}\`, which changed since you started. Fetch origin, then merge \`origin/${pr.baseBranch}\` into the branch or rebase the branch onto it, resolve the conflicts keeping both changes' intent, run the tests, push the same branch, and end with a new result block with the new head SHA.`,
+    });
+    await this.mirror(next, "Implementing", next.implementThread ?? undefined);
+    await this.resume(next);
   }
 
   private async recordOwnMerge(card: Card, pr: PullRequest, mergeSha: string): Promise<void> {
@@ -1205,6 +1245,8 @@ export class Pipeline {
         reviewThread: null,
       });
     }
+    // Before the review, so the owner hears of the conflict without waiting on a review of it.
+    if (pr.mergeable === "CONFLICTING") return this.revertConflicted(card, pr.number);
     const policy = this.policy(card);
     // The deadline comes before the review, so a stalled rollback always reaches the owner.
     if (this.olderThan(card.headAt, CHECKS_DEADLINE_MS) && card.waiting !== null) {
@@ -1296,6 +1338,7 @@ export class Pipeline {
           { ownerAction: "revert-merge" },
         );
       }
+      if (error instanceof MergeConflictError) return this.revertConflicted(card, pr.number);
       if (!(error instanceof AlreadyMergedError)) throw error;
       this.cards.recordForeignRevert(card.repo, pr.number, error.mergeSha ?? "", card.id);
     }

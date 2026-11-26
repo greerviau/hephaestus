@@ -2,6 +2,9 @@ import type { PolicySettings } from "../config/policy.js";
 import type { Database } from "better-sqlite3";
 import type { Stage } from "../hermes/board.js";
 
+/** The card event detail when a PR is sent back because it no longer merges cleanly. */
+export const MERGE_CONFLICT_DETAIL = "the PR conflicts with its base branch";
+
 export type Provider = "claude" | "codex";
 export type EscalationTarget = "lead" | "owner";
 
@@ -73,7 +76,8 @@ export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
   // Done straight from Implementing, Reviewing, or Merging is a PR merged outside Hephaestus.
   Implementing: ["Implementing", "Reviewing", "Merging", "Escalated", "Abandoned", "Done"],
   Reviewing: ["Reviewing", "Implementing", "Merging", "Escalated", "Abandoned", "Done"],
-  Merging: ["Validating", "Escalated", "Abandoned", "Done"],
+  // Back to Implementing only when the PR conflicts with its base, so nothing was merged.
+  Merging: ["Validating", "Implementing", "Escalated", "Abandoned", "Done"],
   Validating: ["Done", "Reverting", "Escalated"],
   Reverting: ["Implementing", "Escalated"],
   Escalated: ["Implementing", "Merging", "Reverting", "Abandoned", "Done"],

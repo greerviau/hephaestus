@@ -34,6 +34,16 @@ async function retry<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
   throw last;
 }
 
+/** GitHub refused the merge because the PR conflicts with its base branch. */
+export class MergeConflictError extends Error {
+  constructor(
+    readonly number: number,
+    options?: ErrorOptions,
+  ) {
+    super(`PR #${String(number)} has merge conflicts with its base branch.`, options);
+  }
+}
+
 /** The PR was merged, but not by this merge call. */
 export class AlreadyMergedError extends Error {
   constructor(
@@ -62,6 +72,8 @@ export interface PullRequest {
   /** Whether the PR comes from another repository. */
   fromFork: boolean;
   mergeSha: string | null;
+  /** GitHub's view of whether the PR merges cleanly; it reads UNKNOWN for a while after the base moves. */
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   /** Every changed file, with the old name of a renamed one. */
   files: string[];
   /** False when GitHub could not list every file, so the escalation paths cannot be checked. */
@@ -316,6 +328,7 @@ export class GitHub {
       baseRefName: string;
       isCrossRepository: boolean;
       mergeCommit: { oid: string } | null;
+      mergeable?: PullRequest["mergeable"];
     }>([
       "pr",
       "view",
@@ -323,7 +336,7 @@ export class GitHub {
       "-R",
       repo,
       "--json",
-      "number,url,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit",
+      "number,url,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit,mergeable",
     ]);
     const listed = await this.gh([
       "api",
@@ -343,6 +356,7 @@ export class GitHub {
       baseBranch: pr.baseRefName,
       fromFork: pr.isCrossRepository,
       mergeSha: pr.mergeCommit?.oid ?? null,
+      mergeable: pr.mergeable ?? "UNKNOWN",
       files,
       // GitHub lists at most 3000 files for a PR.
       filesComplete: files.length < 3000,
@@ -378,7 +392,18 @@ export class GitHub {
       // The reply may have been lost after GitHub merged; the marker in the commit says whose merge it was.
       const current = await retry(() => this.pullRequest(repo, number)).catch(() => undefined);
       if (current === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
-      if (current.state !== "MERGED" || current.mergeSha === null) throw error;
+      if (current.state !== "MERGED" || current.mergeSha === null) {
+        // The refusal's wording varies, and mergeable can lag; either one names a conflict.
+        if (
+          current.state === "OPEN" &&
+          // A head that moved is the gate's to handle, not a conflict to send back.
+          current.headSha === headSha &&
+          (current.mergeable === "CONFLICTING" || /merge conflict/i.test(String(error)))
+        ) {
+          throw new MergeConflictError(number, { cause: error });
+        }
+        throw error;
+      }
       const ours = await this.mergedWith(repo, current.mergeSha, marker);
       if (ours === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
       if (ours) return current.mergeSha;

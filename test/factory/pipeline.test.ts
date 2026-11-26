@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MergeOutcomeUnknownError } from "../../src/factory/github.js";
+import { MergeConflictError, MergeOutcomeUnknownError } from "../../src/factory/github.js";
 import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
@@ -301,6 +301,57 @@ describe("Pipeline", () => {
     await h.pipeline.approveMerge(id, SHA2);
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5, 9]);
+  });
+
+  it("sends a conflicting revert PR to the owner, whether GitHub refuses it or reports it first", async () => {
+    for (const refused of [true, false]) {
+      const h = harness((config) => {
+        config.projects["octo/app"] = { policy: { preset: "yolo", overrides: {} } };
+      });
+      const id = admitted(h);
+      await h.pipeline.startWork(id, "brief");
+      h.github.prs.set(5, pr(5, SHA));
+      h.finish("t1", implementResult(5, SHA));
+      await h.pipeline.tick();
+      h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+      await h.pipeline.tick();
+      if (refused) {
+        const merge = h.github.merge.bind(h.github);
+        h.github.merge = (repo: string, number: number, head: string) =>
+          number === 9 ? Promise.reject(new MergeConflictError(9)) : merge(repo, number, head);
+        h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5" }));
+      } else {
+        h.github.prs.set(
+          9,
+          pr(9, SHA2, { headBranch: "revert-5", mergeable: "CONFLICTING", checks: "none" }),
+        );
+      }
+      await h.pipeline.tick();
+      expect(h.github.merged).toEqual([5]);
+      expect(h.cards.get(id)).toMatchObject({
+        stage: "Escalated",
+        escalatedTo: "owner",
+        ownerAction: "revert-merge",
+      });
+      expect(h.cards.get(id).reason).toMatch(/revert PR #9 conflicts with the default branch/);
+    }
+  });
+
+  it("tells the owner of a conflicting revert PR before reviewing it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    const launches = h.t3.launches.length;
+    const revert = h.github.prs.get(9);
+    if (revert === undefined) throw new Error("no revert PR");
+    h.github.prs.set(9, { ...revert, mergeable: "CONFLICTING" });
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(launches);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "revert-merge" });
   });
 
   it("counts a revert PR the owner merged by hand", async () => {
@@ -606,6 +657,41 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA, { checkNames: ["check:ci", "check:e2e"] }));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5]);
+  });
+
+  it("sends a PR that conflicts with its base back to the engineer, then escalates after the rounds", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.github.merge = (_repo, number) => Promise.reject(new MergeConflictError(number));
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1, reviewThread: null });
+    expect(h.t3.sends.at(-1)).toMatchObject({ threadId: "t1" });
+    expect(h.t3.sends.at(-1)?.message).toContain("conflicts with `main`");
+    expect(h.cards.events(id)).toContainEqual(
+      expect.objectContaining({
+        kind: "stage:Implementing",
+        detail: "the PR conflicts with its base branch",
+      }),
+    );
+
+    h.db.prepare("UPDATE cards SET rounds = 99, stage = 'Merging' WHERE id = ?").run(id);
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.cards.get(id).reason).toMatch(/conflicts with main after 99 rounds/);
+  });
+
+  it("sends a PR GitHub reports conflicting back before waiting on checks that will never run", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.github.prs.set(5, pr(5, SHA, { mergeable: "CONFLICTING", checks: "none" }));
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
+    expect(h.t3.sends.at(-1)?.message).toContain("conflicts with `main`");
   });
 
   it("takes a merged PR with its marker for its own merge, and sends an unknown outcome to the owner", async () => {
