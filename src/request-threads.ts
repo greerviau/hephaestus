@@ -174,7 +174,9 @@ export class RequestThreads {
         card.issueNumber === null ? undefined : this.threadFor(card.repo, card.issueNumber);
       const thread = followed !== undefined && event.id > followed.after ? followed : undefined;
       const text =
-        thread === undefined ? undefined : milestone(event, card, this.options.dashboardUrl());
+        thread === undefined
+          ? undefined
+          : milestone(event, card, this.options.dashboardUrl(), this.reopened(event));
       if (thread !== undefined && text !== undefined) await this.post(thread, text);
       // Saved before the evidence, so a failure there cannot hold the feed on this event.
       setMeta(this.db, CURSOR_KEY, String(event.id));
@@ -185,6 +187,20 @@ export class RequestThreads {
         await this.postEvidence(thread, card);
       }
     }
+  }
+
+  /** Whether the event puts a PR up again that an earlier event already put up, such as after changes. */
+  private reopened(event: CardEvent): boolean {
+    const pr = /^PR #(\d+) at /.exec(event.detail)?.[1];
+    if (pr === undefined) return false;
+    return (
+      this.db
+        .prepare(
+          `SELECT 1 FROM card_events WHERE card_id = ? AND id < ? AND kind IN ('stage:Reviewing', 'stage:Merging')
+           AND detail LIKE ? LIMIT 1`,
+        )
+        .get(event.cardId, event.id, `PR #${pr} at %`) !== undefined
+    );
   }
 
   /** The thread following an issue, and the last event its catch-up covered. */
@@ -280,10 +296,19 @@ function stageText(card: Card, dashboard: string): string {
 }
 
 /** The thread message for a card event, or undefined when the event is not a milestone. */
-export function milestone(event: CardEvent, card: Card, dashboard: string): string | undefined {
+export function milestone(
+  event: CardEvent,
+  card: Card,
+  dashboard: string,
+  /** The PR was put up before, so this is an update of it. */
+  again = false,
+): string | undefined {
   const pr = (number: number | null): string =>
     number === null ? "the PR" : `https://github.com/${card.repo}/pull/${String(number)}`;
   const detail = event.detail;
+  // The PR the event names, which may be older than the card's current one in a backlog.
+  const named = /^PR #(\d+) at /.exec(detail)?.[1];
+  const opened = named === undefined ? card.prNumber : Number(named);
   switch (event.kind) {
     case "stage:Implementing":
       if (detail === "work started" || detail === "the lead restarted the work") {
@@ -300,10 +325,14 @@ export function milestone(event: CardEvent, card: Card, dashboard: string): stri
       }
       return undefined;
     case "stage:Reviewing":
-      return `PR opened, now in review: ${pr(card.prNumber)}`;
+      return again
+        ? `The PR is updated and back in review: ${pr(opened)}`
+        : `PR opened, now in review: ${pr(opened)}`;
     case "stage:Merging":
       if (detail.includes("needs no review")) {
-        return `PR opened; it merges once its checks pass: ${pr(card.prNumber)}`;
+        return again
+          ? `The PR is updated; it merges once its checks pass: ${pr(opened)}`
+          : `PR opened; it merges once its checks pass: ${pr(opened)}`;
       }
       return detail.startsWith("approved") ? "The review approved it." : undefined;
     case "stage:Validating":

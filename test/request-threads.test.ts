@@ -379,3 +379,25 @@ describe("RequestThreads, catch-up text", () => {
     expect(posts.at(-1)?.text).toContain("being reverted with PR #12.");
   });
 });
+
+describe("RequestThreads, an updated PR", () => {
+  it("says a PR back in review after changes is updated, and a new PR after a revert is opened", async () => {
+    const id = card();
+    await threads.progress();
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    cards.transition(id, "Implementing", "work started");
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Reviewing", "PR #5 at abc");
+    cards.transition(id, "Implementing", "the reviewer asked for changes");
+    cards.transition(id, "Reviewing", "PR #5 at abd");
+    cards.update(id, { prNumber: 6 });
+    cards.transition(id, "Implementing", "the lead restarted the work");
+    cards.transition(id, "Reviewing", "PR #6 at abe");
+    await threads.progress();
+    expect(posts.map((post) => post.text).filter((text) => text.includes("review:"))).toEqual([
+      "PR opened, now in review: https://github.com/octo/app/pull/5",
+      "The PR is updated and back in review: https://github.com/octo/app/pull/5",
+      "PR opened, now in review: https://github.com/octo/app/pull/6",
+    ]);
+  });
+});
