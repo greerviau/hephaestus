@@ -60,7 +60,7 @@ export class ModelWarning extends ModelError {}
 export class ModelPartial extends ModelError {}
 
 export interface FactoryModelOptions {
-  /** Whether the factory Hermes has the Hephaestus plugin yet; a deploy installs it. */
+  /** Whether a deploy has installed the Hephaestus plugin and created the three role profiles. */
   ready: () => boolean;
   /** Runs `hermes` against the factory root. */
   run: HermesRun;
@@ -212,7 +212,7 @@ export class FactoryModel {
 
   /**
    * Runs one plugin action and returns its JSON result. The plugin reports a
-   * refusal, a warning, or missing Hermes code as JSON on stdout, so the
+   * refusal, a partial save, a warning, or missing Hermes code as JSON on stdout, so the
    * reason survives however much Hermes prints on stderr.
    */
   private async call(args: string[], input?: string): Promise<Record<string, unknown>> {

@@ -67,7 +67,8 @@ def _catalog(args):
     from hermes_cli.web_routers.oauth import _build_oauth_catalog
     from hermes_cli.web_server_profiles import _profile_scope
 
-    # Blocking catalog reads: a background refresh would die with this short-lived process.
+    # Blocking reads, so a missing or very old cached model list is fetched now; Hermes still
+    # refreshes a merely stale list in a background thread that may not finish before exit.
     payload = build_models_payload(load_picker_context(), include_unconfigured=True, picker_hints=True)
     oauth = [
         {"id": entry["id"], "name": entry["name"], "flow": entry["flow"], "cli_command": entry.get("cli_command") or ""}
@@ -127,8 +128,11 @@ def _check_scopes(args):
         try:
             with _profile_scope(scope):
                 pass
+        except (ImportError, AttributeError):
+            raise
         except Exception as error:
-            raise Refused(f"The factory's {scope} profile is missing: {_detail(error)} Deploy a config version.") from None
+            where = "factory root" if scope is None else f"factory's {scope} profile"
+            raise Refused(f"Hermes could not open the {where}: {_detail(error)} Deploy a config version.") from None
 
 
 def _add_key(args):
@@ -214,7 +218,9 @@ def _set_model(args):
                 raise
             except Exception as error:
                 # Hermes can still refuse while writing, for example over a shared key variable.
-                names = ", ".join("the root" if name is None else name for name in written) or "nothing"
+                if not written:
+                    raise Refused(f"Hermes refused the model: {_detail(error)}") from None
+                names = ", ".join("the root" if name is None else name for name in written)
                 raise Partial(
                     f"Hermes refused the model while saving it (saved for {names} so far): {_detail(error)}"
                 ) from None

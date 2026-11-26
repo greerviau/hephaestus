@@ -327,7 +327,7 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
 
     const output = run(["add-key", "--provider", "deepseek", ...PROFILES], "k");
 
-    expect(output[0]?.refused).toMatch(/^The factory's lead profile is missing/);
+    expect(output[0]?.refused).toMatch(/^Hermes could not open the factory's lead profile/);
     expect(state().scopes.root?.env).toEqual({});
     expect(state().scopes.planner?.env).toEqual({});
   });
@@ -338,5 +338,25 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     expect(run(["catalog", ...PROFILES])).toEqual([
       { refused: "Profile 'planner' does not exist." },
     ]);
+  });
+
+  it("reports a refusal while writing the root as a plain refusal", () => {
+    seed({ refuse_apply_in: ["root"] });
+
+    expect(run(["set-model", "--provider", "custom", "--model", "llama", ...PROFILES])).toEqual([
+      { refused: "Hermes refused the model: LAB_API_KEY is read by another endpoint's block" },
+    ]);
+  });
+
+  it("says Hermes is out of date, not that a profile is missing, when scope code moved", () => {
+    seed();
+    writeFileSync(
+      join(dir, "stubs", "hermes_cli", "web_server_profiles.py"),
+      "from contextlib import contextmanager\n@contextmanager\ndef _profile_scope(profile):\n    from agent.secret_scope import x\n    yield None\n",
+    );
+
+    const [result] = run(["add-key", "--provider", "deepseek", ...PROFILES], "k");
+
+    expect(result?.outdated).toMatch(/^ModuleNotFoundError|^ImportError/);
   });
 });
