@@ -95,8 +95,11 @@ export interface MessagingOptions {
    * profiles' work running.
    */
   restartGateway?: () => Promise<void>;
-  /** Starts the factory gateway when it is not running, so the chat profile is served at all. */
-  startGateway?: () => void;
+  /**
+   * The factory gateway's service. A failed restart starts it when it is not
+   * running, since a profile cannot restart without the gateway that serves it.
+   */
+  gateway?: { active(): boolean; start(): void };
   db: Database;
   cards: Pick<CardStore, "notifications">;
   /** The dashboard's address, for the link in each alert. */
@@ -124,22 +127,23 @@ export class Messaging {
       else await this.options.run(["-p", CHAT_ROLE, "gateway", "restart", "--yes"]);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // With the factory gateway stopped, a profile cannot restart alone; starting the gateway
-      // serves the profile with its saved settings.
-      if (/does not get a gateway of its own|not running|exit(ed)? (with )?78/i.test(message)) {
-        if (this.options.startGateway !== undefined) {
-          try {
-            this.options.startGateway();
-            return;
-          } catch (start) {
-            throw new RestartError(
-              `The settings were saved, but the factory gateway is not running and did not start: ${this.scrub(start instanceof Error ? start.message : String(start))}`,
-            );
-          }
+      // Hermes's wording for a stopped gateway is not stable, so systemd is asked instead.
+      const gateway = this.options.gateway;
+      let stopped = false;
+      try {
+        stopped = gateway !== undefined && !gateway.active();
+      } catch (check) {
+        console.error("Checking the factory gateway failed", check);
+      }
+      if (gateway !== undefined && stopped) {
+        try {
+          gateway.start();
+          return;
+        } catch (start) {
+          throw new RestartError(
+            `The settings were saved, but the factory gateway is not running and did not start: ${this.scrub(start instanceof Error ? start.message : String(start))}`,
+          );
         }
-        throw new RestartError(
-          "The settings were saved, but the factory gateway is not running. Start it, then restart.",
-        );
       }
       throw new RestartError(
         `The settings were saved, but the messaging gateway did not restart: ${this.scrub(message)}`,

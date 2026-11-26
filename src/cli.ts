@@ -483,11 +483,7 @@ async function main(argv: string[]): Promise<number> {
           : new Messaging({
               root: paths.hermes,
               run: hermesRunner(config.hermesPath, paths.hermes),
-              startGateway: () => {
-                new SystemdUserService(
-                  join(dirname(config.unitPath), GATEWAY_SERVICE_NAME),
-                ).start();
-              },
+              gateway: new SystemdUserService(join(dirname(config.unitPath), GATEWAY_SERVICE_NAME)),
               db,
               cards: engine.cards,
               dashboardUrl: () => dashboardUrl(config.host, config.port),

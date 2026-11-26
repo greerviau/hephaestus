@@ -227,3 +227,15 @@ describe("SystemdUserService with another unit", () => {
     ]);
   });
 });
+
+describe("SystemdUserService.active", () => {
+  it("is true only when systemd reports the service active", () => {
+    responses["systemctl --user is-active hephaestus.service"] = { status: 0, stdout: "active\n" };
+    expect(service().active()).toBe(true);
+    responses["systemctl --user is-active hephaestus.service"] = {
+      status: 3,
+      stdout: "activating\n",
+    };
+    expect(service().active()).toBe(false);
+  });
+});

@@ -115,6 +115,11 @@ export class SystemdUserService implements ServiceManager {
     this.systemctl("enable", "--now", this.name);
   }
 
+  /** Whether systemd reports the service running. */
+  active(): boolean {
+    return this.run("systemctl", ["--user", "is-active", this.name]).stdout.trim() === "active";
+  }
+
   stop(): void {
     if (!this.unitExists()) {
       this.assertStopped();

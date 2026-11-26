@@ -247,12 +247,22 @@ describe("Messaging", () => {
       6,
     );
 
-    // A marker moved ahead meanwhile is not set back.
-    db.prepare(
-      "INSERT OR REPLACE INTO meta (key, value) VALUES ('messaging_alerts_sent', '999')",
-    ).run();
+    // A marker another pass moved ahead while this alert was sending is not set back.
+    const racing = new Messaging({
+      root,
+      run: () => {
+        db.prepare(
+          "INSERT OR REPLACE INTO meta (key, value) VALUES ('messaging_alerts_sent', '999')",
+        ).run();
+        return Promise.resolve("");
+      },
+      restartGateway: () => Promise.resolve(),
+      db,
+      cards,
+      dashboardUrl: () => "",
+    });
     cards.notify("third");
-    await failing.sendAlerts();
+    await racing.sendAlerts();
     expect(
       (
         db.prepare("SELECT value FROM meta WHERE key = 'messaging_alerts_sent'").get() as {
@@ -262,14 +272,22 @@ describe("Messaging", () => {
     ).toBe("999");
   });
 
-  it("starts a stopped factory gateway instead of failing the restart", async () => {
+  it("starts a stopped factory gateway instead of failing the restart, and only a stopped one", async () => {
+    // What the Hermes runner rejects with: the output's last lines, and the exit code as the cause.
+    const failure = new Error(
+      "hermes -p planner gateway failed:   gateway.standalone: true in config.yaml,   then wait for the host gateway to rescan",
+      { cause: Object.assign(new Error("Command failed"), { code: 78 }) },
+    );
     let started = 0;
+    let running = false;
     const own = new Messaging({
       root,
-      run: () =>
-        Promise.reject(new Error("Profile 'planner' does not get a gateway of its own. exit 78")),
-      startGateway: () => {
-        started += 1;
+      run: () => Promise.reject(failure),
+      gateway: {
+        active: () => running,
+        start: () => {
+          started += 1;
+        },
       },
       db,
       cards,
@@ -278,13 +296,25 @@ describe("Messaging", () => {
     await own.restart();
     expect(started).toBe(1);
 
+    running = true;
+    await expect(own.restart()).rejects.toThrow(/did not restart/);
+    expect(started).toBe(1);
+
     const unstartable = new Messaging({
       root,
-      run: () => Promise.reject(new Error("Profile 'planner' does not get a gateway of its own.")),
+      run: () => Promise.reject(failure),
+      gateway: {
+        active: () => false,
+        start: () => {
+          throw new Error("unit not found");
+        },
+      },
       db,
       cards,
       dashboardUrl: () => "",
     });
-    await expect(unstartable.restart()).rejects.toThrow(/factory gateway is not running/);
+    await expect(unstartable.restart()).rejects.toThrow(
+      /not running and did not start: unit not found/,
+    );
   });
 });
