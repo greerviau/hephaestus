@@ -140,6 +140,11 @@ export class FakeT3 {
       projectId: "proj",
     });
   }
+  settled: string[] = [];
+  settle(_environmentId: string, threadId: string): Promise<void> {
+    this.settled.push(threadId);
+    return Promise.resolve();
+  }
   send(_environmentId: string, threadId: string, message: string): Promise<void> {
     this.sends.push({ threadId, message });
     return Promise.resolve();

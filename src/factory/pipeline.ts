@@ -114,6 +114,12 @@ export class Pipeline {
   private readonly now: () => Date;
   private running: Promise<void> | undefined;
   private foreignCheckedAt = 0;
+  private settling: Promise<void> | undefined;
+  /** Threads whose settling failed, with how often and when they may be tried again. */
+  private readonly settleBackoff = new Map<
+    string,
+    { failures: number; until: number; last: number }
+  >();
   private readonly cardLocks = new Map<number, Promise<unknown>>();
   private launches: Promise<unknown> = Promise.resolve();
 
@@ -414,6 +420,8 @@ export class Pipeline {
           });
         }
         await this.flagForeignMerges();
+        // Settling runs beside the pass, so a T3 call that never returns cannot hold up the cards.
+        void this.settleThreads();
       } finally {
         this.running = undefined;
       }
@@ -1315,6 +1323,72 @@ export class Pipeline {
     }
   }
 
+  /**
+   * Settles ended threads that no active card still uses, so finished work
+   * leaves the T3 sidebar: setup threads once they end, and a card's threads
+   * once it is done or abandoned, or once a newer thread replaces them. An
+   * escalated card keeps its threads, which the owner or the lead may need.
+   */
+  settleThreads(): Promise<void> {
+    this.settling ??= this.settleFinishedThreads()
+      .catch((error: unknown) => {
+        console.error("Settling finished threads failed", error);
+      })
+      .finally(() => {
+        this.settling = undefined;
+      });
+    return this.settling;
+  }
+
+  private async settleFinishedThreads(): Promise<void> {
+    const tried = new Set<string>();
+    while (tried.size < SETTLES_PER_TICK) {
+      const thread = this.nextToSettle(tried);
+      if (thread === undefined) return;
+      tried.add(thread.threadId);
+      const backoff = this.settleBackoff.get(thread.threadId);
+      try {
+        await this.options.threads.settle(thread.environmentId, thread.threadId);
+        this.settleBackoff.delete(thread.threadId);
+      } catch (error) {
+        // A thread that keeps failing waits longer each time, counted from when its call failed,
+        // so slow failures cannot hold up the others.
+        const failures = (backoff?.failures ?? 0) + 1;
+        const wait = Math.min(SETTLE_BACKOFF_MAX_MS, 60_000 * 2 ** (failures - 1));
+        const failedAt = this.now().getTime();
+        this.settleBackoff.set(thread.threadId, {
+          failures,
+          until: failedAt + wait,
+          last: failedAt,
+        });
+        console.error(`Settling thread ${thread.threadId} failed`, error);
+      }
+    }
+  }
+
+  /**
+   * The thread to settle next, chosen afresh before each call, so one that ended while a slow
+   * call was out still gets its turn: a thread never tried first, then the one tried longest ago.
+   */
+  private nextToSettle(
+    tried: Set<string>,
+  ): { environmentId: string; threadId: string } | undefined {
+    const at = this.now().getTime();
+    // Read afresh before each call, since a pass can run while a card picks a thread up again.
+    const held = this.cards.activeThreadIds();
+    let best: { environmentId: string; threadId: string; last: number } | undefined;
+    for (const thread of this.options.events.unsettledEnded()) {
+      if (tried.has(thread.threadId) || held.has(thread.threadId)) continue;
+      const backoff = this.settleBackoff.get(thread.threadId);
+      if (backoff !== undefined && backoff.until > at) continue;
+      const last = backoff?.last ?? 0;
+      if (best === undefined || last < best.last) {
+        best = { environmentId: thread.environmentId, threadId: thread.threadId, last };
+      }
+    }
+    return best;
+  }
+
   /** Flags factory PRs merged by anything but Hephaestus, at most every few minutes. */
   private async flagForeignMerges(): Promise<void> {
     const at = this.now().getTime();
@@ -1457,6 +1531,11 @@ function mergeMarker(card: Card): string {
 }
 
 const TRANSITIONS_TO_DONE = new Set<Stage>(["Implementing", "Reviewing", "Merging"]);
+
+/** Threads one pass tries to settle at most, so a backlog cannot hold up the pipeline. */
+const SETTLES_PER_TICK = 20;
+/** The longest a thread whose settling keeps failing waits before the next try. */
+const SETTLE_BACKOFF_MAX_MS = 60 * 60_000;
 
 /** The stages whose PR the scan for merges made elsewhere reads. */
 const SCANNED: readonly Stage[] = ["Implementing", "Reviewing", "Merging", "Escalated"];

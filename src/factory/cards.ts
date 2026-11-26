@@ -237,6 +237,22 @@ export class CardStore {
     return row === undefined ? undefined : toCard(row);
   }
 
+  /** The implement and review threads of every card that is not done or abandoned. */
+  activeThreadIds(): Set<string> {
+    const rows = this.db
+      .prepare(
+        `SELECT implement_thread AS i, review_thread AS r FROM cards
+         WHERE stage NOT IN ('Done', 'Abandoned') AND (implement_thread IS NOT NULL OR review_thread IS NOT NULL)`,
+      )
+      .all() as { i: string | null; r: string | null }[];
+    const ids = new Set<string>();
+    for (const row of rows) {
+      if (row.i !== null) ids.add(row.i);
+      if (row.r !== null) ids.add(row.r);
+    }
+    return ids;
+  }
+
   /** Cards, newest first, optionally only those in the given stages. */
   list(stages?: readonly Stage[]): Card[] {
     const rows =

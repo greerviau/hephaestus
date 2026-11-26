@@ -21,6 +21,7 @@ describe("store migrations", () => {
     db.exec(`ALTER TABLE merges DROP COLUMN foreign_merge;
       ALTER TABLE issues DROP COLUMN closed;
       ALTER TABLE issues DROP COLUMN read_order;
+      ALTER TABLE factory_threads DROP COLUMN settled_at;
       ALTER TABLE cards DROP COLUMN version;
       ALTER TABLE cards DROP COLUMN reverting;
       INSERT INTO notifications (at, card_id, text, kind)
@@ -31,7 +32,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 3)}`);
+    db.pragma(`user_version = ${String(latest - 4)}`);
     db.close();
 
     db = openStore(path);

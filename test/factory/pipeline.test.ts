@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { MergeOutcomeUnknownError } from "../../src/factory/github.js";
+import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
   MERGE,
@@ -30,6 +31,21 @@ async function toReview(h: Harness, id: number): Promise<void> {
   h.github.prs.set(5, pr(5, SHA));
   h.finish("t1", implementResult(5, SHA));
   await h.pipeline.tick();
+}
+
+/** A finished setup thread, such as a deploy, recorded on worker w1. */
+function setupThread(h: Harness, threadId: string): void {
+  h.events.recordThread({
+    environmentId: "w1",
+    threadId,
+    title: "Hephaestus: deploy config",
+    providerInstanceId: "hephaestus-claude",
+    model: "m",
+    configVersion: 1,
+    cardId: null,
+    kind: "setup",
+  });
+  h.events.setStatus("w1", threadId, "completed");
 }
 
 /** A card the lead restarted while the factory was paused, so its new brief waits to be sent. */
@@ -821,6 +837,158 @@ describe("Pipeline", () => {
       /outside Hephaestus, so the card is done/,
     );
     expect(other.cards.get(theirs)).toMatchObject({ stage: "Done", foreignMerge: true });
+  });
+
+  it("settles a card's threads once it is done, and keeps those of an active or escalated card", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    // The implement thread has ended, but the card is still in review.
+    await h.pipeline.tick();
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual([]);
+
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("success", ["ci"]));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Done");
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled.sort()).toEqual(["t1", "t2"]);
+    // Each thread is settled once.
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toHaveLength(2);
+
+    const other = harness();
+    const card = admitted(other);
+    await other.pipeline.startWork(card, "brief");
+    other.finish("t1", "no result block");
+    await other.pipeline.tick();
+    expect(other.cards.get(card).stage).toBe("Escalated");
+    await other.pipeline.settleThreads();
+    expect(other.t3.settled).toEqual([]);
+  });
+
+  it("settles a replaced thread and a finished setup thread", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("changes", SHA));
+    // A newer review thread replaces the finished one.
+    h.cards.update(id, { reviewThread: "t9" });
+    setupThread(h, "setup-1");
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled.sort()).toEqual(["setup-1", "t2"]);
+  });
+
+  it("keeps ticking while a settle call hangs", async () => {
+    const h = harness();
+    setupThread(h, "setup-1");
+    h.t3.settle = () => new Promise<void>(() => undefined);
+    const id = admitted(h);
+    await h.pipeline.tick();
+    await h.pipeline.startWork(id, "brief");
+    // A second pass runs although the first settle never returned.
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(1);
+  });
+
+  it("retries a thread after a worker outage, and lets the others through while one keeps failing", async () => {
+    const h = harness();
+    setupThread(h, "setup-1");
+    setupThread(h, "setup-2");
+    const settle = h.t3.settle.bind(h.t3);
+    let down = true;
+    h.t3.settle = (environmentId, threadId) =>
+      threadId === "setup-1" && down
+        ? Promise.reject(
+            new T3ToolError("t3_thread_organize", "orchestration_error", "the worker is offline"),
+          )
+        : settle(environmentId, threadId);
+
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["setup-2"]);
+    expect(h.events.unsettledEnded().map((thread) => thread.threadId)).toEqual(["setup-1"]);
+
+    // It waits out its backoff, then the worker is back.
+    down = false;
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["setup-2"]);
+    h.setClock(Date.parse("2026-11-25T12:05:00Z"));
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["setup-2", "setup-1"]);
+  });
+
+  it("does not settle a thread a card picked up again during the pass", async () => {
+    const h = harness();
+    setupThread(h, "old-1");
+    setupThread(h, "old-2");
+    const id = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Work" }).id;
+    h.cards.transition(id, "Implementing", "work started");
+    const settle = h.t3.settle.bind(h.t3);
+    h.t3.settle = (environmentId, threadId) => {
+      // While the first call is out, the card takes up the second thread.
+      if (threadId === "old-1") h.cards.update(id, { implementThread: "old-2" });
+      return settle(environmentId, threadId);
+    };
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toEqual(["old-1"]);
+  });
+
+  it("counts a failed settle's backoff from when the call failed", async () => {
+    const h = harness();
+    setupThread(h, "slow");
+    let clock = Date.parse("2026-11-25T12:00:00Z");
+    h.t3.settle = () => {
+      // The call times out ten minutes later.
+      clock += 10 * 60_000;
+      h.setClock(clock);
+      return Promise.reject(new Error("timed out"));
+    };
+    await h.pipeline.settleThreads();
+    let calls = 0;
+    h.t3.settle = () => {
+      calls += 1;
+      return Promise.resolve();
+    };
+    h.setClock(clock + 30_000);
+    await h.pipeline.settleThreads();
+    expect(calls).toBe(0);
+  });
+
+  it("tries a healthy thread before older ones whose settles time out", async () => {
+    const h = harness();
+    for (let index = 0; index < 20; index += 1) setupThread(h, `slow-${String(index)}`);
+    let clock = Date.parse("2026-11-25T12:00:00Z");
+    const settle = h.t3.settle.bind(h.t3);
+    h.t3.settle = (environmentId, threadId) => {
+      if (!threadId.startsWith("slow-")) return settle(environmentId, threadId);
+      clock += 10 * 60_000;
+      h.setClock(clock);
+      return Promise.reject(new Error("timed out"));
+    };
+    await h.pipeline.settleThreads();
+    // A newer thread on a healthy worker ends after the slow ones were all tried once.
+    setupThread(h, "healthy");
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toContain("healthy");
+  });
+
+  it("settles a thread that ends while a pass's slow calls are out, before the rest of the pass", async () => {
+    const h = harness();
+    for (let index = 0; index < 5; index += 1) setupThread(h, `slow-${String(index)}`);
+    const order: string[] = [];
+    const settle = h.t3.settle.bind(h.t3);
+    h.t3.settle = (environmentId, threadId) => {
+      order.push(threadId);
+      // The healthy thread ends while the first slow call is out.
+      if (threadId === "slow-0") setupThread(h, "healthy");
+      return threadId.startsWith("slow-")
+        ? Promise.reject(new Error("timed out"))
+        : settle(environmentId, threadId);
+    };
+    await h.pipeline.settleThreads();
+    expect(order[1]).toBe("healthy");
   });
 
   it("does not abandon a card that started work", async () => {
