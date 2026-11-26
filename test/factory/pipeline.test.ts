@@ -823,6 +823,65 @@ describe("Pipeline", () => {
     expect(other.cards.get(theirs)).toMatchObject({ stage: "Done", foreignMerge: true });
   });
 
+  it("settles a card's threads once it is done, and keeps those of an active or escalated card", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    // The implement thread has ended, but the card is still in review.
+    await h.pipeline.tick();
+    expect(h.t3.settled).toEqual([]);
+
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("success", ["ci"]));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Done");
+    await h.pipeline.tick();
+    expect(h.t3.settled.sort()).toEqual(["t1", "t2"]);
+    // Each thread is settled once.
+    await h.pipeline.tick();
+    expect(h.t3.settled).toHaveLength(2);
+
+    const other = harness();
+    const card = admitted(other);
+    await other.pipeline.startWork(card, "brief");
+    other.finish("t1", "no result block");
+    await other.pipeline.tick();
+    expect(other.cards.get(card).stage).toBe("Escalated");
+    await other.pipeline.tick();
+    expect(other.t3.settled).toEqual([]);
+  });
+
+  it("settles a replaced thread and a finished setup thread, and retries when T3 is unreachable", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("changes", SHA));
+    // A newer review thread replaces the finished one.
+    h.cards.update(id, { reviewThread: "t9" });
+    h.events.recordThread({
+      environmentId: "w1",
+      threadId: "setup-1",
+      title: "Hephaestus: deploy config",
+      providerInstanceId: "hephaestus-claude",
+      model: "m",
+      configVersion: 1,
+      cardId: null,
+      kind: "setup",
+    });
+    h.events.setStatus("w1", "setup-1", "completed");
+    const settle = h.t3.settle.bind(h.t3);
+    let down = true;
+    h.t3.settle = (environmentId, threadId) =>
+      down ? Promise.reject(new Error("T3 is unreachable")) : settle(environmentId, threadId);
+
+    await h.pipeline.tick();
+    expect(h.t3.settled).toEqual([]);
+    down = false;
+    await h.pipeline.tick();
+    expect(h.t3.settled.sort()).toEqual(["setup-1", "t2"]);
+  });
+
   it("does not abandon a card that started work", async () => {
     const h = harness();
     const id = admitted(h);

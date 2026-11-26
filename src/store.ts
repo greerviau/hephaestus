@@ -215,6 +215,8 @@ const MIGRATIONS = [
   // Issue reads are ordered by a counter, which a clock change cannot reorder.
   `ALTER TABLE issues DROP COLUMN checked_at;
    ALTER TABLE issues ADD COLUMN read_order INTEGER NOT NULL DEFAULT 0;`,
+  // When Hephaestus settled a finished thread in T3, so each is settled once.
+  `ALTER TABLE factory_threads ADD COLUMN settled_at TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

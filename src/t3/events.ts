@@ -132,6 +132,27 @@ export class ThreadEvents {
     ).map(toThread);
   }
 
+  /** Ended threads Hephaestus has not settled in T3 yet, oldest first. */
+  unsettledEnded(): StoredThread[] {
+    const ended = [...ENDED_STATUSES];
+    return (
+      this.db
+        .prepare(
+          `SELECT * FROM factory_threads WHERE settled_at IS NULL
+           AND status IN (${ended.map(() => "?").join(", ")}) ORDER BY updated_at, thread_id`,
+        )
+        .all(...ended) as ThreadRow[]
+    ).map(toThread);
+  }
+
+  markSettled(environmentId: string, threadId: string): void {
+    this.db
+      .prepare(
+        "UPDATE factory_threads SET settled_at = ? WHERE environment_id = ? AND thread_id = ?",
+      )
+      .run(this.now().toISOString(), environmentId, threadId);
+  }
+
   setStatus(environmentId: string, threadId: string, status: string): void {
     this.db
       .prepare(

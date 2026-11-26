@@ -414,6 +414,7 @@ export class Pipeline {
           });
         }
         await this.flagForeignMerges();
+        await this.settleFinishedThreads();
       } finally {
         this.running = undefined;
       }
@@ -1315,6 +1316,34 @@ export class Pipeline {
     }
   }
 
+  /**
+   * Settles ended threads that no active card still uses, so finished work
+   * leaves the T3 sidebar: setup threads once they end, and a card's threads
+   * once it is done or abandoned, or once a newer thread replaces them. An
+   * escalated card keeps its threads, which the owner or the lead may need.
+   */
+  private async settleFinishedThreads(): Promise<void> {
+    const held = new Set<string>();
+    for (const card of this.cards.list()) {
+      if (card.stage === "Done" || card.stage === "Abandoned") continue;
+      if (card.implementThread !== null) held.add(card.implementThread);
+      if (card.reviewThread !== null) held.add(card.reviewThread);
+    }
+    let settled = 0;
+    for (const thread of this.options.events.unsettledEnded()) {
+      if (held.has(thread.threadId)) continue;
+      if (settled >= SETTLES_PER_TICK) return;
+      settled += 1;
+      try {
+        await this.options.threads.settle(thread.environmentId, thread.threadId);
+      } catch (error) {
+        // T3 is unreachable; the next pass tries again.
+        console.error(`Settling thread ${thread.threadId} failed`, error);
+        return;
+      }
+    }
+  }
+
   /** Flags factory PRs merged by anything but Hephaestus, at most every few minutes. */
   private async flagForeignMerges(): Promise<void> {
     const at = this.now().getTime();
@@ -1457,6 +1486,9 @@ function mergeMarker(card: Card): string {
 }
 
 const TRANSITIONS_TO_DONE = new Set<Stage>(["Implementing", "Reviewing", "Merging"]);
+
+/** Threads one pass settles at most, so a backlog cannot hold up the pipeline. */
+const SETTLES_PER_TICK = 20;
 
 /** The stages whose PR the scan for merges made elsewhere reads. */
 const SCANNED: readonly Stage[] = ["Implementing", "Reviewing", "Merging", "Escalated"];

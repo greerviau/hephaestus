@@ -276,6 +276,15 @@ export class T3Adapter {
     });
   }
 
+  /** Settles a thread, which moves it out of the active list in T3; its history stays readable. */
+  async settle(environmentId: string, threadId: string): Promise<void> {
+    await this.connection.call("t3_thread_organize", {
+      environmentId,
+      threadId,
+      action: "settle",
+    });
+  }
+
   async archive(environmentId: string, threadId: string): Promise<void> {
     await this.connection.call("t3_thread_organize", {
       environmentId,
