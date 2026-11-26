@@ -283,11 +283,24 @@ export class Pipeline {
   }
 
   /** The owner hands an escalated card back to the lead. */
-  sendToLead(cardId: number, note: string): Promise<Card> {
+  sendToLead(cardId: number, note: string, version?: string): Promise<Card> {
     return this.withCard(cardId, async () => {
       const card = this.cards.get(cardId);
       if (card.stage !== "Escalated" || card.escalatedTo !== "owner") {
         throw new Error(`Card ${String(cardId)} is not waiting for the owner.`);
+      }
+      // A form from an earlier escalation of the same card must not act on this one.
+      if (version !== undefined && version !== card.updatedAt) {
+        throw new Error(`Card ${String(cardId)} changed since the page was loaded.`);
+      }
+      // A rollback stays with the owner: the lead's restart would rebuild the reverted work.
+      if (
+        card.ownerAction === "revert-merge" ||
+        (card.revertPr !== null && card.prNumber !== null && card.mergeSha !== null)
+      ) {
+        throw new Error(
+          `Card ${String(cardId)} is reverting a merge; approve the revert or abandon the card.`,
+        );
       }
       this.cards.update(cardId, { escalatedTo: "lead", reason: note, ownerAction: null });
       this.cards.event(cardId, "escalated:lead", note);
@@ -333,10 +346,13 @@ export class Pipeline {
     });
   }
 
-  abandon(cardId: number, reason: string): Promise<Card> {
-    return this.withCard(cardId, () =>
-      Promise.resolve(this.cards.transition(cardId, "Abandoned", reason, { reason })),
-    );
+  abandon(cardId: number, reason: string, version?: string): Promise<Card> {
+    return this.withCard(cardId, () => {
+      if (version !== undefined && version !== this.cards.get(cardId).updatedAt) {
+        throw new Error(`Card ${String(cardId)} changed since the page was loaded.`);
+      }
+      return Promise.resolve(this.cards.transition(cardId, "Abandoned", reason, { reason }));
+    });
   }
 
   /** One pass over every active card. Passes never overlap. */
@@ -1002,7 +1018,16 @@ export class Pipeline {
       card.id,
       "Reverting",
       `checks failed on ${card.mergeSha} (${checks.failed.join(", ")}); opened revert PR #${String(revertPr)}`,
-      { revertPr, reviewThread: null, ownerApprovedSha: null, ownerAction: null, waiting: null },
+      {
+        revertPr,
+        reviewThread: null,
+        ownerApprovedSha: null,
+        ownerAction: null,
+        waiting: null,
+        // The head becomes the revert PR's once it is read; the merged one must not show beside it.
+        headSha: null,
+        headAt: null,
+      },
     );
     await this.mirror(next, "Reverting");
   }
@@ -1124,6 +1149,7 @@ export class Pipeline {
           );
         }
         if (!(error instanceof AlreadyMergedError)) throw error;
+        this.cards.recordMerge(card.repo, pr.number, error.mergeSha ?? "", card.id, true, true);
         this.cards.event(
           card.id,
           "foreign-merge",
@@ -1133,6 +1159,7 @@ export class Pipeline {
     } else if (pr.state !== "MERGED") {
       return this.escalate(card, "owner", `the revert PR #${String(pr.number)} was closed`);
     } else if (!this.cards.mergedByHephaestus(card.repo, pr.number)) {
+      this.cards.recordMerge(card.repo, pr.number, pr.mergeSha ?? "", card.id, true, true);
       this.cards.event(
         card.id,
         "foreign-merge",

@@ -87,6 +87,21 @@ describe("Intake", () => {
     await expect(h.intake.approve("octo/app", 8)).rejects.toThrow(/closed/);
   });
 
+  it("drops a closed issue from the owner's queue and restores it when reopened", async () => {
+    const h = harness();
+    h.github.issues.set(7, { number: 7, title: "Maybe", body: "", author: "x", state: "OPEN" });
+    await h.intake.poll();
+    h.github.issues.set(7, { number: 7, title: "Maybe", body: "", author: "x", state: "CLOSED" });
+    await h.intake.poll();
+    expect(h.intake.issues(["awaiting-owner"])).toEqual([]);
+    expect(h.intake.issue("octo/app", 7)?.state).toBe("awaiting-owner");
+
+    h.github.issues.set(7, { number: 7, title: "Maybe", body: "", author: "x", state: "OPEN" });
+    await h.intake.poll();
+    expect(h.intake.issues(["awaiting-owner"]).map((issue) => issue.number)).toEqual([7]);
+    expect((await h.intake.approve("octo/app", 7)).issueNumber).toBe(7);
+  });
+
   it("frees the cap when an unstarted issue is closed", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {

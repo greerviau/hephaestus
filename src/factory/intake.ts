@@ -105,7 +105,8 @@ export class Intake {
         ? (this.db.prepare("SELECT * FROM issues ORDER BY created_at DESC").all() as Row[])
         : (this.db
             .prepare(
-              `SELECT * FROM issues WHERE state IN (${states.map(() => "?").join(", ")}) ORDER BY created_at DESC`,
+              `SELECT * FROM issues WHERE state IN (${states.map(() => "?").join(", ")}) AND closed = 0
+               ORDER BY created_at DESC`,
             )
             .all(...states) as Row[]);
     return rows.map(toIssue);
@@ -196,11 +197,19 @@ export class Intake {
         );
       }
     }
-    const held = this.issues(["held-cap", "awaiting-owner"]).filter(
-      (issue) => issue.repo === repo && !open.has(issue.number),
-    );
-    for (const issue of held) {
-      if (await this.isClosed(repo, issue.number)) this.setState(repo, issue.number, "rejected");
+    // An issue waiting for the owner leaves the queue while it is closed, and comes back if reopened.
+    const waiting = this.db
+      .prepare(
+        "SELECT number, closed FROM issues WHERE repo = ? AND state IN ('awaiting-owner', 'held-cap')",
+      )
+      .all(repo) as { number: number; closed: number }[];
+    const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
+    for (const issue of waiting) {
+      if (open.has(issue.number)) {
+        if (issue.closed === 1) mark.run(0, repo, issue.number);
+      } else if (issue.closed === 0 && (await this.isClosed(repo, issue.number))) {
+        mark.run(1, repo, issue.number);
+      }
     }
   }
 

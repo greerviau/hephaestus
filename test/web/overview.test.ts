@@ -150,14 +150,26 @@ describe("Overview", () => {
     dashboard = await startDashboard();
     const card = escalatedCard(dashboard.h);
 
-    await dashboard.post(`/work/${String(card)}/send-to-lead`, { note: "Split the CI change out" });
+    await dashboard.h.pipeline.escalateToOwner(card, "Decide on the CI change");
+    const { html } = await dashboard.get("/");
+    expect(html).toContain("Decide on the CI change");
+    const version = dashboard.h.cards.get(card).updatedAt;
+    expect(html).toContain(`name="version" value="${version}"`);
+    await dashboard.post(`/work/${String(card)}/send-to-lead`, {
+      note: "Split the CI change out",
+      version,
+    });
     expect(dashboard.h.cards.get(card)).toMatchObject({
       escalatedTo: "lead",
       reason: "Split the CI change out",
     });
+    // The escalation's notification does not bring the card back to Needs you.
+    expect(dashboard.h.cards.notifications().map((item) => item.kind)).toContain("escalation");
+    expect((await dashboard.get("/")).html).not.toContain("needs you: ");
 
     const abandoned = await dashboard.post(`/work/${String(card)}/abandon`, {
       reason: "Not needed",
+      version: dashboard.h.cards.get(card).updatedAt,
     });
     expect(abandoned.headers.get("location")).toBe(`/work/${String(card)}?notice=abandoned`);
     expect(dashboard.h.cards.get(card).stage).toBe("Abandoned");

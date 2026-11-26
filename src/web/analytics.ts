@@ -131,6 +131,9 @@ export function analyticsRoutes(factory: FactoryPages): Route[] {
         const data = read("analytics", () =>
           factory.analytics(project === "" ? { days } : { repo: project, days }),
         );
+        // With the numbers unreadable, a different filter cannot help; reloading the same view can.
+        const broken = !(data.ok && names.ok);
+        const again = `/analytics?${new URLSearchParams({ project, days: span }).toString()}`;
         const filters = `<form class="filterbar" method="get" action="/analytics">${selectField(
           "project",
           "Project",
@@ -139,11 +142,11 @@ export function analyticsRoutes(factory: FactoryPages): Route[] {
             ...(names.ok ? names.value : []).map((name): [string, string] => [name, name]),
           ],
           project,
-        )}${selectField("days", "Period", SPANS, span)}${
-          // With the numbers unreadable, a different filter cannot help; reloading can.
-          data.ok && names.ok
-            ? '<button type="submit" class="btn-secondary">Show</button>'
-            : '<button type="submit" class="btn-secondary" disabled>Show</button><a class="btn btn-secondary" href="/analytics">Try again</a>'
+          broken,
+        )}${selectField("days", "Period", SPANS, span, broken)}${
+          broken
+            ? `<button type="submit" class="btn-secondary" disabled>Show</button><a class="btn btn-secondary" href="${escapeHtml(again)}">Try again</a>`
+            : '<button type="submit" class="btn-secondary">Show</button>'
         }</form>`;
 
         let body: string;

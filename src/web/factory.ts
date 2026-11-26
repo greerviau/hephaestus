@@ -156,7 +156,11 @@ export function cardActions(card: Card): CardActions {
   const withOwner = card.stage === "Escalated" && card.escalatedTo === "owner";
   return {
     approveMerge: withOwner && card.ownerAction !== null && card.headSha !== null,
-    sendToLead: withOwner,
+    // A rollback stays with the owner; the lead's restart would rebuild the reverted work.
+    sendToLead:
+      withOwner &&
+      card.ownerAction !== "revert-merge" &&
+      !(card.revertPr !== null && card.prNumber !== null && card.mergeSha !== null),
     abandon: ABANDONABLE.includes(card.stage),
   };
 }
@@ -341,7 +345,7 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
         return act(
           context,
           `/work/${String(id)}`,
-          (fields) => pipeline.sendToLead(id, text(fields, "note")),
+          (fields) => pipeline.sendToLead(id, text(fields, "note"), text(fields, "version")),
           "sent-to-lead",
           "send-failed",
         );
@@ -355,7 +359,12 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
         return act(
           context,
           `/work/${String(id)}`,
-          (fields) => pipeline.abandon(id, `The owner abandoned it: ${text(fields, "reason")}`),
+          (fields) =>
+            pipeline.abandon(
+              id,
+              `The owner abandoned it: ${text(fields, "reason")}`,
+              text(fields, "version"),
+            ),
           "abandoned",
           "abandon-failed",
         );

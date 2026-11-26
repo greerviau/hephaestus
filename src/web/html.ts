@@ -291,8 +291,9 @@ export function selectField(
   label: string,
   options: readonly (readonly [string, string])[],
   value: string,
+  disabled = false,
 ): string {
-  return `<div class="field"><label for="${escapeHtml(name)}">${escapeHtml(label)}</label><select id="${escapeHtml(name)}" name="${escapeHtml(name)}">${options
+  return `<div class="field"><label for="${escapeHtml(name)}">${escapeHtml(label)}</label><select id="${escapeHtml(name)}" name="${escapeHtml(name)}"${disabled ? " disabled" : ""}>${options
     .map(
       ([option, text]) =>
         `<option value="${escapeHtml(option)}"${option === value ? " selected" : ""}>${escapeHtml(text)}</option>`,

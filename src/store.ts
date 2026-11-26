@@ -200,7 +200,10 @@ const MIGRATIONS = [
      thread_id TEXT NOT NULL,
      note TEXT NOT NULL DEFAULT ''
    );`,
-  `ALTER TABLE notifications ADD COLUMN kind TEXT NOT NULL DEFAULT 'info';`,
+  `ALTER TABLE notifications ADD COLUMN kind TEXT NOT NULL DEFAULT 'info';
+   UPDATE notifications SET kind = 'escalation' WHERE text LIKE 'Card % needs you: %';`,
+  `ALTER TABLE merges ADD COLUMN foreign_merge INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE issues ADD COLUMN closed INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

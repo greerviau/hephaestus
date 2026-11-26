@@ -220,7 +220,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
+    expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9, headSha: null });
     expect(h.github.reverted).toEqual([5]);
 
     // Under standard, the revert PR gets its own review from the other provider.
@@ -258,10 +258,46 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
 
     expect(h.github.merged).toEqual([5]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "revert-merge" });
+    expect(h.cards.get(id)).toMatchObject({
+      stage: "Escalated",
+      ownerAction: "revert-merge",
+      headSha: SHA2,
+    });
+    // The lead would restart the reverted work, so the revert stays with the owner.
+    await expect(h.pipeline.sendToLead(id, "lead, take it")).rejects.toThrow(/revert/);
     await h.pipeline.approveMerge(id, SHA2);
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5, 9]);
+  });
+
+  it("counts a revert PR the owner merged by hand", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "yolo", overrides: { escalationPaths: ["ci/**"] } },
+      };
+    });
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5", files: ["ci/build.yml"] }));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Escalated");
+
+    h.github.prs.set(
+      9,
+      pr(9, SHA2, { headBranch: "revert-5", state: "MERGED", mergeSha: "f".repeat(40) }),
+    );
+    await h.pipeline.approveMerge(id, SHA2, "revert-merge");
+    await h.pipeline.tick();
+
+    expect(h.github.merged).toEqual([5]);
+    expect(h.cards.revertCount()).toBe(1);
+    expect(h.cards.mergedByHephaestus("octo/app", 9)).toBe(false);
+    expect(h.github.reopened).toEqual([5]);
   });
 
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
@@ -397,6 +433,20 @@ describe("Pipeline", () => {
     expect((await h.pipeline.abandonUnstarted(id, "the issue was closed")).stage).toBe(
       "Implementing",
     );
+  });
+
+  it("refuses a send-to-lead or abandon from a form opened before the card changed", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.escalateToOwner(id, "first question");
+    const seen = h.cards.get(id).updatedAt;
+    h.setClock(Date.parse(seen) + 1000);
+    await h.pipeline.sendToLead(id, "answer", seen);
+    await h.pipeline.escalateToOwner(id, "second question");
+
+    await expect(h.pipeline.sendToLead(id, "late answer", seen)).rejects.toThrow(/changed/);
+    await expect(h.pipeline.abandon(id, "late abandon", seen)).rejects.toThrow(/changed/);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", reason: "second question" });
   });
 
   it("refuses a stale send-to-lead and an approval for another action", async () => {

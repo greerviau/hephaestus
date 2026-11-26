@@ -75,7 +75,7 @@ export function escalationActions(item: Card, back: string): string {
         `/work/${id}/send-to-lead`,
         "Send to lead",
         { name: "note", label: "Note for the lead", placeholder: "What to change" },
-        { fields: { back } },
+        { fields: { back, version: item.updatedAt } },
       ),
     );
   }
@@ -85,7 +85,7 @@ export function escalationActions(item: Card, back: string): string {
         `/work/${id}/abandon`,
         "Abandon",
         { name: "reason", label: "Why abandon it" },
-        { fields: { back }, crit: true },
+        { fields: { back, version: item.updatedAt }, crit: true },
       ),
     );
   }
@@ -235,16 +235,9 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           }
         }
         if (notifications.ok) {
-          // A card escalated to the owner is listed above with its actions; its notification stays in Activity.
-          const listed = new Set(
-            (cards.ok ? cards.value : [])
-              .filter((item) => item.stage === "Escalated" && item.escalatedTo === "owner")
-              .map((item) => item.id),
-          );
           for (const item of notifications.value) {
-            if (item.kind === "escalation" && item.cardId !== null && listed.has(item.cardId)) {
-              continue;
-            }
+            // Escalations are listed from the card's state above; their notifications stay in Activity.
+            if (item.kind === "escalation") continue;
             const linked =
               item.cardId === null ? "" : `<a href="/work/${String(item.cardId)}">Open card</a>`;
             needs.push({

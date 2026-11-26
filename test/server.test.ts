@@ -148,6 +148,16 @@ describe("a store that cannot be read", () => {
     expect(html).not.toContain("<form");
     db = openStore(":memory:");
   });
+
+  it("answers a sign-in with the store page, without counting it as a wrong password", async () => {
+    db.close();
+    for (let attempt = 0; attempt <= LOGIN_FAILURE_LIMIT; attempt += 1) {
+      const response = await login(PASSWORD);
+      expect(response.status).toBe(503);
+      expect(await response.text()).toContain("cannot read its store");
+    }
+    db = openStore(":memory:");
+  });
 });
 
 describe("login", () => {

@@ -73,4 +73,15 @@ describe("Analytics", () => {
     expect(html).toContain("Hephaestus could not read its store");
     expect(html).not.toContain('<svg class="plot"');
   });
+
+  it("disables the filters on a store error and keeps them in Try again", async () => {
+    dashboard = await startDashboard();
+    dashboard.h.db.close();
+
+    const { html } = await dashboard.get("/analytics?project=octo%2Fapp&days=7");
+
+    expect(html).toContain('<select id="project" name="project" disabled>');
+    expect(html).toContain('<select id="days" name="days" disabled>');
+    expect(html).toContain('href="/analytics?project=octo%2Fapp&amp;days=7">Try again</a>');
+  });
 });

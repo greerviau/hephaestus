@@ -348,16 +348,26 @@ export class CardStore {
     mergeSha: string,
     cardId: number,
     revert: boolean,
+    /** Merged by someone else; recorded so a revert still counts, never as Hephaestus's merge. */
+    foreign = false,
   ): void {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO merges (repo, pr_number, merge_sha, card_id, revert, at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO merges (repo, pr_number, merge_sha, card_id, revert, foreign_merge, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(repo, prNumber, mergeSha, cardId, revert ? 1 : 0, this.now().toISOString());
+      .run(
+        repo,
+        prNumber,
+        mergeSha,
+        cardId,
+        revert ? 1 : 0,
+        foreign ? 1 : 0,
+        this.now().toISOString(),
+      );
   }
 
-  /** Revert PRs Hephaestus merged, which is when a revert is complete. */
+  /** Revert PRs that merged, by Hephaestus or anyone else, which is when a revert is complete. */
   revertCount(): number {
     return (
       this.db.prepare("SELECT COUNT(*) AS n FROM merges WHERE revert = 1").get() as { n: number }
@@ -367,7 +377,7 @@ export class CardStore {
   mergedByHephaestus(repo: string, prNumber: number): boolean {
     return (
       this.db
-        .prepare("SELECT 1 FROM merges WHERE repo = ? AND pr_number = ?")
+        .prepare("SELECT 1 FROM merges WHERE repo = ? AND pr_number = ? AND foreign_merge = 0")
         .get(repo, prNumber) !== undefined
     );
   }

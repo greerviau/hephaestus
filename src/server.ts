@@ -149,7 +149,16 @@ export function createDashboardServer({
         return;
       }
       const password = new URLSearchParams(body).get("password") ?? "";
-      const stored = readPasswordHash(db);
+      let stored;
+      try {
+        stored = readPasswordHash(db);
+      } catch (error) {
+        // An outage is not a wrong password, so the reserved attempt is given back.
+        console.error("Reading the password from the store failed", error);
+        releaseAttempt(client);
+        send(response, 503, HTML, storeDownPage());
+        return;
+      }
       valid = stored !== undefined && (await verifyPassword(password, stored));
     } finally {
       loginsInFlight -= 1;
@@ -176,6 +185,13 @@ export function createDashboardServer({
       return false;
     }
     return entry.count >= LOGIN_FAILURE_LIMIT;
+  }
+
+  function releaseAttempt(client: string): void {
+    const entry = failures.get(client);
+    if (entry === undefined) return;
+    entry.count -= 1;
+    if (entry.count <= 0) failures.delete(client);
   }
 
   /** Counts an attempt against the client's limit before its password is checked. */
