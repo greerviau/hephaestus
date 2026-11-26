@@ -299,6 +299,16 @@ export class Pipeline {
           `Card ${String(cardId)} is reverting a merge; approve the revert or abandon the card.`,
         );
       }
+      // A merge Hephaestus has no record of may be its own, whose reply was lost; restarting
+      // work on it would leave that merge unvalidated.
+      if (card.prNumber !== null && !this.cards.hasMerge(card.repo, card.prNumber)) {
+        const pr = await this.options.github.pullRequest(card.repo, card.prNumber);
+        if (pr.state === "MERGED") {
+          throw new Error(
+            `PR #${String(pr.number)} has merged; approve the card to validate the merge, or abandon it.`,
+          );
+        }
+      }
       this.cards.update(cardId, { escalatedTo: "lead", reason: note, ownerAction: null });
       this.cards.event(cardId, "escalated:lead", note);
       await this.mirrorHandBack(this.cards.get(cardId), note);
@@ -660,17 +670,6 @@ export class Pipeline {
   }
 
   /** Marks a thread's result handled, as part of the change it caused. */
-  /** Marks every result the card's threads have left as handled. */
-  private settled(card: Card): { handled: Record<string, string> } {
-    const handled = { ...this.cards.get(card.id).handled };
-    for (const thread of [card.implementThread, card.reviewThread]) {
-      if (thread === null) continue;
-      const result = this.newResult(card, thread);
-      if (result !== undefined) handled[thread] = result.itemId;
-    }
-    return { handled };
-  }
-
   private handled(
     card: Card,
     threadId: string,
@@ -945,6 +944,8 @@ export class Pipeline {
           card,
           "owner",
           `GitHub may have merged PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
+          // Approving resumes the merge step, which validates the merge if it happened.
+          { ownerAction: "merge" },
         );
       }
       throw error;
@@ -1271,8 +1272,12 @@ export class Pipeline {
         } catch {
           return;
         }
-        // A result its threads left is settled by the merge, so a later run cannot replay it.
-        if (pr.state === "MERGED") await this.mergedPullRequest(card, pr, this.settled(card));
+        // Only an escalated card is handed on. A card that cannot be sent to the lead while its
+        // merge is unrecorded reaches another stage with that merge only from a stale read, and
+        // there the card's own step reads the merge and marks the result it acted on as handled.
+        if (pr.state === "MERGED") {
+          await this.mergedPullRequest(card, pr, {}, card.stage === "Escalated");
+        }
       }).catch((error: unknown) => {
         console.error(`Checking card ${String(id)} for a merge made elsewhere failed`, error);
       });
@@ -1288,6 +1293,7 @@ export class Pipeline {
     card: Card,
     pr: PullRequest,
     extra: Partial<Card> = {},
+    handOn = true,
   ): Promise<void> {
     const ours =
       pr.mergeSha === null
@@ -1304,7 +1310,7 @@ export class Pipeline {
         headSha: pr.headSha,
       });
     }
-    if (card.stage === "Merging") return;
+    if (card.stage === "Merging" || !handOn) return;
     const next = this.cards.transition(card.id, "Merging", "found merged by Hephaestus", {
       ...extra,
       prNumber: pr.number,

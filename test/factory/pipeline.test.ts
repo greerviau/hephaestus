@@ -338,6 +338,7 @@ describe("Pipeline", () => {
     const id = admitted(h);
     await h.pipeline.escalateToOwner(id, "checks failed on the retry's merge commit");
     h.cards.update(id, { revertPr: 9, prNumber: 12, mergeSha: MERGE, reverting: false });
+    h.cards.recordMerge("octo/app", 12, MERGE, id, false);
 
     await h.pipeline.sendToLead(id, "look again");
     expect(h.cards.get(id).escalatedTo).toBe("lead");
@@ -577,15 +578,22 @@ describe("Pipeline", () => {
     expect(h.cards.notifications()[0]?.text).toContain("PR #5 ");
   });
 
-  it("validates its own merge on a card whose thread never reports again", async () => {
+  it("keeps a card whose merge outcome is unknown from the lead, and validates the merge on approval", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
-    // Restarted after a lost merge reply; the implement thread is still running.
-    h.cards.update(id, { prNumber: 5, headSha: SHA });
-    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
-    h.github.ownMerges.add(MERGE);
+    await toReview(h, id);
+    h.github.merge = (_repo, number) => {
+      // GitHub merges, and the reply is lost.
+      h.github.prs.set(number, pr(number, SHA, { state: "MERGED", mergeSha: MERGE }));
+      h.github.ownMerges.add(MERGE);
+      return Promise.reject(new MergeOutcomeUnknownError(number));
+    };
+    h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+
+    await expect(h.pipeline.sendToLead(id, "start over")).rejects.toThrow(/has merged/);
+    await h.pipeline.approveMerge(id, SHA, "merge");
     await h.pipeline.tick();
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
   });
