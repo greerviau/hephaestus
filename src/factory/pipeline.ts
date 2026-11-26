@@ -677,9 +677,12 @@ export class Pipeline {
         return;
       }
       const after = this.cards.get(card.id);
+      const ready = this.pickWorker(after);
       const recheck = !this.isFactoryProject(card.repo)
         ? `${card.repo} is no longer a factory project.`
-        : this.blockedBecause(env, thread);
+        : typeof ready === "string"
+          ? ready
+          : this.blockedBecause(env, thread);
       if (after.pendingMessage !== message || recheck !== undefined) {
         if (recheck !== undefined) this.wait(after, recheck);
         return;
@@ -1308,7 +1311,7 @@ export class Pipeline {
           // A revert PR merged on GitHub while it waited for the owner completes the revert.
           let revert;
           try {
-            revert = await this.options.github.pullRequest(card.repo, card.revertPr);
+            revert = await this.options.github.mergeState(card.repo, card.revertPr);
           } catch {
             return;
           }
@@ -1326,7 +1329,8 @@ export class Pipeline {
         if (this.cards.mergedByHephaestus(card.repo, card.prNumber)) return;
         let pr;
         try {
-          pr = await this.options.github.pullRequest(card.repo, card.prNumber);
+          // Only the merge state, so an outage in the files or checks API cannot stall the scan.
+          pr = await this.options.github.mergeState(card.repo, card.prNumber);
         } catch {
           return;
         }

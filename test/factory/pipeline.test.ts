@@ -532,8 +532,8 @@ describe("Pipeline", () => {
     });
     const [oldest, middle] = ids as [number, number, number];
     const reads: number[] = [];
-    const read = h.github.pullRequest.bind(h.github);
-    h.github.pullRequest = async (repo, number) => {
+    const read = h.github.mergeState.bind(h.github);
+    h.github.mergeState = async (repo, number) => {
       reads.push(number);
       if (number === 7) await h.pipeline.abandon(middle, "not needed");
       return read(repo, number);
@@ -664,7 +664,8 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     await h.pipeline.tick();
     await h.pipeline.tick();
-    expect(reads).toBe(0);
+    // Only the scan for outside merges reads, once in its interval; the held send reads nothing.
+    expect(reads).toBe(1);
   });
 
   it("sends nothing on a read that went stale while another card held the launch queue", async () => {
@@ -722,6 +723,32 @@ describe("Pipeline", () => {
       return state(repo, number);
     };
     const sends = h.t3.sends.length;
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(sends);
+    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+  });
+
+  it("hands on a merged card from the scan while the files and checks API is down", async () => {
+    const h = harness();
+    const id = await queuedRestart(h);
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.pullRequest = () => Promise.reject(new Error("HTTP 503 from the checks API"));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Done", foreignMerge: true });
+  });
+
+  it("does not send a queued message to a worker that stopped being ready during the read", async () => {
+    const h = harness();
+    const id = await queuedRestart(h);
+    h.pipeline.setPaused(false);
+    const state = h.github.mergeState.bind(h.github);
+    h.github.mergeState = (repo, number) => {
+      // The owner turns the worker off while the PR is read.
+      h.ready.length = 0;
+      return state(repo, number);
+    };
+    const sends = h.t3.sends.length;
+    h.setClock(Date.parse("2026-11-25T12:00:30Z"));
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(sends);
     expect(h.cards.get(id).pendingMessage).not.toBeNull();
