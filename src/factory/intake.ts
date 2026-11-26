@@ -4,7 +4,7 @@ import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
-/** Issues missing from the open lists that one poll reads on their own, split among the projects. */
+/** Issues missing from the open lists that one poll reads on their own, split among the projects; each gets at least one. */
 const LOOKUPS_PER_POLL = 10;
 
 interface Candidate {
