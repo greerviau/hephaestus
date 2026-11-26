@@ -199,6 +199,23 @@ describe("takeBaseline", () => {
     expect(Object.keys(baseline.entries).some((key) => key.includes("logs"))).toBe(false);
     expect(baseline.entries[".claude/history.jsonl"]).toBeUndefined();
   });
+
+  it("leaves out the usage and curator files Hermes rewrites in its skills folders", () => {
+    write(".hermes/skills/review/SKILL.md", "# review\n");
+    for (const skills of [".hermes/skills", ".hermes/profiles/work/skills"]) {
+      write(`${skills}/.usage.json`, "{}\n");
+      write(`${skills}/.usage.json.lock`, "");
+      write(`${skills}/.curator_state`, "{}\n");
+      write(`${skills}/.curator_ledger.jsonl`, "{}\n");
+      write(`${skills}/.locks/abc.lock`, "");
+    }
+
+    const keys = Object.keys(takeBaseline(home).entries);
+
+    expect(keys.filter((key) => key.includes("/skills/"))).toEqual([
+      ".hermes/skills/review/SKILL.md",
+    ]);
+  });
 });
 
 describe("diffBaselines", () => {
@@ -224,6 +241,28 @@ describe("diffBaselines", () => {
     expect(drift.find((change) => change.path === ".agents/skills/new/SKILL.md")?.before).toBe(
       "absent",
     );
+  });
+
+  it("ignores Hermes skill bookkeeping recorded by a baseline taken before it was left out", () => {
+    write(".hermes/skills/review/SKILL.md", "# review\n");
+    const before = takeBaseline(home);
+    before.entries[".hermes/skills/.usage.json"] = "sha256:old";
+    before.entries[".hermes/profiles/work/skills/.locks/abc.lock"] = "sha256:old";
+
+    expect(diffBaselines(before, takeBaseline(home))).toEqual([]);
+  });
+
+  it("still reports a changed skill next to the Hermes bookkeeping", () => {
+    write(".hermes/skills/review/SKILL.md", "# v1\n");
+    write(".hermes/skills/.usage.json", "{}\n");
+    const before = takeBaseline(home);
+
+    write(".hermes/skills/review/SKILL.md", "# v2\n");
+    write(".hermes/skills/.usage.json", '{"review": 1}\n');
+
+    expect(diffBaselines(before, takeBaseline(home)).map((change) => change.path)).toEqual([
+      ".hermes/skills/review/SKILL.md",
+    ]);
   });
 });
 
