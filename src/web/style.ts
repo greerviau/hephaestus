@@ -584,4 +584,6 @@ ul.prog .hint { margin: 4px 0 0; }
 .setup-steps li.done strong { color: var(--muted); font-weight: 500; }
 .setup-steps .sub { margin: 2px 0 0; }
 label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
+
+ol.steps { margin: 0 0 16px; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); font-size: 14px; }
 `;
