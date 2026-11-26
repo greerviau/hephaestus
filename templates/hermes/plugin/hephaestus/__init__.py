@@ -51,17 +51,25 @@ def _catalog(args):
             model = load_config().get("model")
             model = model if isinstance(model, dict) else {"default": model or ""}
             profiles[scope] = {"provider": model.get("provider") or "", "model": model.get("default") or ""}
-    providers = [
-        {
+    from hermes_cli.auth import PROVIDER_REGISTRY
+
+    providers = []
+    for row in payload.get("providers", []):
+        # The picker leaves auth hints off some rows, such as the current provider's;
+        # the registry has them.
+        config = PROVIDER_REGISTRY.get(row.get("slug"))
+        auth_type = row.get("auth_type") or (config.auth_type if config else "")
+        key_env = row.get("key_env") or (
+            config.api_key_env_vars[0] if config and config.api_key_env_vars else ""
+        )
+        providers.append({
             "slug": row.get("slug"),
             "name": row.get("name"),
-            "auth_type": row.get("auth_type") or "",
-            "key_env": row.get("key_env") or "",
+            "auth_type": auth_type or "",
+            "key_env": key_env or "",
             "authenticated": bool(row.get("authenticated")),
             "models": list(row.get("models") or []),
-        }
-        for row in payload.get("providers", [])
-    ]
+        })
     _emit({
         "provider": payload.get("provider") or "",
         "model": payload.get("model") or "",

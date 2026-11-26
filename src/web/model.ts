@@ -224,7 +224,9 @@ function signInHtml(
         : "";
     return `<form method="post" action="/model/key" class="form-grid" autocomplete="off"><input type="hidden" name="provider" value="${escapeHtml(provider.slug)}"><div class="field"><label for="key">API key</label><input type="password" id="key" name="key" required autocomplete="off"><span class="meta">Saved as <code>${escapeHtml(provider.key_env)}</code> in files only you can read on this host. It is never shown again.${setupToken}</span></div><div class="btn-row"><button type="submit" class="${provider.authenticated ? "btn-secondary" : "btn-primary"}">${provider.authenticated ? "Replace the key" : "Save the key"}</button></div></form>`;
   }
-  const command = oauth?.cli_command || `hermes auth add ${provider.slug}`;
+  // An external OAuth provider names its own command; anything else, such as AWS or Vertex
+  // credentials, goes through Hermes's own picker.
+  const command = oauth?.cli_command || "hermes model";
   return `<p class="lede">${provider.authenticated ? "Signed in. To sign in again" : "This provider signs in"} on the Hermes host: run <code>HERMES_HOME=~/.hephaestus/hermes ${escapeHtml(command)}</code>, then reload this page.</p>`;
 }
 

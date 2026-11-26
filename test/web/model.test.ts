@@ -187,7 +187,7 @@ describe("Model page", () => {
 
     const page = (await dashboard.get("/model?provider=bedrock")).html;
 
-    expect(page).toContain("hermes auth add bedrock");
+    expect(page).toContain("HERMES_HOME=~/.hephaestus/hermes hermes model");
     expect(page).not.toContain('action="/model/key"');
   });
 
