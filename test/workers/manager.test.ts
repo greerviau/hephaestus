@@ -193,6 +193,48 @@ describe("WorkerManager", () => {
     expect(viewOf("env-1")).toMatchObject({ codex: "signed-in", ready: true });
   });
 
+  it("still asks for a sign-in when the other provider's check hit a limit", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    // Claude reports its limit as a reply; Codex is really signed out.
+    finishThread("t2", "5-hour limit reached ∙ resets 3pm");
+    finishThread("t3", "Not logged in");
+    await manager.tick();
+    expect(viewOf("env-1")).toMatchObject({
+      claude: "limited",
+      codex: "signed-out",
+      blocker: "Sign in Factory Codex.",
+      ownerStep: true,
+    });
+  });
+
+  it("does not recheck a limited instance while a deploy runs", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    finishThread("t2", "FACTORY-READY");
+    finishThread("t3", "You've hit your usage limit.");
+    await manager.tick();
+    expect(viewOf("env-1").codex).toBe("limited");
+    // A new version starts deploying; the recheck waits for it.
+    const next = store.createVersion({
+      document: sampleConfig(),
+      author: "t",
+      message: "next",
+      parentId: 1,
+    });
+    store.approve(next.id);
+    await manager.deployVersion(next.id);
+    expect(viewOf("env-1").tasks.deploy?.status).toBe("running");
+    clock += 31 * 60_000;
+    const launches = t3.launches.length;
+    await manager.tick();
+    expect(t3.launches.slice(launches).map((launch) => launch.providerInstanceId)).not.toContain(
+      FACTORY_CODEX,
+    );
+  });
+
   it("refuses a draft version and pushes nothing", async () => {
     const draft = store.createVersion({
       document: sampleConfig(),

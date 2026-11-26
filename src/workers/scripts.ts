@@ -81,9 +81,14 @@ export function testTurnMessage(): string {
  */
 export function usageLimit(items: ThreadItem[]): string | undefined {
   const last = items.filter((item) => item.type === "error").at(-1);
-  const text = last?.text.trim() ?? "";
-  return /usage limit|rate limit|quota|too many requests/i.test(text)
-    ? text.slice(0, 300)
+  return limitText(last?.text ?? "");
+}
+
+/** The text, trimmed, when it reports a provider's usage or rate limit, else undefined. */
+export function limitText(text: string): string | undefined {
+  const trimmed = text.trim();
+  return /usage limit|rate limit|quota|too many requests|limit reached|limit resets/i.test(trimmed)
+    ? trimmed.slice(0, 300)
     : undefined;
 }
 

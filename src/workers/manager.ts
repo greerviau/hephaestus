@@ -14,6 +14,7 @@ import {
   codexSignInMessage,
   deployMessage,
   finalMessage,
+  limitText,
   usageLimit,
   parseDeploy,
   parseDeviceCode,
@@ -388,14 +389,18 @@ export class WorkerManager {
       blocker = "Due for its periodic redeploy, which refreshes the factory skill settings.";
       automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
-    else if (claude === "limited" || codex === "limited") {
+    else if (
+      (claude === "limited" && (codex === "signed-in" || codex === "limited")) ||
+      (codex === "limited" && claude === "signed-in")
+    ) {
       const name = claude === "limited" ? "Factory Claude" : "Factory Codex";
       const task = tasks[claude === "limited" ? "test-claude" : "test-codex"];
       blocker =
         `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again every ${String(LIMIT_RECHECK_MS / MINUTE)} minutes. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
       automatic = true;
-    } else if (claude !== "signed-in") blocker = "Sign in Factory Claude.";
-    else if (codex !== "signed-in") blocker = "Sign in Factory Codex.";
+    } else if (claude !== "signed-in" && claude !== "limited") {
+      blocker = "Sign in Factory Claude.";
+    } else if (codex !== "signed-in" && codex !== "limited") blocker = "Sign in Factory Codex.";
     // A sign-in waiting on the owner's token or device code is theirs even while it runs.
     const signingIn =
       tasks["claude-sign-in"]?.status === "running" || tasks["codex-sign-in"]?.status === "running";
@@ -734,11 +739,37 @@ export class WorkerManager {
     await this.recheckLimited();
   }
 
+  /**
+   * Records a sign-in check that hit a usage limit, which says nothing about
+   * the sign-in; it runs again once the limit may have reset. A check that
+   * began before a deploy or sign-in finished certifies neither, so it runs
+   * again now.
+   */
+  private async failLimited(task: WorkerTask, limit: string): Promise<void> {
+    this.update(task.id, {
+      status: "failed",
+      detail: { ...task.detail, reason: `the provider's usage limit: ${limit}`, limited: true },
+    });
+    const signIn = task.kind === "test-claude" ? "claude-sign-in" : "codex-sign-in";
+    const after = [
+      this.latestTask(task.environmentId, "deploy", "succeeded"),
+      this.latestTask(task.environmentId, signIn, "succeeded"),
+    ];
+    if (!certifies(task, after)) {
+      await this.startOnce(task.environmentId, task.kind, testTurnMessage());
+    }
+  }
+
   /** Runs a sign-in check again once a check that hit a usage limit is old enough for it to have reset. */
   private async recheckLimited(): Promise<void> {
     const at = this.now().getTime();
     for (const view of this.views()) {
       if (!view.enabled) continue;
+      // Not over a deploy or sign-in, whose own checks follow when they finish.
+      const busy = (["deploy", "claude-sign-in", "codex-sign-in"] as const).some(
+        (kind) => view.tasks[kind]?.status === "running",
+      );
+      if (busy || this.deployThreadRunning(view.environmentId)) continue;
       for (const kind of ["test-claude", "test-codex"] as const) {
         const task = view.tasks[kind];
         if (task?.status !== "failed" || task.detail.limited !== true) continue;
@@ -793,15 +824,7 @@ export class WorkerManager {
     };
     if (status !== "completed") {
       if (limit !== undefined && (task.kind === "test-claude" || task.kind === "test-codex")) {
-        // A usage limit is not a lost sign-in; the check runs again once the limit may have reset.
-        this.update(task.id, {
-          status: "failed",
-          detail: {
-            ...current.detail,
-            reason: `the provider's usage limit: ${limit}`,
-            limited: true,
-          },
-        });
+        await this.failLimited(current, limit);
         return;
       }
       this.fail(task, `the thread ended ${status}`);
@@ -869,6 +892,9 @@ export class WorkerManager {
           if (!certifies(current, after)) {
             await this.startOnce(task.environmentId, task.kind, testTurnMessage());
           }
+        } else if (limitText(text) !== undefined) {
+          // Some providers report their limit as a reply in a completed thread.
+          await this.failLimited(current, limitText(text) ?? "");
         } else
           this.fail(
             task,
