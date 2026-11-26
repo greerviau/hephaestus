@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   AlreadyMergedError,
   MergeConflictError,
+  MergeRefusedError,
   GitHub,
   INTAKE_READ_TIMEOUT_MS,
   foldChecks,
@@ -188,6 +189,77 @@ describe("GitHub", () => {
         "m",
       ),
     ).rejects.not.toThrow(MergeConflictError);
+  });
+
+  it("raises a typed refusal for a 405 or 409 that is not a conflict, and nothing for 5xx or network errors", async () => {
+    const exec =
+      (error: string, headSha = "h"): CommandRun =>
+      (_file, args) => {
+        if (args[0] === "api" && args[1] === "-X") return Promise.reject(new Error(error));
+        if (args[0] === "pr") {
+          return Promise.resolve(
+            JSON.stringify({
+              number: 5,
+              url: "u",
+              state: "OPEN",
+              headRefOid: headSha,
+              headRefName: "b",
+              baseRefName: "main",
+              isCrossRepository: false,
+              mergeCommit: null,
+              mergeable: "MERGEABLE",
+            }),
+          );
+        }
+        return Promise.resolve("{}");
+      };
+    const merge = (error: string, headSha?: string): Promise<string> =>
+      new GitHub("gh", exec(error, headSha)).merge("octo/app", 5, "h", "m");
+    const wrapped = (message: string): string =>
+      `gh api -X PUT repos/octo/app/pulls/5/merge -f commit_message=m failed: ${message}`;
+
+    const behind = await merge(
+      wrapped("gh: Head branch is not up to date with the base branch (HTTP 405)"),
+    ).catch((error: unknown) => error);
+    expect(behind).toBeInstanceOf(MergeRefusedError);
+    expect(behind).toMatchObject({
+      number: 5,
+      status: 405,
+      githubMessage: "Head branch is not up to date with the base branch",
+    });
+
+    const review = await merge(wrapped("gh: At least 1 approving review is required (HTTP 409)"))
+      .then(() => undefined)
+      .catch((error: unknown) => error);
+    expect(review).toMatchObject({
+      status: 409,
+      githubMessage: "At least 1 approving review is required",
+    });
+
+    // A long, multi-line message is cut down to one short line.
+    const long = await merge(wrapped(`gh: ${"Rule failed.\n".repeat(60)}(HTTP 405)`)).catch(
+      (error: unknown) => error as MergeRefusedError,
+    );
+    expect((long as MergeRefusedError).githubMessage).not.toContain("\n");
+    expect((long as MergeRefusedError).githubMessage.length).toBeLessThanOrEqual(200);
+
+    // A conflict named in a 405 is still a conflict.
+    await expect(merge(wrapped("gh: Pull Request has merge conflicts (HTTP 405)"))).rejects.toThrow(
+      MergeConflictError,
+    );
+    // Server errors and lost replies are not refusals; the step retries them.
+    for (const failure of [
+      wrapped("gh: Server Error (HTTP 502)"),
+      wrapped("gh: Service Unavailable (HTTP 503)"),
+      wrapped("gh: Not Found (HTTP 404)"),
+      "connection reset",
+    ]) {
+      await expect(merge(failure)).rejects.not.toThrow(MergeRefusedError);
+    }
+    // A head that moved under the merge is the gate's to handle.
+    await expect(
+      merge(wrapped("gh: Base branch was modified (HTTP 405)"), "newer"),
+    ).rejects.not.toThrow(MergeRefusedError);
   });
 
   it("reads the issue number from gh issue create", async () => {

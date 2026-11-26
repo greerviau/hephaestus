@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { MergeConflictError, MergeOutcomeUnknownError } from "../../src/factory/github.js";
+import {
+  MergeConflictError,
+  MergeOutcomeUnknownError,
+  MergeRefusedError,
+} from "../../src/factory/github.js";
 import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
@@ -353,6 +357,36 @@ describe("Pipeline", () => {
     }
   });
 
+  it("sends a revert PR GitHub keeps refusing to the owner as a revert merge", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = { policy: { preset: "yolo", overrides: {} } };
+    });
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    const merge = h.github.merge.bind(h.github);
+    h.github.merge = (repo: string, number: number, head: string) =>
+      number === 9
+        ? Promise.reject(new MergeRefusedError(9, 405, "Merge queue required"))
+        : merge(repo, number, head);
+    h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5" }));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Reverting");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({
+      stage: "Escalated",
+      escalatedTo: "owner",
+      ownerAction: "revert-merge",
+    });
+    expect(h.cards.get(id).reason).toMatch(
+      /revert PR #9: Merge queue required|revert PR #9.*Merge queue required/,
+    );
+  });
+
   it("tells the owner of a conflicting revert PR before reviewing it", async () => {
     const h = harness();
     const id = admitted(h);
@@ -696,6 +730,60 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     expect(h.cards.get(id).reason).toMatch(/conflicts with main after 99 rounds/);
+  });
+
+  it("retries a merge GitHub refuses once, then escalates to the owner with GitHub's message", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    let attempts = 0;
+    h.github.merge = (_repo, number) => {
+      attempts++;
+      return Promise.reject(new MergeRefusedError(number, 405, "Head branch is not up to date"));
+    };
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(attempts).toBe(1);
+    expect(h.cards.get(id).stage).toBe("Merging");
+    expect(h.cards.get(id).waiting).toMatch(/Head branch is not up to date.*trying once more/);
+    // A pass that finds the same refusal again does not hold the card in Merging.
+    await h.pipeline.tick();
+    expect(attempts).toBe(2);
+    expect(h.cards.get(id)).toMatchObject({
+      stage: "Escalated",
+      escalatedTo: "owner",
+      ownerAction: "merge",
+    });
+    expect(h.cards.get(id).reason).toMatch(/Head branch is not up to date/);
+  });
+
+  it("counts a refusal per head, so a new head gets its own retry", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.github.merge = (_repo, number) =>
+      Promise.reject(new MergeRefusedError(number, 409, "Merge queue required"));
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    // An earlier head's refusal does not count against this one.
+    h.cards.event(id, "merge-refused", `${SHA2}: Merge queue required`);
+    expect(h.cards.get(id).stage).toBe("Merging");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+  });
+
+  it("leaves a card in Merging when the merge fails with a network error or a server error", async () => {
+    for (const failure of ["connection reset", "gh: Server Error (HTTP 502)"]) {
+      const h = harness();
+      const id = admitted(h);
+      await toReview(h, id);
+      h.github.merge = () => Promise.reject(new Error(failure));
+      h.finish("t2", reviewResult("approve", SHA));
+      await h.pipeline.tick();
+      await h.pipeline.tick();
+      await h.pipeline.tick();
+      expect(h.cards.get(id)).toMatchObject({ stage: "Merging", reason: null });
+    }
   });
 
   it("sends a PR GitHub reports conflicting back before waiting on checks that will never run", async () => {
