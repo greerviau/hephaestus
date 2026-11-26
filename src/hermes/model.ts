@@ -5,11 +5,17 @@
  * tolerating comments, quotes, and CRLF line endings; it is not a YAML parser.
  */
 export function hermesModel(text: string): string | undefined {
+  return hermesModelSettings(text).model;
+}
+
+/** The model and provider a Hermes config.yaml names, each undefined when it names none. */
+export function hermesModelSettings(text: string): { model?: string; provider?: string } {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   const start = lines.findIndex((line) => /^["']?model["']?[ \t]*:/.test(line));
-  if (start === -1) return undefined;
+  if (start === -1) return {};
   const inline = scalar(lines[start]?.replace(/^["']?model["']?[ \t]*:/, "") ?? "");
-  if (inline !== undefined) return inline;
+  if (inline !== undefined) return { model: inline };
+  const found: { model?: string; provider?: string } = {};
   let indent: number | undefined;
   for (const line of lines.slice(start + 1)) {
     if (/^\s*(#.*)?$/.test(line)) continue;
@@ -19,12 +25,14 @@ export function hermesModel(text: string): string | undefined {
     indent ??= depth;
     // Only the block's own keys count, not keys nested deeper inside it.
     if (depth !== indent) continue;
-    const match = /^\s*["']?(default|model)["']?[ \t]*:(.*)$/.exec(line);
+    const match = /^\s*["']?(default|model|provider)["']?[ \t]*:(.*)$/.exec(line);
     if (match === null) continue;
     const value = scalar(match[2] ?? "");
-    if (value !== undefined) return value;
+    if (value === undefined) continue;
+    if (match[1] === "provider") found.provider ??= value;
+    else found.model ??= value;
   }
-  return undefined;
+  return found;
 }
 
 /** A YAML scalar value, or undefined when it is empty, null, or a block opener. */

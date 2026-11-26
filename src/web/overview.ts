@@ -103,7 +103,7 @@ export function issueActions(issue: TrackedIssue, back: string): string {
 
 export function issueWhy(issue: TrackedIssue): string {
   return issue.state === "held-cap"
-    ? `Filed by the ${escapeHtml(issue.filedBy ?? "factory")} role and held: the project's cap on open factory-filed issues is reached.`
+    ? `${issue.filedBy === "owner" ? "Requested on Work items" : `Filed by the ${escapeHtml(issue.filedBy ?? "factory")} role`} and held: the project's cap on open factory-filed issues is reached.`
     : `Opened by ${escapeHtml(issue.author)} outside Hephaestus. The factory works on it only if you admit it.`;
 }
 

@@ -252,4 +252,26 @@ describe("FactoryProfiles.sync", () => {
   it("runs every command against the factory root only", () => {
     expect(profiles.root).toBe(root);
   });
+
+  it("gives a profile without a model the root's model and provider, and leaves a chosen one", async () => {
+    writeFileSync(
+      join(root, "config.yaml"),
+      "model:\n  default: claude-sonnet-5\n  provider: anthropic\n",
+    );
+    mkdirSync(join(root, "profiles", "lead"), { recursive: true });
+    writeFileSync(
+      join(root, "profiles", "lead", "config.yaml"),
+      "model:\n  default: gpt-6.2-sol\n",
+    );
+    await profiles.sync(sampleConfig(), 1, mcp);
+    const sets = hermes.calls
+      .map((call) => call.args.join(" "))
+      .filter((args) => args.includes("config set model."));
+    expect(sets).toEqual([
+      "-p planner config set model.default claude-sonnet-5",
+      "-p planner config set model.provider anthropic",
+      "-p improver config set model.default claude-sonnet-5",
+      "-p improver config set model.provider anthropic",
+    ]);
+  });
 });

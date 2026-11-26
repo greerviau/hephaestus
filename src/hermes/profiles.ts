@@ -14,6 +14,7 @@ import { dirname, join, relative, sep } from "node:path";
 import type { Database } from "better-sqlite3";
 import { ROLE_NAMES, type CronJob, type FactoryConfig, type RoleName } from "../config/document.js";
 import { stripAnsi, type FactoryHermes } from "./cli.js";
+import { hermesModel, hermesModelSettings } from "./model.js";
 
 export interface McpEntry {
   url: string;
@@ -63,6 +64,22 @@ export class FactoryProfiles {
 
   get root(): string {
     return this.hermes.root;
+  }
+
+  /**
+   * A profile has its own config.yaml, and a role without a model cannot run.
+   * A profile that names no model gets the root's model and provider, which
+   * the owner sets with `hermes model`; one the owner configured is left alone.
+   */
+  private async inheritModel(role: RoleName, profileDir: string): Promise<void> {
+    const read = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "");
+    if (hermesModel(read(join(profileDir, "config.yaml"))) !== undefined) return;
+    const root = hermesModelSettings(read(join(this.hermes.root, "config.yaml")));
+    if (root.model === undefined) return;
+    await this.hermes.run(["-p", role, "config", "set", "model.default", root.model]);
+    if (root.provider !== undefined) {
+      await this.hermes.run(["-p", role, "config", "set", "model.provider", root.provider]);
+    }
   }
 
   /** `mcp` gives each role its own entry, so the MCP server knows which profile calls it. */
@@ -117,6 +134,7 @@ export class FactoryProfiles {
       `Bearer \${${mcp.tokenEnv}}`,
     ]);
     this.writeEnv(profileDir, mcp.tokenEnv, mcp.token);
+    await this.inheritModel(role, profileDir);
     await this.syncCron(role, config.roles[role].cron ?? []);
   }
 

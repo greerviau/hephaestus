@@ -570,11 +570,24 @@ function executablePath(path: string): string {
   return absolute;
 }
 
-/** The default model in the factory Hermes root's config, or undefined when none is set. */
+/**
+ * The model the factory Hermes roles run, for the setup checklist: the root's
+ * default model, while every profile that exists names a model too. A
+ * profile without one gets the root's at the next deploy.
+ */
 function hermesDefaultModel(hermesHome: string): string | undefined {
-  try {
-    return hermesModel(readFileSync(join(hermesHome, "config.yaml"), "utf8"));
-  } catch {
-    return undefined;
+  const read = (path: string): string => {
+    try {
+      return readFileSync(path, "utf8");
+    } catch {
+      return "";
+    }
+  };
+  const model = hermesModel(read(join(hermesHome, "config.yaml")));
+  if (model === undefined) return undefined;
+  for (const role of ROLE_NAMES) {
+    const path = join(hermesHome, "profiles", role, "config.yaml");
+    if (existsSync(path) && hermesModel(read(path)) === undefined) return undefined;
   }
+  return model;
 }

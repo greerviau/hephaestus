@@ -59,7 +59,7 @@ export function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[]
     {
       title: "Give the factory Hermes a model",
       done: model !== undefined,
-      next: "On the Hermes host, run <code>HERMES_HOME=~/.hephaestus/hermes hermes model</code>. The planner, lead, and improver use it.",
+      next: "On the Hermes host, run <code>HERMES_HOME=~/.hephaestus/hermes hermes model</code>. Hephaestus gives the planner, lead, and improver profiles that model when it next deploys a version.",
     },
   ];
 }
