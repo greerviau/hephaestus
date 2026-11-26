@@ -252,3 +252,24 @@ describe("milestone", () => {
     ).toBeUndefined();
   });
 });
+
+describe("RequestThreads, linked late", () => {
+  it("does not repeat in a milestone what the catch-up already said, and attaches waiting evidence", async () => {
+    const id = card();
+    await threads.progress();
+    cards.transition(id, "Implementing", "work started");
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Reviewing", "PR #5 at abc");
+    evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
+    // The thread links before the next progress pass has seen those events.
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    await threads.progress();
+    expect(posts.map((post) => post.text.split("\n")[0])).toEqual([
+      "Following octo/app#7: PR #5 is in review. Progress shows up here.",
+      "Evidence: screen.png",
+    ]);
+    cards.transition(id, "Merging", "approved at abc");
+    await threads.progress();
+    expect(posts.at(-1)?.text).toBe("The review approved it.");
+  });
+});

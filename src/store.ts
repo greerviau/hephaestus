@@ -228,6 +228,8 @@ const MIGRATIONS = [
      linked_at TEXT NOT NULL,
      PRIMARY KEY (repo, number)
    );`,
+  // The newest card event when the thread was linked; its catch-up already covers those.
+  `ALTER TABLE chat_threads ADD COLUMN after_event INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

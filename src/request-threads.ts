@@ -111,22 +111,30 @@ export class RequestThreads {
       .get(repo, number) as { repo: string } | undefined;
     if (tracked === undefined) return;
     repo = tracked.repo;
+    // The catch-up tells where the card stands now, so events up to now are not posted again.
+    const newest =
+      (this.db.prepare("SELECT MAX(id) AS id FROM card_events").get() as { id: number | null })
+        .id ?? 0;
     const result = this.db
       .prepare(
-        `INSERT INTO chat_threads (repo, number, platform, chat, linked_at) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (repo, number) DO NOTHING`,
+        `INSERT INTO chat_threads (repo, number, platform, chat, linked_at, after_event)
+         VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT (repo, number) DO NOTHING`,
       )
-      .run(repo, number, thread.platform, thread.chat, this.now().toISOString());
+      .run(repo, number, thread.platform, thread.chat, this.now().toISOString(), newest);
     if (result.changes === 0) return;
     const card = this.options.cards
       .list()
       .find(
         (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.issueNumber === number,
       );
-    await this.post(
+    const sent = await this.post(
       thread,
       `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card)}`} Progress shows up here.`,
     );
+    // A card already past opening its PR may have evidence the thread has not seen.
+    if (sent && card !== undefined && card.prNumber !== null && card.stage !== "Implementing") {
+      await this.postEvidence(thread, card);
+    }
   }
 
   /** Posts the milestones of followed cards that happened since the last pass. */
@@ -147,8 +155,9 @@ export class RequestThreads {
             .all(Number(last)) as CardEvent[]);
     for (const event of events) {
       const card = this.options.cards.get(event.cardId);
-      const thread =
+      const followed =
         card.issueNumber === null ? undefined : this.threadFor(card.repo, card.issueNumber);
+      const thread = followed !== undefined && event.id > followed.after ? followed : undefined;
       const text =
         thread === undefined ? undefined : milestone(event, card, this.options.dashboardUrl());
       if (thread !== undefined && text !== undefined) await this.post(thread, text);
@@ -163,11 +172,16 @@ export class RequestThreads {
     }
   }
 
-  private threadFor(repo: string, number: number): Thread | undefined {
+  /** The thread following an issue, and the last event its catch-up covered. */
+  private threadFor(repo: string, number: number): (Thread & { after: number }) | undefined {
     const row = this.db
-      .prepare("SELECT platform, chat FROM chat_threads WHERE repo = ? AND number = ?")
-      .get(repo, number) as { platform: string; chat: string } | undefined;
-    return row?.platform === "discord" ? { platform: "discord", chat: row.chat } : undefined;
+      .prepare(
+        "SELECT platform, chat, after_event AS after FROM chat_threads WHERE repo = ? AND number = ?",
+      )
+      .get(repo, number) as { platform: string; chat: string; after: number } | undefined;
+    return row?.platform === "discord"
+      ? { platform: "discord", chat: row.chat, after: row.after }
+      : undefined;
   }
 
   /** Posts to a thread; only Hephaestus's own evidence lines may attach files. True when sent. */
