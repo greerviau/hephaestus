@@ -153,6 +153,46 @@ describe("WorkerManager", () => {
     expect(events.thread("env-1", "t1")?.kind).toBe("setup");
   });
 
+  it("tells a usage limit from a lost sign-in, and checks again once the limit may have reset", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    finishThread("t2", "FACTORY-READY");
+    // The Codex check ends on the provider's usage limit, with no reply.
+    events.upsertItems("env-1", "t3", [
+      {
+        itemId: "limit",
+        position: 5,
+        type: "error",
+        status: "failed",
+        text: "You've hit your usage limit. Try again at 8:02 AM.",
+      },
+    ]);
+    events.setStatus("env-1", "t3", "failed");
+    await manager.tick();
+    const view = viewOf("env-1");
+    expect(view).toMatchObject({
+      claude: "signed-in",
+      codex: "limited",
+      ready: false,
+      ownerStep: false,
+    });
+    expect(view.blocker).toMatch(/Factory Codex reached its provider's usage limit/);
+    expect(view.blocker).toMatch(/Try again at 8:02 AM/);
+
+    // Before 30 minutes nothing reruns; after them the check runs again.
+    const launches = t3.launches.length;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(launches);
+    clock += 31 * 60_000;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(launches + 1);
+    expect(t3.launches.at(-1)?.providerInstanceId).toBe(FACTORY_CODEX);
+    finishThread(`t${String(launches + 1)}`, "FACTORY-READY");
+    await manager.tick();
+    expect(viewOf("env-1")).toMatchObject({ codex: "signed-in", ready: true });
+  });
+
   it("refuses a draft version and pushes nothing", async () => {
     const draft = store.createVersion({
       document: sampleConfig(),

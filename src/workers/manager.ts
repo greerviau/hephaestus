@@ -14,6 +14,7 @@ import {
   codexSignInMessage,
   deployMessage,
   finalMessage,
+  usageLimit,
   parseDeploy,
   parseDeviceCode,
   testTurnMessage,
@@ -70,7 +71,14 @@ export interface InstanceCheck {
 }
 
 export type InstanceState =
-  "signed-in" | "signed-out" | "checking" | "missing" | "disabled" | "unknown";
+  | "signed-in"
+  | "signed-out"
+  | "checking"
+  | "missing"
+  | "disabled"
+  | "unknown"
+  /** The check ran into the provider's usage limit, which says nothing about the sign-in. */
+  | "limited";
 
 export interface WorkerView extends Worker {
   /** The latest task of each kind. */
@@ -198,6 +206,8 @@ const TIMEOUTS: Record<TaskKind, number> = {
 };
 /** A launch whose reply never came is replayed, with the same request id, after this. */
 const LAUNCH_GRACE_MS = 2 * MINUTE;
+/** How long after a check hit a usage limit it runs again. */
+const LIMIT_RECHECK_MS = 30 * MINUTE;
 const LAUNCH_ATTEMPTS = 3;
 /** A failed deploy is retried automatically after this. */
 const DEPLOY_RETRY_MS = 30 * MINUTE;
@@ -337,7 +347,9 @@ export class WorkerManager {
       const result = tasks[test];
       if (result === undefined) return "unknown";
       if (!certifies(result, [deployed, signedIn])) return "unknown";
-      if (result.status !== "succeeded") return "signed-out";
+      if (result.status !== "succeeded") {
+        return result.detail.limited === true ? "limited" : "signed-out";
+      }
       // T3 saying the instance lost its sign-in after the test outranks the test.
       if (check?.authenticated === false && check.seq > (result.doneSeq ?? 0)) return "signed-out";
       return "signed-in";
@@ -376,7 +388,13 @@ export class WorkerManager {
       blocker = "Due for its periodic redeploy, which refreshes the factory skill settings.";
       automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
-    else if (claude !== "signed-in") blocker = "Sign in Factory Claude.";
+    else if (claude === "limited" || codex === "limited") {
+      const name = claude === "limited" ? "Factory Claude" : "Factory Codex";
+      const task = tasks[claude === "limited" ? "test-claude" : "test-codex"];
+      blocker =
+        `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again every ${String(LIMIT_RECHECK_MS / MINUTE)} minutes. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
+      automatic = true;
+    } else if (claude !== "signed-in") blocker = "Sign in Factory Claude.";
     else if (codex !== "signed-in") blocker = "Sign in Factory Codex.";
     // A sign-in waiting on the owner's token or device code is theirs even while it runs.
     const signingIn =
@@ -713,6 +731,21 @@ export class WorkerManager {
     }
     await this.reconcile();
     await this.checkInstances();
+    await this.recheckLimited();
+  }
+
+  /** Runs a sign-in check again once a check that hit a usage limit is old enough for it to have reset. */
+  private async recheckLimited(): Promise<void> {
+    const at = this.now().getTime();
+    for (const view of this.views()) {
+      if (!view.enabled) continue;
+      for (const kind of ["test-claude", "test-codex"] as const) {
+        const task = view.tasks[kind];
+        if (task?.status !== "failed" || task.detail.limited !== true) continue;
+        if (at - Date.parse(task.updatedAt) < LIMIT_RECHECK_MS) continue;
+        await this.startOnce(view.environmentId, kind, testTurnMessage());
+      }
+    }
   }
 
   private async advance(task: WorkerTask): Promise<void> {
@@ -748,17 +781,29 @@ export class WorkerManager {
       if (age > TIMEOUTS[task.kind]) this.fail(task, "it took too long; try again");
       return;
     }
-    await this.finish(task, thread.status, finalMessage(items) ?? "");
+    await this.finish(task, thread.status, finalMessage(items) ?? "", usageLimit(items));
   }
 
   /** Records a task's outcome from its thread's final status and message. */
-  async finish(task: WorkerTask, status: string, text: string): Promise<void> {
+  async finish(task: WorkerTask, status: string, text: string, limit?: string): Promise<void> {
     const current = this.task(task.id) ?? task;
     if (current.status !== "running") return;
     const succeed = (detail: Record<string, unknown> = {}): void => {
       this.update(task.id, { status: "succeeded", detail: { ...current.detail, ...detail } });
     };
     if (status !== "completed") {
+      if (limit !== undefined && (task.kind === "test-claude" || task.kind === "test-codex")) {
+        // A usage limit is not a lost sign-in; the check runs again once the limit may have reset.
+        this.update(task.id, {
+          status: "failed",
+          detail: {
+            ...current.detail,
+            reason: `the provider's usage limit: ${limit}`,
+            limited: true,
+          },
+        });
+        return;
+      }
       this.fail(task, `the thread ended ${status}`);
       return;
     }

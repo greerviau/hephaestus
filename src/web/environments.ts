@@ -320,7 +320,7 @@ function action(environmentId: string, name: string, label: string, primary = fa
 }
 
 function instanceLine(name: string, state: string): string {
-  const text = `${name}: ${state.replace("-", " ")}`;
+  const text = `${name}: ${state === "limited" ? "usage limit reached" : state.replace("-", " ")}`;
   return state === "signed-in"
     ? status("good", "ok", escapeHtml(text))
     : state === "checking"
