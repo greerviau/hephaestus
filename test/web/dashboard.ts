@@ -53,6 +53,7 @@ export interface DashboardOptions {
   workers?: WorkerView[];
   deploy?: Deploy;
   t3WaitMs?: number;
+  github?: { repos(): Promise<string[]>; defaultBranch(repo: string): Promise<string> };
 }
 
 /** A dashboard on a factory harness. Sessions live in a database of their own, so tests can break the factory's. */
@@ -88,6 +89,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       ...(workers === undefined ? {} : { workers: { views: () => workers } }),
       environments: options.environments ?? { environments: () => Promise.resolve(linked()) },
       ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
+      ...(options.github === undefined ? {} : { github: options.github }),
       now: () => NOW,
       t3WaitMs: options.t3WaitMs ?? 1000,
     }),

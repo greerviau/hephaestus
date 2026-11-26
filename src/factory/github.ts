@@ -207,6 +207,15 @@ export class GitHub {
     await this.gh(["issue", "reopen", String(number), "-R", repo, "--comment", comment]);
   }
 
+  /** Repos the gh account owns or belongs to, for the Projects page's suggestions. */
+  async repos(): Promise<string[]> {
+    const repos = await this.json<{ nameWithOwner: string }[]>(
+      ["repo", "list", "--limit", "200", "--json", "nameWithOwner"],
+      INTAKE_READ_TIMEOUT_MS,
+    );
+    return repos.map((repo) => repo.nameWithOwner).sort((a, b) => a.localeCompare(b));
+  }
+
   async defaultBranch(repo: string): Promise<string> {
     const result = await this.json<{ defaultBranchRef: { name: string } }>([
       "repo",

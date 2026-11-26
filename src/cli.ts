@@ -489,6 +489,7 @@ async function main(argv: string[]): Promise<number> {
             workers,
             environments,
             deploy: (id) => workers.deployVersion(id),
+            github: engine.github,
           }),
           ...settingsRoutes(store, (id) => workers.deployVersion(id)),
           ...environmentRoutes(environments, Date.now, {

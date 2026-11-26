@@ -44,6 +44,7 @@ export const NAV = [
   ["/activity", "Activity"],
   ["/analytics", "Analytics"],
   ["/improvement", "Improvement"],
+  ["/projects", "Projects"],
   ["/environments", "Workers"],
   ["/settings", "Settings"],
 ] as const;
