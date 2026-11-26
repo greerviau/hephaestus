@@ -9,11 +9,18 @@ import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import type { FactoryThreads } from "../t3/threads.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/manager.js";
 import { finalMessage } from "../workers/scripts.js";
-import type { Card, CardStore, EscalationTarget, Provider } from "./cards.js";
+import {
+  MERGE_CONFLICT_DETAIL,
+  type Card,
+  type CardStore,
+  type EscalationTarget,
+  type Provider,
+} from "./cards.js";
 import { decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
 import { createHash } from "node:crypto";
 import {
   AlreadyMergedError,
+  MergeConflictError,
   MergeOutcomeUnknownError,
   type GitHub,
   type MergeState,
@@ -1049,6 +1056,7 @@ export class Pipeline {
       );
     } catch (error) {
       if (error instanceof AlreadyMergedError) return this.foreignMerge(card, error.mergeSha);
+      if (error instanceof MergeConflictError) return this.conflicted(card, pr);
       if (error instanceof MergeOutcomeUnknownError) {
         return this.escalate(
           card,
@@ -1061,6 +1069,25 @@ export class Pipeline {
       throw error;
     }
     await this.recordOwnMerge(card, pr, mergeSha);
+  }
+
+  /** Sends a PR that no longer merges cleanly back to its engineer, as one more round. */
+  private async conflicted(card: Card, pr: PullRequest): Promise<void> {
+    const policy = this.policy(card);
+    if (card.rounds >= policy.maxReviewRounds) {
+      return this.escalate(
+        card,
+        "lead",
+        `PR #${String(pr.number)} conflicts with ${pr.baseBranch} after ${String(card.rounds)} rounds`,
+      );
+    }
+    const next = this.cards.transition(card.id, "Implementing", MERGE_CONFLICT_DETAIL, {
+      rounds: card.rounds + 1,
+      reviewThread: null,
+      pendingMessage: `GitHub cannot merge PR #${String(pr.number)}: it conflicts with \`${pr.baseBranch}\`, which changed since you started. Fetch origin, merge or rebase \`origin/${pr.baseBranch}\` into the same branch, resolve the conflicts keeping both changes' intent, run the tests, push, and end with a new result block with the new head SHA. The PR is reviewed again at the new head.`,
+    });
+    await this.mirror(next, "Implementing", next.implementThread ?? undefined);
+    await this.resume(next);
   }
 
   private async recordOwnMerge(card: Card, pr: PullRequest, mergeSha: string): Promise<void> {

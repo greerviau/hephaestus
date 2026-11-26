@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { DiscordApi, type Fetch } from "./discord.js";
-import type { Card, CardEvent, CardStore } from "./factory/cards.js";
+import {
+  MERGE_CONFLICT_DETAIL,
+  type Card,
+  type CardEvent,
+  type CardStore,
+} from "./factory/cards.js";
 import type { GitHub } from "./factory/github.js";
 import { getMeta, setMeta } from "./meta.js";
 import type { Messaging } from "./messaging.js";
@@ -286,6 +291,9 @@ export function milestone(event: CardEvent, card: Card, dashboard: string): stri
       }
       if (detail === "the reviewer asked for changes") {
         return "The review asked for changes. The engineer is on them.";
+      }
+      if (detail === MERGE_CONFLICT_DETAIL) {
+        return "The PR conflicts with changes merged since it opened. The engineer is updating it.";
       }
       if (detail.includes("working on the issue again")) {
         return "The revert merged. Work on the issue starts again.";

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { MergeOutcomeUnknownError } from "../../src/factory/github.js";
+import { MergeConflictError, MergeOutcomeUnknownError } from "../../src/factory/github.js";
 import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
@@ -606,6 +606,29 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA, { checkNames: ["check:ci", "check:e2e"] }));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5]);
+  });
+
+  it("sends a PR that conflicts with its base back to the engineer, then escalates after the rounds", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.github.merge = (_repo, number) => Promise.reject(new MergeConflictError(number));
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1, reviewThread: null });
+    expect(h.t3.sends.at(-1)).toMatchObject({ threadId: "t1" });
+    expect(h.t3.sends.at(-1)?.message).toContain("conflicts with `main`");
+    expect(h.cards.events(id)).toContainEqual(
+      expect.objectContaining({
+        kind: "stage:Implementing",
+        detail: "the PR conflicts with its base branch",
+      }),
+    );
+
+    h.db.prepare("UPDATE cards SET rounds = 99, stage = 'Merging' WHERE id = ?").run(id);
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.cards.get(id).reason).toMatch(/conflicts with main after 99 rounds/);
   });
 
   it("takes a merged PR with its marker for its own merge, and sends an unknown outcome to the owner", async () => {

@@ -35,6 +35,16 @@ async function retry<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
 }
 
 /** The PR was merged, but not by this merge call. */
+/** GitHub refused the merge because the PR conflicts with its base branch. */
+export class MergeConflictError extends Error {
+  constructor(
+    readonly number: number,
+    options?: ErrorOptions,
+  ) {
+    super(`PR #${String(number)} has merge conflicts with its base branch.`, options);
+  }
+}
+
 export class AlreadyMergedError extends Error {
   constructor(
     readonly number: number,
@@ -378,7 +388,12 @@ export class GitHub {
       // The reply may have been lost after GitHub merged; the marker in the commit says whose merge it was.
       const current = await retry(() => this.pullRequest(repo, number)).catch(() => undefined);
       if (current === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
-      if (current.state !== "MERGED" || current.mergeSha === null) throw error;
+      if (current.state !== "MERGED" || current.mergeSha === null) {
+        if (/merge conflict/i.test(String(error))) {
+          throw new MergeConflictError(number, { cause: error });
+        }
+        throw error;
+      }
       const ours = await this.mergedWith(repo, current.mergeSha, marker);
       if (ours === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
       if (ours) return current.mergeSha;

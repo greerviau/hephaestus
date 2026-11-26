@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   AlreadyMergedError,
+  MergeConflictError,
   GitHub,
   INTAKE_READ_TIMEOUT_MS,
   foldChecks,
@@ -106,6 +107,45 @@ describe("GitHub", () => {
     await expect(
       new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
     ).rejects.toThrow(AlreadyMergedError);
+  });
+
+  it("tells a merge refused for conflicts from other failures", async () => {
+    const exec =
+      (error: string): CommandRun =>
+      (_file, args) => {
+        if (args[0] === "api" && args[1] === "-X") return Promise.reject(new Error(error));
+        if (args[0] === "pr") {
+          return Promise.resolve(
+            JSON.stringify({
+              number: 5,
+              url: "u",
+              state: "OPEN",
+              headRefOid: "h",
+              headRefName: "b",
+              baseRefName: "main",
+              isCrossRepository: false,
+              mergeCommit: null,
+            }),
+          );
+        }
+        return Promise.resolve("{}");
+      };
+    await expect(
+      new GitHub("gh", exec("gh: Pull Request has merge conflicts (HTTP 405)")).merge(
+        "octo/app",
+        5,
+        "h",
+        "m",
+      ),
+    ).rejects.toThrow(MergeConflictError);
+    await expect(
+      new GitHub("gh", exec("gh: Base branch was modified (HTTP 405)")).merge(
+        "octo/app",
+        5,
+        "h",
+        "m",
+      ),
+    ).rejects.not.toThrow(MergeConflictError);
   });
 
   it("reads the issue number from gh issue create", async () => {
