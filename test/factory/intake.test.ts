@@ -116,6 +116,34 @@ describe("Intake", () => {
     expect(h.intake.issue("octo/app", 7)?.closed).toBe(false);
   });
 
+  it("reads only a few left-out issues per poll when the open list is full", async () => {
+    const h = harness();
+    for (let number = 1; number <= 15; number += 1) {
+      h.github.issues.set(number, { number, title: "Old", body: "", author: "x", state: "OPEN" });
+    }
+    await h.intake.poll();
+    for (let number = 1; number <= 15; number += 1) {
+      h.github.issues.set(number, { number, title: "Old", body: "", author: "x", state: "CLOSED" });
+    }
+    await h.intake.poll();
+    for (let number = 1000; number < 1200; number += 1) {
+      h.github.issues.set(number, { number, title: "New", body: "", author: "x", state: "OPEN" });
+    }
+    await h.intake.poll();
+
+    const read = h.github.issue.bind(h.github);
+    const lookups: number[] = [];
+    h.github.issue = (repo, number) => {
+      lookups.push(number);
+      return read(repo, number);
+    };
+    await h.intake.poll();
+    await h.intake.poll();
+    expect(lookups).toHaveLength(20);
+    // Each poll reads the issues read longest ago, so every left-out issue is read in turn.
+    expect(new Set(lookups).size).toBe(15);
+  });
+
   it("frees the cap when an unstarted issue is closed", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {

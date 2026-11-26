@@ -19,15 +19,21 @@ let db: Database;
 let server: Server;
 let base: string;
 let now: number;
+/** How often the server read the clock; a login's first read is when it reserves its attempt. */
+let clockReads: number;
 
 beforeEach(async () => {
   db = openStore(":memory:");
   writePasswordHash(db, hashPassword(PASSWORD));
   now = 1_000_000;
+  clockReads = 0;
   server = createDashboardServer({
     db,
     instanceId: "test-instance",
-    now: () => now,
+    now: () => {
+      clockReads += 1;
+      return now;
+    },
     routes: [
       {
         method: "GET",
@@ -176,8 +182,9 @@ describe("a store that cannot be read", () => {
         resolve(response.statusCode ?? 0);
       });
     });
+    const before = clockReads;
     stalled.write("password=");
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    while (clockReads === before) await new Promise((resolve) => setTimeout(resolve, 5));
 
     // Its window passes, and a new one fills up.
     now += LOGIN_FAILURE_WINDOW_MS;

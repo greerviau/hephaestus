@@ -4,6 +4,9 @@ import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
+/** Waiting issues missing from a full open list that one poll reads on their own. */
+const RECHECKS_PER_POLL = 10;
+
 export type IssueState = "admitted" | "awaiting-owner" | "held-cap" | "rejected";
 
 export interface TrackedIssue {
@@ -204,28 +207,43 @@ export class Intake {
     // An issue waiting for the owner leaves the queue while it is closed, and comes back if reopened.
     const waiting = this.db
       .prepare(
-        "SELECT number, closed FROM issues WHERE repo = ? AND state IN ('awaiting-owner', 'held-cap')",
+        `SELECT number, closed FROM issues WHERE repo = ? AND state IN ('awaiting-owner', 'held-cap')
+         ORDER BY checked_at IS NOT NULL, checked_at`,
       )
       .all(repo) as { number: number; closed: number }[];
     const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
-    // A full list may leave out a reopened issue, which is then read on its own.
-    const complete = open.size < OPEN_ISSUES_LIMIT;
+    const missing = waiting.filter((issue) => !open.has(issue.number));
     for (const issue of waiting) {
-      if (open.has(issue.number)) {
-        if (issue.closed === 1) mark.run(0, repo, issue.number);
-      } else if (issue.closed === 0) {
-        if (await this.isClosed(repo, issue.number)) mark.run(1, repo, issue.number);
-      } else if (!complete && (await this.isOpen(repo, issue.number))) {
-        mark.run(0, repo, issue.number);
+      if (open.has(issue.number) && issue.closed === 1) mark.run(0, repo, issue.number);
+    }
+    if (open.size < OPEN_ISSUES_LIMIT) {
+      // A complete list settles it: an issue missing from it is read once, to confirm it closed.
+      for (const issue of missing) {
+        if (issue.closed === 0 && (await this.isClosed(repo, issue.number))) {
+          mark.run(1, repo, issue.number);
+        }
       }
+      return;
+    }
+    // A full list may leave out open issues, which are read on their own a few per poll,
+    // least recently read first, so the lookups stay well inside GitHub's rate limit.
+    const checked = this.db.prepare(
+      "UPDATE issues SET checked_at = ? WHERE repo = ? AND number = ?",
+    );
+    for (const issue of missing.slice(0, RECHECKS_PER_POLL)) {
+      const state = await this.state(repo, issue.number);
+      checked.run(this.now().toISOString(), repo, issue.number);
+      if (state === "OPEN" && issue.closed === 1) mark.run(0, repo, issue.number);
+      if (state === "CLOSED" && issue.closed === 0) mark.run(1, repo, issue.number);
     }
   }
 
-  private async isOpen(repo: string, number: number): Promise<boolean> {
+  /** The issue's state on GitHub, or undefined when it could not be read. */
+  private async state(repo: string, number: number): Promise<string | undefined> {
     try {
-      return (await this.options.github.issue(repo, number)).state === "OPEN";
+      return (await this.options.github.issue(repo, number)).state;
     } catch {
-      return false;
+      return undefined;
     }
   }
 

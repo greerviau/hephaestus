@@ -1147,12 +1147,7 @@ export class Pipeline {
           );
         }
         if (!(error instanceof AlreadyMergedError)) throw error;
-        this.cards.recordMerge(card.repo, pr.number, error.mergeSha ?? "", card.id, true, true);
-        this.cards.event(
-          card.id,
-          "foreign-merge",
-          `revert PR #${String(pr.number)} merged outside Hephaestus`,
-        );
+        this.cards.recordForeignRevert(card.repo, pr.number, error.mergeSha ?? "", card.id);
       }
     } else if (pr.state !== "MERGED") {
       return this.escalate(card, "owner", `the revert PR #${String(pr.number)} was closed`);
@@ -1166,14 +1161,8 @@ export class Pipeline {
         this.wait(card, "reading back whether the revert merge was Hephaestus's");
         return;
       }
-      this.cards.recordMerge(card.repo, pr.number, pr.mergeSha ?? "", card.id, true, !ours);
-      if (!ours) {
-        this.cards.event(
-          card.id,
-          "foreign-merge",
-          `revert PR #${String(pr.number)} merged outside Hephaestus`,
-        );
-      }
+      if (ours) this.cards.recordMerge(card.repo, pr.number, pr.mergeSha ?? "", card.id, true);
+      else this.cards.recordForeignRevert(card.repo, pr.number, pr.mergeSha ?? "", card.id);
     }
     const reverted = card.prNumber;
     if (card.issueNumber !== null) {

@@ -383,6 +383,18 @@ export class CardStore {
     ).n;
   }
 
+  /** Records a revert PR someone else merged, with its audit event, in one write. */
+  recordForeignRevert(repo: string, prNumber: number, mergeSha: string, cardId: number): void {
+    this.db.transaction(() => {
+      this.recordMerge(repo, prNumber, mergeSha, cardId, true, true);
+      this.event(
+        cardId,
+        "foreign-merge",
+        `revert PR #${String(prNumber)} merged outside Hephaestus`,
+      );
+    })();
+  }
+
   /** Whether any merge of the PR is recorded, by Hephaestus or anyone else. */
   hasMerge(repo: string, prNumber: number): boolean {
     return (
