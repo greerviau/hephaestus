@@ -336,7 +336,15 @@ export class Intake {
     const issue = this.issue(repo, number);
     if (issue === undefined || issue.provenance !== "factory") return;
     if (issue.state !== "held-cap" && issue.state !== "awaiting-owner") return;
-    if (this.awaitingWork(repo) >= this.policy(repo).openIssueCap) {
+    let cap: number;
+    try {
+      cap = this.policy(repo).openIssueCap;
+    } catch (error) {
+      // The project was removed while GitHub filed the issue; it waits for the owner instead.
+      if (error instanceof NotAFactoryProjectError) return;
+      throw error;
+    }
+    if (this.awaitingWork(repo) >= cap) {
       this.setState(repo, number, "held-cap");
       return;
     }

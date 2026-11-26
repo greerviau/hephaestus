@@ -425,12 +425,19 @@ export function workRoutes(factory: FactoryPages): Route[] {
 
 /** A form to ask the factory for work: it files a GitHub issue as the owner's request. */
 function requestCard(factory: FactoryPages, project: string, back: string): string {
-  const config = read("config", () => factory.store.current());
-  const repos = Object.keys(config.ok ? (config.value?.document.projects ?? {}) : {}).sort();
+  // Intake works from the deployed version, so only its projects can take a request.
+  const config = read("config", () =>
+    factory.store.list().find((version) => version.state === "deployed"),
+  );
   if (!config.ok) return "";
+  const repos = Object.keys(config.value?.document.projects ?? {}).sort();
   const body =
     repos.length === 0
-      ? empty('Add a project on <a href="/projects">Projects</a> first.')
+      ? empty(
+          config.value === undefined
+            ? 'Deploy a config version on <a href="/settings">Settings</a> first.'
+            : 'Add a project on <a href="/projects">Projects</a> first.',
+        )
       : `<form method="post" action="/work/issues/file" class="form-grid">
 <input type="hidden" name="back" value="${escapeHtml(back)}">
 ${selectField(
@@ -440,7 +447,7 @@ ${selectField(
   repos.includes(project) ? project : (repos[0] ?? ""),
 )}
 <div class="field"><label for="request-title">What to do</label><input type="text" id="request-title" name="title" maxlength="256" required placeholder="Add a --verbose flag to the CLI"></div>
-<div class="field"><label for="request-body">Details</label><textarea id="request-body" name="body" rows="4" placeholder="What done looks like, and anything the engineer should know."></textarea><span class="meta">Filed as a GitHub issue that the factory may work on. Past the project's cap of factory-filed issues, it waits for you to admit it.</span></div>
+<div class="field"><label for="request-body">Details</label><textarea id="request-body" name="body" rows="4" maxlength="4000" placeholder="What done looks like, and anything the engineer should know."></textarea><span class="meta">Filed as a GitHub issue that the factory may work on. Past the project's cap of factory-filed issues, it waits for you to admit it.</span></div>
 <div class="btn-row"><button type="submit" class="btn-primary">File the issue</button></div>
 </form>`;
   return card({ title: "Request work", body });

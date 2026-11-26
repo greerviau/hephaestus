@@ -109,6 +109,7 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
     { response, url }: RouteContext,
     problem?: { text: string; errors: string[]; parentId: string; message: string },
     factoryErrors?: string[],
+    factoryForm?: URLSearchParams,
   ): void {
     const current = store.current();
     const rows = store
@@ -158,7 +159,7 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
                   factoryErrors === undefined
                     ? ""
                     : `<div class="banner err" role="alert"><strong class="status s-crit">Not saved</strong><ul>${factoryErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`
-                }<p class="lede">Limits, models, and schedules. Saving creates a version built from version ${String(current.id)}. Projects are on <a href="/projects">Projects</a>; instructions, skills, and role personas are in the editor below.</p>${factorySettingsForm(current.document, current.id)}`,
+                }<p class="lede">Limits, models, and schedules. Saving creates a version built from version ${String(current.id)}. Projects are on <a href="/projects">Projects</a>; instructions, skills, and role personas are in the editor below.</p>${factorySettingsForm(current.document, current.id, factoryForm)}`,
               })
         }${card({
           title: "Edit the config",
@@ -330,7 +331,7 @@ ${errors}
     }
     const applied = applyFactorySettings(base.document, form);
     if (applied.errors.length > 0) {
-      list(context, undefined, applied.errors);
+      list(context, undefined, applied.errors, form);
       return;
     }
     let published;
@@ -344,8 +345,8 @@ ${errors}
         deployNow: form.get("deploy") === "on",
       });
     } catch (error) {
-      if (error instanceof ConfigValidationError) list(context, undefined, error.problems);
-      else if (error instanceof Error) list(context, undefined, [error.message]);
+      if (error instanceof ConfigValidationError) list(context, undefined, error.problems, form);
+      else if (error instanceof Error) list(context, undefined, [error.message], form);
       else throw error;
       return;
     }
@@ -355,6 +356,8 @@ ${errors}
       redirect(context.response, `/settings/versions/${id}?deploy=failed`);
     else if (published.state === "deployed" && published.hermesError !== undefined)
       redirect(context.response, `/settings/versions/${id}?hermes=failed`);
+    // Approved with nothing to deploy it: the version page offers the deploy.
+    else if (published.state === "approved") redirect(context.response, `/settings/versions/${id}`);
     else redirect(context.response, "/settings?notice=factory-saved");
   }
 

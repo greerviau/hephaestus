@@ -322,7 +322,7 @@ describe("large configs", () => {
 describe("Factory settings form", () => {
   it("shows the factory's limits, models, and schedules", async () => {
     const html = await (await get("/settings")).text();
-    expect(html).toContain('name="limits.threads" min="1" step="1" value="4"');
+    expect(html).toContain('name="limits.threads" min="0" step="1" value="4"');
     expect(html).toContain('name="codex.model" value="gpt-6.2-sol"');
     expect(html).toContain('action="/settings/factory"');
   });
@@ -359,7 +359,8 @@ describe("Factory settings form", () => {
     });
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/settings?notice=factory-saved");
+    // Without a deploy step, the approved version's page offers the deploy.
+    expect(response.headers.get("location")).toBe(`/settings/versions/${String(second.id + 1)}`);
     const saved = store.list()[0];
     expect(saved?.state).toBe("approved");
     expect(saved?.message).toBe("Change the factory settings");
@@ -379,7 +380,7 @@ describe("Factory settings form", () => {
   it("refuses a bad number, a malformed option, and a stale form, and saves nothing", async () => {
     const fields = {
       parentId: "1",
-      "limits.threadsPerWorker": "0",
+      "limits.threadsPerWorker": "-1",
       "limits.threads": "4",
       "limits.startsPerDay": "40",
       autoStartMinutes: "10",
@@ -392,11 +393,45 @@ describe("Factory settings form", () => {
     const bad = await post("/settings/factory", fields);
     const html = await bad.text();
     expect(bad.status).toBe(400);
-    expect(html).toContain("Running factory threads per worker: give a whole number of 1 or more.");
+    expect(html).toContain("Running factory threads per worker: give a whole number of 0 or more.");
+    // The form comes back with what was typed.
+    expect(html).toContain('name="limits.threadsPerWorker" min="0" step="1" value="-1"');
+    expect(html).toContain(">effort</textarea>");
     expect(html).toContain("write each as id=value, not effort");
 
     const stale = await post("/settings/factory", { ...fields, parentId: "7" });
     expect(await stale.text()).toContain("The config changed since the page was loaded.");
     expect(store.list()).toHaveLength(1);
+  });
+
+  it("keeps a string option that reads like a switch a string", async () => {
+    const quoted = sampleConfig();
+    quoted.factory.models.codex = { model: "gpt-6.2-sol", options: { mode: "false", fast: true } };
+    const second = store.createVersion({
+      document: quoted,
+      author: "owner",
+      message: "",
+      parentId: 1,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    const html = await (await get("/settings")).text();
+    expect(html).toContain("mode=&quot;false&quot;\nfast=true");
+
+    await post("/settings/factory", {
+      parentId: String(second.id),
+      "limits.threadsPerWorker": "2",
+      "limits.threads": "0",
+      "limits.startsPerDay": "40",
+      autoStartMinutes: "10",
+      "claude.model": "claude-sonnet-5-5",
+      "codex.model": "gpt-6.2-sol",
+      "codex.options": 'mode="false"\nfast=true',
+      "setup.model": "claude-sonnet-5-5",
+      "setup.instanceId": "claudeAgent",
+    });
+    const saved = store.list()[0]?.document.factory;
+    expect(saved?.models.codex.options).toEqual({ mode: "false", fast: true });
+    expect(saved?.limits.threads).toBe(0);
   });
 });

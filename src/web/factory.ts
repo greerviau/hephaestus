@@ -238,6 +238,11 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     title: "Issue filed, and held at the project's cap",
     text: "The project already has its limit of factory-filed issues waiting for work. Admit it below when you want it worked.",
   },
+  "issue-waiting": {
+    kind: "info",
+    title: "Issue filed, and waiting for you",
+    text: "The project changed while the issue was filed, so it was not admitted. Admit it below when you want it worked.",
+  },
   "file-failed": {
     kind: "err",
     title: "The issue was not filed",
@@ -451,7 +456,12 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
             title,
             (fields.get("body") ?? "").trim(),
           );
-          notice = issue.state === "admitted" ? "issue-filed" : "issue-held";
+          notice =
+            issue.state === "admitted"
+              ? "issue-filed"
+              : issue.state === "held-cap"
+                ? "issue-held"
+                : "issue-waiting";
         } catch (error) {
           console.error("Filing an issue from the dashboard failed", error);
         }

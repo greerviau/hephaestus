@@ -9,6 +9,7 @@ import { scheduleBackups } from "./config/backup.js";
 import { importSkill } from "./config/defaults.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
+import { hermesModel } from "./hermes/model.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
@@ -572,8 +573,7 @@ function executablePath(path: string): string {
 /** The default model in the factory Hermes root's config, or undefined when none is set. */
 function hermesDefaultModel(hermesHome: string): string | undefined {
   try {
-    const text = readFileSync(join(hermesHome, "config.yaml"), "utf8");
-    return /^model:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+default:[ \t]*["']?([^"'\s#]+)/m.exec(text)?.[1];
+    return hermesModel(readFileSync(join(hermesHome, "config.yaml"), "utf8"));
   } catch {
     return undefined;
   }

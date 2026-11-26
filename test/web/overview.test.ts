@@ -217,6 +217,15 @@ describe("Overview", () => {
       workers: [readyWorker()],
     });
     expect((await dashboard.get("/")).html).not.toContain("Set up the factory");
+    await dashboard.close();
+
+    // A routine redeploy leaves a signed-in worker not ready; its sign-in step stays done.
+    dashboard = await startDashboard({
+      configRepo: "octo/hephaestus-config",
+      hermesModel: "claude-sonnet-5",
+      workers: [{ ...readyWorker(), ready: false, blocker: "Deploying version 2." }],
+    });
+    expect((await dashboard.get("/")).html).not.toContain("Set up the factory");
   });
 
   it("dismisses a notification", async () => {

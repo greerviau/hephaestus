@@ -18,8 +18,14 @@ export function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[]
   if (!version.ok) return undefined;
   const configRepo = factory.configRepo?.();
   const projects = Object.keys(version.value?.document.projects ?? {}).length;
-  const ready = workers.filter((worker) => worker.ready);
-  const waiting = workers.find((worker) => !worker.ready);
+  const enabled = workers.filter((worker) => worker.enabled);
+  // Signed in is about both factory instances, not readiness, which a routine redeploy interrupts.
+  const signedIn = enabled.filter(
+    (worker) => worker.claude === "signed-in" && worker.codex === "signed-in",
+  );
+  const waiting = enabled.find(
+    (worker) => worker.claude !== "signed-in" || worker.codex !== "signed-in",
+  );
   const model = factory.hermesModel?.();
   return [
     {
@@ -29,12 +35,12 @@ export function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[]
     },
     {
       title: "Add a worker",
-      done: workers.length > 0,
+      done: enabled.length > 0,
       next: 'On <a href="/environments">Workers</a>, click Use as a worker on a linked machine.',
     },
     {
       title: "Sign the worker in",
-      done: ready.length > 0,
+      done: signedIn.length > 0,
       next:
         waiting?.blocker === undefined
           ? 'On <a href="/environments">Workers</a>, sign in Factory Claude and Factory Codex.'
