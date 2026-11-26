@@ -24,6 +24,17 @@ const CURSOR_KEY = "request_threads_event";
 /** Stages whose PR is open or merged, where a late thread is shown the evidence. */
 const EVIDENCE_STAGES = new Set<Card["stage"]>(["Reviewing", "Merging", "Validating", "Done"]);
 
+/** The PR and head an event names, as the pipeline writes them: `PR #N at <sha>`. */
+function namedPr(detail: string): { number: number; head: string } | undefined {
+  const match = /^PR #(\d+) at ([0-9a-f]+)/.exec(detail);
+  return match?.[1] === undefined || match[2] === undefined
+    ? undefined
+    : { number: Number(match[1]), head: match[2] };
+}
+
+/** Whether a PR an event names was put up before: never, at another head, or at this head. */
+type PrHistory = "new" | "updated" | "same";
+
 /** Where the engineer pushes evidence for a card: a ref outside every branch. */
 export function evidenceRef(cardId: number): string {
   return `hephaestus/evidence/card-${String(cardId)}`;
@@ -176,7 +187,7 @@ export class RequestThreads {
       const text =
         thread === undefined
           ? undefined
-          : milestone(event, card, this.options.dashboardUrl(), this.reopened(event));
+          : milestone(event, card, this.options.dashboardUrl(), this.prHistory(event));
       if (thread !== undefined && text !== undefined) await this.post(thread, text);
       // Saved before the evidence, so a failure there cannot hold the feed on this event.
       setMeta(this.db, CURSOR_KEY, String(event.id));
@@ -189,18 +200,22 @@ export class RequestThreads {
     }
   }
 
-  /** Whether the event puts a PR up again that an earlier event already put up, such as after changes. */
-  private reopened(event: CardEvent): boolean {
-    const pr = /^PR #(\d+) at /.exec(event.detail)?.[1];
-    if (pr === undefined) return false;
-    return (
-      this.db
-        .prepare(
-          `SELECT 1 FROM card_events WHERE card_id = ? AND id < ? AND kind IN ('stage:Reviewing', 'stage:Merging')
-           AND detail LIKE ? LIMIT 1`,
-        )
-        .get(event.cardId, event.id, `PR #${pr} at %`) !== undefined
-    );
+  /** Whether an earlier event of the card put up the PR this event names, and at which head. */
+  private prHistory(event: CardEvent): PrHistory {
+    const named = namedPr(event.detail);
+    if (named === undefined) return "new";
+    const earlier = this.db
+      .prepare(
+        `SELECT detail FROM card_events WHERE card_id = ? AND id < ?
+         AND kind IN ('stage:Reviewing', 'stage:Merging')`,
+      )
+      .all(event.cardId, event.id) as { detail: string }[];
+    const heads = earlier
+      .map((row) => namedPr(row.detail))
+      .filter((pr) => pr?.number === named.number)
+      .map((pr) => pr?.head);
+    if (heads.length === 0) return "new";
+    return heads.includes(named.head) ? "same" : "updated";
   }
 
   /** The thread following an issue, and the last event its catch-up covered. */
@@ -300,15 +315,14 @@ export function milestone(
   event: CardEvent,
   card: Card,
   dashboard: string,
-  /** The PR was put up before, so this is an update of it. */
-  again = false,
+  /** Whether the PR was put up before, and whether at another head. */
+  history: PrHistory = "new",
 ): string | undefined {
   const pr = (number: number | null): string =>
     number === null ? "the PR" : `https://github.com/${card.repo}/pull/${String(number)}`;
   const detail = event.detail;
   // The PR the event names, which may be older than the card's current one in a backlog.
-  const named = /^PR #(\d+) at /.exec(detail)?.[1];
-  const opened = named === undefined ? card.prNumber : Number(named);
+  const named = namedPr(detail)?.number ?? card.prNumber;
   switch (event.kind) {
     case "stage:Implementing":
       if (detail === "work started" || detail === "the lead restarted the work") {
@@ -325,14 +339,18 @@ export function milestone(
       }
       return undefined;
     case "stage:Reviewing":
-      return again
-        ? `The PR is updated and back in review: ${pr(opened)}`
-        : `PR opened, now in review: ${pr(opened)}`;
+      return {
+        new: `PR opened, now in review: ${pr(named)}`,
+        updated: `The PR is updated and back in review: ${pr(named)}`,
+        same: `The PR is back in review: ${pr(named)}`,
+      }[history];
     case "stage:Merging":
       if (detail.includes("needs no review")) {
-        return again
-          ? `The PR is updated; it merges once its checks pass: ${pr(opened)}`
-          : `PR opened; it merges once its checks pass: ${pr(opened)}`;
+        return {
+          new: `PR opened; it merges once its checks pass: ${pr(named)}`,
+          updated: `The PR is updated; it merges once its checks pass: ${pr(named)}`,
+          same: `The PR merges once its checks pass: ${pr(named)}`,
+        }[history];
       }
       return detail.startsWith("approved") ? "The review approved it." : undefined;
     case "stage:Validating":
@@ -341,11 +359,16 @@ export function milestone(
       return detail === "merged outside Hephaestus"
         ? "It was merged outside Hephaestus."
         : "Done: checks passed on the default branch.";
-    case "stage:Reverting":
-      return `Checks failed on the default branch after the merge, so it is being reverted with ${pr(card.revertPr)}.`;
+    case "stage:Reverting": {
+      // Only the step that opens the revert; the owner's approval and its merge say nothing new.
+      const revert = /opened revert PR #(\d+)$/.exec(detail)?.[1];
+      return revert === undefined
+        ? undefined
+        : `Checks failed on the default branch after the merge, so it is being reverted with ${pr(Number(revert))}.`;
+    }
     case "stage:Escalated":
       return detail.startsWith("to the owner")
-        ? `This needs you: ${sentence(card.reason ?? detail)}.\n${dashboard}work/${String(card.id)}`
+        ? `This needs you: ${sentence(detail.replace(/^to the owner:\s*/, ""))}.\n${dashboard}work/${String(card.id)}`
         : undefined;
     // The lead handing a card it was given on to the owner.
     case "escalated:owner":
