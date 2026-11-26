@@ -4,7 +4,6 @@ import type { Database } from "better-sqlite3";
 import type { CardStore } from "./factory/cards.js";
 import type { HermesRun } from "./hermes/cli.js";
 import { getMeta, setMeta } from "./meta.js";
-import type { WorkerView } from "./workers/manager.js";
 
 /** The factory role that talks to the owner in a chat; the owner never needs its name. */
 const CHAT_ROLE = "planner";
@@ -455,24 +454,3 @@ function unquote(raw: string): string {
   }
   return value.replace(/\s+#.*$/, "");
 }
-
-/**
- * The sign-in or setup steps workers wait on the owner for. A worker whose
- * checks are running asks for nothing yet, and keeps what it last asked for,
- * so a recheck does not send the same ask again.
- */
-export function workerAlerts(views: WorkerAlertView[]): ExtraAlert[] {
-  return views.flatMap((view) => {
-    const group = `worker-${view.environmentId}`;
-    if ([view.claude, view.codex].some((state) => state === "checking" || state === "unknown")) {
-      return [{ key: `${group}-checking`, text: "", group, quiet: true }];
-    }
-    if (!view.ownerStep || view.blocker === undefined) return [];
-    return [{ key: `${group}-${view.blocker}`, text: `${view.label}: ${view.blocker}`, group }];
-  });
-}
-
-export type WorkerAlertView = Pick<
-  WorkerView,
-  "environmentId" | "label" | "claude" | "codex" | "blocker" | "ownerStep"
->;

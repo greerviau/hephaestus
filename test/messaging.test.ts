@@ -4,14 +4,9 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CardStore } from "../src/factory/cards.js";
-import {
-  Messaging,
-  MessagingError,
-  RestartError,
-  workerAlerts,
-  type WorkerAlertView,
-} from "../src/messaging.js";
+import { Messaging, MessagingError, RestartError } from "../src/messaging.js";
 import { openStore } from "../src/store.js";
+import { workerAlerts, type WorkerAlertView } from "../src/workers/alerts.js";
 
 const DISCORD_TOKEN = `${"M".repeat(24)}.${"G".repeat(6)}.${"x".repeat(27)}`;
 const USER = "284102345871466496";
@@ -374,11 +369,23 @@ describe("worker alerts", () => {
 
     await own.sendAlerts();
     for (let recheck = 0; recheck < 3; recheck += 1) {
-      view = { ...view, claude: "checking", blocker: "Checking Claude." };
+      view = {
+        ...view,
+        claude: "checking",
+        blocker: "Checking Factory Claude's sign-in.",
+        ownerStep: false,
+      };
       await own.sendAlerts();
       view = { ...view, claude: "limited", blocker: "Sign in Factory Codex." };
       await own.sendAlerts();
     }
+    expect(sends()).toBe(1);
+
+    // A periodic redeploy is Hephaestus's step, so it keeps the ask too.
+    view = { ...view, blocker: "A deploy is running.", ownerStep: false };
+    await own.sendAlerts();
+    view = { ...view, blocker: "Sign in Factory Codex.", ownerStep: true };
+    await own.sendAlerts();
     expect(sends()).toBe(1);
 
     view = { ...view, codex: "signed-in", blocker: undefined, ownerStep: false };
@@ -388,7 +395,7 @@ describe("worker alerts", () => {
     expect(sends()).toBe(2);
   });
 
-  it("sends nothing for a worker whose checks are running, or whose next step is Hephaestus's", () => {
+  it("sends nothing for a worker busy with its own step, and asks a worker whose checks never ran", async () => {
     const base: WorkerAlertView = {
       environmentId: "env-1",
       label: "mark-01",
@@ -397,9 +404,41 @@ describe("worker alerts", () => {
       blocker: "Sign in.",
       ownerStep: true,
     };
-    expect(workerAlerts([{ ...base, codex: "unknown" }])).toEqual([
-      { key: "worker-env-1-checking", text: "", group: "worker-env-1", quiet: true },
+    const quiet = { key: "worker-env-1-busy", text: "", group: "worker-env-1", quiet: true };
+    expect(workerAlerts([{ ...base, codex: "checking" }])).toEqual([quiet]);
+    expect(workerAlerts([{ ...base, ownerStep: false }])).toEqual([quiet]);
+    expect(workerAlerts([{ ...base, blocker: undefined }])).toEqual([]);
+    const failed = {
+      ...base,
+      claude: "unknown" as const,
+      codex: "unknown" as const,
+      blocker: "The last deploy failed: x",
+    };
+    expect(workerAlerts([failed])).toEqual([
+      {
+        key: "worker-env-1-The last deploy failed: x",
+        text: "mark-01: The last deploy failed: x",
+        group: "worker-env-1",
+      },
     ]);
-    expect(workerAlerts([{ ...base, ownerStep: false }])).toEqual([]);
+
+    // Quiet items are never delivered.
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    const own = new Messaging({
+      root,
+      run: (args, options) => {
+        calls.push({ args, input: options?.input });
+        return Promise.resolve("");
+      },
+      restartGateway: () => Promise.resolve(),
+      db,
+      cards,
+      dashboardUrl: () => "",
+      extraAlerts: () => [quiet],
+    });
+    db.prepare("INSERT OR REPLACE INTO meta (key, value) VALUES ('messaging_alerts', 'on')").run();
+    calls.length = 0;
+    await own.sendAlerts();
+    expect(calls).toEqual([]);
   });
 });
