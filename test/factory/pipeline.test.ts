@@ -956,6 +956,24 @@ describe("Pipeline", () => {
     expect(calls).toBe(0);
   });
 
+  it("tries a healthy thread before older ones whose settles time out", async () => {
+    const h = harness();
+    for (let index = 0; index < 20; index += 1) setupThread(h, `slow-${String(index)}`);
+    let clock = Date.parse("2026-11-25T12:00:00Z");
+    const settle = h.t3.settle.bind(h.t3);
+    h.t3.settle = (environmentId, threadId) => {
+      if (!threadId.startsWith("slow-")) return settle(environmentId, threadId);
+      clock += 10 * 60_000;
+      h.setClock(clock);
+      return Promise.reject(new Error("timed out"));
+    };
+    await h.pipeline.settleThreads();
+    // A newer thread on a healthy worker ends after the slow ones were all tried once.
+    setupThread(h, "healthy");
+    await h.pipeline.settleThreads();
+    expect(h.t3.settled).toContain("healthy");
+  });
+
   it("does not abandon a card that started work", async () => {
     const h = harness();
     const id = admitted(h);

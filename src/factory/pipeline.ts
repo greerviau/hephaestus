@@ -116,7 +116,10 @@ export class Pipeline {
   private foreignCheckedAt = 0;
   private settling: Promise<void> | undefined;
   /** Threads whose settling failed, with how often and when they may be tried again. */
-  private readonly settleBackoff = new Map<string, { failures: number; until: number }>();
+  private readonly settleBackoff = new Map<
+    string,
+    { failures: number; until: number; last: number }
+  >();
   private readonly cardLocks = new Map<number, Promise<unknown>>();
   private launches: Promise<unknown> = Promise.resolve();
 
@@ -1339,7 +1342,14 @@ export class Pipeline {
 
   private async settleFinishedThreads(): Promise<void> {
     let tried = 0;
-    for (const thread of this.options.events.unsettledEnded()) {
+    // A thread never tried goes first, then the one tried longest ago, so threads whose calls fail
+    // slowly cannot keep a healthy one from its turn.
+    const queue = this.options.events
+      .unsettledEnded()
+      .map((thread) => ({ thread, last: this.settleBackoff.get(thread.threadId)?.last ?? 0 }))
+      .sort((a, b) => a.last - b.last)
+      .map(({ thread }) => thread);
+    for (const thread of queue) {
       const backoff = this.settleBackoff.get(thread.threadId);
       if (backoff !== undefined && backoff.until > this.now().getTime()) continue;
       // Checked right before each call, since a pass can run while a card picks a thread up again.
@@ -1354,9 +1364,11 @@ export class Pipeline {
         // so slow failures cannot hold up the others.
         const failures = (backoff?.failures ?? 0) + 1;
         const wait = Math.min(SETTLE_BACKOFF_MAX_MS, 60_000 * 2 ** (failures - 1));
+        const failedAt = this.now().getTime();
         this.settleBackoff.set(thread.threadId, {
           failures,
-          until: this.now().getTime() + wait,
+          until: failedAt + wait,
+          last: failedAt,
         });
         console.error(`Settling thread ${thread.threadId} failed`, error);
       }
