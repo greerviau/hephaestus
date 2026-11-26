@@ -1,0 +1,460 @@
+import { afterEach, describe, expect, it } from "vitest";
+import {
+  ModelError,
+  ModelPartial,
+  ModelWarning,
+  type DeviceLogin,
+  type ModelCatalog,
+} from "../../src/hermes/factory-model.js";
+import { RestartError } from "../../src/messaging.js";
+import type { FactoryPages } from "../../src/web/factory.js";
+import { startDashboard, type Dashboard } from "./dashboard.js";
+
+let dashboard: Dashboard | undefined;
+
+afterEach(async () => {
+  await dashboard?.close();
+  dashboard = undefined;
+});
+
+function catalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
+  return {
+    provider: "anthropic",
+    model: "claude-sonnet-5",
+    providers: [
+      {
+        slug: "anthropic",
+        name: "Anthropic",
+        auth_type: "api_key",
+        key_env: "ANTHROPIC_API_KEY",
+        authenticated: true,
+        models: ["claude-sonnet-5", "claude-opus-5-5"],
+      },
+      {
+        slug: "deepseek",
+        name: "DeepSeek",
+        auth_type: "api_key",
+        key_env: "DEEPSEEK_API_KEY",
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "openai-codex",
+        name: "ChatGPT or Codex Subscription",
+        auth_type: "oauth_external",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "bedrock",
+        name: "AWS Bedrock",
+        auth_type: "aws_sdk",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "custom",
+        name: "custom",
+        auth_type: "api_key",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+    ],
+    oauth: [
+      {
+        id: "openai-codex",
+        name: "OpenAI Codex",
+        flow: "device_code",
+        cli_command: "hermes auth add openai-codex",
+      },
+      {
+        id: "qwen-oauth",
+        name: "Qwen",
+        flow: "external",
+        cli_command: "hermes auth add qwen-oauth",
+      },
+    ],
+    profiles: {
+      planner: { provider: "anthropic", model: "claude-sonnet-5" },
+      lead: { provider: "anthropic", model: "claude-sonnet-5" },
+      improver: { provider: "anthropic", model: "claude-sonnet-5" },
+    },
+    ...overrides,
+  };
+}
+
+interface FakeModel extends NonNullable<FactoryPages["model"]> {
+  keys: [string, string][];
+  choices: unknown[];
+  logins: string[];
+}
+
+function fakeModel(
+  options: {
+    ready?: boolean;
+    catalog?: ModelCatalog;
+    refuse?: string;
+    warn?: string;
+    restartFails?: boolean;
+    partial?: string;
+    login?: DeviceLogin;
+  } = {},
+): FakeModel {
+  const keys: [string, string][] = [];
+  const choices: unknown[] = [];
+  const logins: string[] = [];
+  let login = options.login;
+  return {
+    keys,
+    choices,
+    logins,
+    ready: () => options.ready ?? true,
+    catalog: () => Promise.resolve(options.catalog ?? catalog()),
+    addKey: (provider, key) => {
+      if (options.refuse !== undefined) return Promise.reject(new ModelError(options.refuse));
+      keys.push([provider, key]);
+      return Promise.resolve();
+    },
+    setModel: (choice) => {
+      if (options.refuse !== undefined) return Promise.reject(new ModelError(options.refuse));
+      if (options.partial !== undefined) return Promise.reject(new ModelPartial(options.partial));
+      if (options.warn !== undefined && choice.force !== true) {
+        return Promise.reject(new ModelWarning(options.warn));
+      }
+      choices.push(choice);
+      if (options.restartFails === true) {
+        return Promise.reject(
+          new RestartError("The settings were saved, but the messaging gateway did not restart."),
+        );
+      }
+      return Promise.resolve();
+    },
+    startDeviceLogin: (provider) => {
+      logins.push(provider);
+      login = {
+        provider,
+        url: "https://auth.example/device",
+        code: "ABCD-1234",
+        status: "waiting",
+      };
+      return Promise.resolve(login);
+    },
+    deviceLogin: () => login,
+  };
+}
+
+describe("Model page", () => {
+  it("shows the current provider and model, and never names the factory's roles", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    const { status, html } = await dashboard.get("/model");
+
+    expect(status).toBe(200);
+    expect(html).toContain("Anthropic");
+    expect(html).toContain("claude-sonnet-5");
+    expect(html).toContain('<option value="deepseek"');
+    expect(html).not.toMatch(/planner|improver|\blead\b/i);
+  });
+
+  it("asks to deploy first when the factory Hermes is not set up", async () => {
+    dashboard = await startDashboard({ model: fakeModel({ ready: false }) });
+
+    const { html } = await dashboard.get("/model");
+
+    expect(html).toContain("Deploy a config version");
+    expect(html).not.toContain('action="/model/set"');
+  });
+
+  it("offers a key field for a provider that takes an API key, and saves the key", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    const page = (await dashboard.get("/model?provider=deepseek")).html;
+    expect(page).toContain('action="/model/key"');
+    expect(page).toContain('type="password"');
+    expect(page).toContain("DEEPSEEK_API_KEY");
+
+    const saved = await dashboard.post("/model/key", { provider: "deepseek", key: "sk-test" });
+    expect(saved.headers.get("location")).toBe("/model?provider=deepseek&notice=key");
+    expect(model.keys).toEqual([["deepseek", "sk-test"]]);
+  });
+
+  it("starts a device-code sign-in and shows its link and code while it waits", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+      'action="/model/login"',
+    );
+    const started = await dashboard.post("/model/login", { provider: "openai-codex" });
+    expect(started.headers.get("location")).toBe("/model?provider=openai-codex");
+    expect(model.logins).toEqual(["openai-codex"]);
+
+    const page = (await dashboard.get("/model?provider=openai-codex")).html;
+    expect(page).toContain("https://auth.example/device");
+    expect(page).toContain("ABCD-1234");
+    expect(page).toContain('http-equiv="refresh"');
+  });
+
+  it("says which host command signs in a provider the dashboard cannot", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    const page = (await dashboard.get("/model?provider=bedrock")).html;
+
+    expect(page).toContain("HERMES_HOME=~/.hephaestus/hermes hermes model");
+    expect(page).not.toContain('action="/model/key"');
+  });
+
+  it("saves a model for the chosen provider", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    const page = (await dashboard.get("/model?provider=anthropic")).html;
+    expect(page).toContain('<option value="claude-opus-5-5">');
+
+    const saved = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+    });
+    expect(saved.headers.get("location")).toBe("/model?provider=anthropic&notice=saved");
+    expect(model.choices).toEqual([{ provider: "anthropic", model: "claude-opus-5-5" }]);
+  });
+
+  it("takes a custom endpoint's URL and key with the model", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    expect((await dashboard.get("/model?provider=custom")).html).toContain('name="base_url"');
+    await dashboard.post("/model/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: "http://localhost:8080/v1",
+      key: "local",
+    });
+
+    expect(model.choices).toEqual([
+      { provider: "custom", model: "llama-3", baseUrl: "http://localhost:8080/v1", key: "local" },
+    ]);
+  });
+
+  it("shows Hermes's refusal and keeps the owner on the provider", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({ refuse: "Hermes refused the model: unknown model nope" }),
+    });
+
+    const response = await dashboard.post("/model/set", { provider: "anthropic", model: "nope" });
+
+    expect(response.status).toBe(400);
+    const html = await response.text();
+    expect(html).toContain("Hermes refused the model: unknown model nope");
+    expect(html).toContain('<option value="anthropic" selected');
+  });
+
+  it("stops on Hermes's warning, keeps the model typed, and saves it when the owner insists", async () => {
+    const model = fakeModel({
+      warn: "`clade-opus` was not found in Anthropic's /v1/models listing.",
+    });
+    dashboard = await startDashboard({ model });
+
+    const warned = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "clade-opus",
+    });
+    expect(warned.status).toBe(400);
+    const html = await warned.text();
+    expect(html).toContain("Hermes warned");
+    expect(html).toContain('value="clade-opus"');
+    expect(html).toContain('name="force"');
+    expect(model.choices).toEqual([]);
+
+    const forced = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "clade-opus",
+      force: "on",
+    });
+    expect(forced.headers.get("location")).toBe("/model?provider=anthropic&notice=saved");
+    expect(model.choices).toEqual([{ provider: "anthropic", model: "clade-opus", force: true }]);
+  });
+
+  it("warns when parts of the factory use another model", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        catalog: catalog({
+          profiles: {
+            planner: { provider: "anthropic", model: "claude-sonnet-5" },
+            lead: { provider: "deepseek", model: "deepseek-chat" },
+            improver: { provider: "anthropic", model: "claude-sonnet-5" },
+          },
+        }),
+      }),
+    });
+
+    expect((await dashboard.get("/model")).html).toContain("not all on this model");
+  });
+
+  it("says a save took when only the gateway restart failed", async () => {
+    dashboard = await startDashboard({ model: fakeModel({ restartFails: true }) });
+
+    const response = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+    });
+
+    expect(response.status).toBe(400);
+    const html = await response.text();
+    expect(html).toContain("Saved, but the chat did not restart");
+    expect(html).not.toContain("Not changed");
+  });
+
+  it("refuses a change with no provider", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    const response = await dashboard.post("/model/set", { model: "claude-opus-5-5" });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Pick a provider first.");
+    expect(model.choices).toEqual([]);
+  });
+
+  it("ignores notice names that are not its own", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    for (const notice of ["constructor", "__proto__", "toString"]) {
+      expect((await dashboard.get(`/model?notice=${notice}`)).status).toBe(200);
+    }
+  });
+
+  it("escapes everything Hermes reports, and links only a web address", async () => {
+    const hostile = "<img src=x onerror=alert(1)>";
+    const base = catalog();
+    dashboard = await startDashboard({
+      model: fakeModel({
+        catalog: {
+          ...base,
+          provider: "evil",
+          model: hostile,
+          providers: [
+            {
+              slug: "evil",
+              name: hostile,
+              auth_type: "api_key",
+              key_env: hostile,
+              authenticated: false,
+              models: [hostile],
+            },
+          ],
+          oauth: [{ id: "evil", name: hostile, flow: "device_code", cli_command: hostile }],
+        },
+        login: {
+          provider: "evil",
+          url: "javascript:alert(1)",
+          code: hostile,
+          status: "waiting",
+        },
+      }),
+    });
+
+    const html = (await dashboard.get("/model?provider=evil")).html;
+
+    expect(html).not.toContain(hostile);
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain('href="javascript:');
+  });
+
+  it("says a save Hermes refused partway was partly saved", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        partial: "Hermes refused the model while saving it (saved for the root so far): 409",
+      }),
+    });
+
+    const response = await dashboard.post("/model/set", { provider: "custom", model: "llama" });
+
+    const html = await response.text();
+    expect(html).toContain("Partly saved");
+    expect(html).not.toContain("Not changed");
+  });
+
+  it("does not refresh an error page while a sign-in waits", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        refuse: "Hermes refused the model: no",
+        login: { provider: "openai-codex", url: "https://a/", code: "C", status: "waiting" },
+      }),
+    });
+
+    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+      'http-equiv="refresh"',
+    );
+    const response = await dashboard.post("/model/set", { provider: "openai-codex", model: "x" });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).not.toContain('http-equiv="refresh"');
+  });
+
+  it("shows a restart failure after a sign-in", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        login: {
+          provider: "openai-codex",
+          status: "signed-in",
+          error: "Signed in, but the factory's chat did not restart.",
+        },
+      }),
+    });
+
+    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+      "Signed in, but the factory&#39;s chat did not restart.",
+    );
+  });
+
+  it("escapes a key variable, a host command, and a sign-in address that is not a web link", async () => {
+    const hostile = "<b>x</b>";
+    const base = catalog();
+    const providers = [
+      {
+        slug: "keyed",
+        name: "Keyed",
+        auth_type: "api_key",
+        key_env: hostile,
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "outside",
+        name: "Outside",
+        auth_type: "oauth_external",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+      {
+        slug: "device",
+        name: "Device",
+        auth_type: "oauth_external",
+        key_env: "",
+        authenticated: false,
+        models: [],
+      },
+    ];
+    const oauth = [
+      { id: "outside", name: "Outside", flow: "external", cli_command: hostile },
+      { id: "device", name: "Device", flow: "device_code", cli_command: "" },
+    ];
+    dashboard = await startDashboard({
+      model: fakeModel({
+        catalog: { ...base, providers, oauth },
+        login: { provider: "device", url: `javascript:${hostile}`, code: "C", status: "waiting" },
+      }),
+    });
+
+    for (const slug of ["keyed", "outside", "device"]) {
+      const html = (await dashboard.get(`/model?provider=${slug}`)).html;
+      expect(html).not.toContain(hostile);
+    }
+  });
+});

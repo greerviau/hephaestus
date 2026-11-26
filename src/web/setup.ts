@@ -59,7 +59,7 @@ export function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[]
     {
       title: "Give the factory Hermes a model",
       done: model !== undefined,
-      next: "On the Hermes host, run <code>HERMES_HOME=~/.hephaestus/hermes hermes model</code>. Hephaestus gives the planner, lead, and improver profiles that model when it next deploys a version. With a named custom provider, an endpoint that takes an API key, or a provider key kept in the root's .env, run it for each profile too, since a profile reads only its own .env: <code>HERMES_HOME=~/.hephaestus/hermes hermes -p lead model</code>, and the same for planner and improver.",
+      next: 'On <a href="/model">Model</a>, pick a provider, sign in, and choose a model.',
     },
   ];
 }

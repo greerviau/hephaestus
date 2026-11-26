@@ -1,3 +1,4 @@
+import type { FactoryModel } from "../hermes/factory-model.js";
 import type { Messaging } from "../messaging.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Analytics } from "../factory/analytics.js";
@@ -39,6 +40,11 @@ export interface FactoryPages {
   messaging?: Pick<
     Messaging,
     "ready" | "states" | "connect" | "disconnect" | "send" | "alertsOn" | "setAlerts" | "restart"
+  >;
+  /** Sets the factory Hermes's provider and model; absent without the factory's Hermes. */
+  model?: Pick<
+    FactoryModel,
+    "ready" | "catalog" | "addKey" | "setModel" | "startDeviceLogin" | "deviceLogin"
   >;
   /** The config repo named on Workers, for the setup checklist. */
   configRepo?: () => string | undefined;

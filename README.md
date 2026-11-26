@@ -40,11 +40,7 @@ On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` 
 3. On **Workers**, name a private repo for config versions, such as `you/hephaestus-config`. Hephaestus creates it if it does not exist. Then click **Use as a worker** on each machine that should run factory threads.
 4. On **Projects**, add each factory repo. Pick it from the list of repos your `gh` account can see, choose a policy preset (`yolo`, `standard`, the default, or `strict`), and change any setting from the preset if you need to. Adding a project creates a config version and approves and deploys it to every worker and to the factory's Hermes profiles.
 5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret card that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
-6. Give the factory's Hermes a model. Its home is separate from your own `~/.hermes`:
-
-   ```sh
-   HERMES_HOME=~/.hephaestus/hermes hermes model
-   ```
+6. On **Model**, give the factory's Hermes a model. Pick any provider Hermes supports, sign in with an API key or the code the page shows, and choose a model. The factory's Hermes home is separate from your own `~/.hermes`.
 
 7. Optionally, on **Messaging**, connect a Discord or Telegram bot made for the factory. You can then ask for work in the chat, follow each request in its own thread, and get alerts when something needs you.
 

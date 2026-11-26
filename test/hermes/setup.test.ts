@@ -77,7 +77,13 @@ describe("syncFactoryHermes", () => {
         "config set kanban.auto_decompose false",
         "config set kanban.review_dispatch false",
         "kanban boards create --name=Factory -- factory",
+        "plugins enable hephaestus",
       ]),
+    );
+    const plugin = join(paths.hermes, "plugins", "hephaestus");
+    expect(readFileSync(join(plugin, "plugin.yaml"), "utf8")).toContain("name: hephaestus");
+    expect(readFileSync(join(plugin, "__init__.py"), "utf8")).toContain(
+      'register_cli_command(\n        "hephaestus"',
     );
     expect(service.units).toHaveLength(1);
     expect(service.units[0]).toContain(`HERMES_HOME=${paths.hermes}`);
