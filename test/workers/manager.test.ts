@@ -198,7 +198,7 @@ describe("WorkerManager", () => {
     finishThread("t1", deployed(1, SHA));
     await manager.tick();
     // Claude reports its limit as a reply; Codex is really signed out.
-    finishThread("t2", "5-hour limit reached ∙ resets 3pm");
+    finishThread("t2", "You've hit your limit · resets 8pm (Africa/Cairo)");
     finishThread("t3", "Not logged in");
     await manager.tick();
     expect(viewOf("env-1")).toMatchObject({

@@ -87,7 +87,11 @@ export function usageLimit(items: ThreadItem[]): string | undefined {
 /** The text, trimmed, when it reports a provider's usage or rate limit, else undefined. */
 export function limitText(text: string): string | undefined {
   const trimmed = text.trim();
-  return /usage limit|rate limit|quota|too many requests|limit reached|limit resets/i.test(trimmed)
+  // Claude Code says "You've hit your limit · resets 8pm" or "5-hour limit reached"; Codex says
+  // "You've hit your usage limit".
+  return /usage limit|rate limit|quota|too many requests|hit your (\w+ )?limit|limit reached|\blimit\b[^\n]{0,40}\bresets?\b/i.test(
+    trimmed,
+  )
     ? trimmed.slice(0, 300)
     : undefined;
 }

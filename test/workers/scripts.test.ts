@@ -7,6 +7,7 @@ import {
   claudeSignInMessage,
   cleanupMessage,
   deployMessage,
+  limitText,
   parseDeploy,
   parseDeviceCode,
 } from "../../src/workers/scripts.js";
@@ -233,4 +234,23 @@ describe("worker scripts", () => {
       theme: "dark",
     });
   });
+});
+
+describe("limitText", () => {
+  it.each([
+    "You've hit your usage limit. Try again at 8:02 AM.",
+    "You've hit your limit · resets 8pm (Africa/Cairo)",
+    "You've hit your session limit · resets 1:50am (Asia/Tokyo)",
+    "5-hour limit reached ∙ resets 3pm",
+    "429 Too Many Requests",
+  ])("reads %j as a limit", (text) => {
+    expect(limitText(text)).toBeDefined();
+  });
+
+  it.each(["Not logged in", "Invalid API key · Please run /login", "OAuth token has expired"])(
+    "does not read %j as a limit",
+    (text) => {
+      expect(limitText(text)).toBeUndefined();
+    },
+  );
 });
