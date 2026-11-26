@@ -438,6 +438,24 @@ describe("Pipeline", () => {
     expect(other.t3.launches).toHaveLength(1);
   });
 
+  it("merges under the snapshot this pass recorded, when the project is removed mid-pass", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    // The project turns strict; while the gate reads the PR, the project is removed.
+    h.config.projects["octo/app"] = { policy: { preset: "strict", overrides: {} } };
+    h.github.commits.set(SHA, checks("success", ["ci"]));
+    const read = h.github.pullRequest.bind(h.github);
+    h.github.pullRequest = async (repo, number) => {
+      delete h.config.projects["octo/app"];
+      return read(repo, number);
+    };
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+  });
+
   it("starts no new merge for a removed project, though its review approves", async () => {
     const h = harness();
     const id = admitted(h);

@@ -452,7 +452,6 @@ export class Pipeline {
         else await this.afterReview(card);
         return;
       case "Merging":
-        this.recordPolicy(card);
         await this.gate(card);
         return;
       case "Validating":
@@ -471,8 +470,10 @@ export class Pipeline {
   private policy(card: Card): PolicySettings {
     const project = projectFor(this.options.config()?.document.projects, card.repo);
     if (project === undefined) {
-      // A merge in flight finishes under the policy it started under.
-      if (card.policy !== null && mergeInFlight(card)) return card.policy;
+      // A merge in flight finishes under the policy it last ran under, read afresh, since this
+      // pass may have recorded a newer one after the card was loaded.
+      const saved = this.cards.get(card.id);
+      if (saved.policy !== null && mergeInFlight(saved)) return saved.policy;
       throw new Error(`${card.repo} is no longer a factory project.`);
     }
     const settings = resolvePolicy(project.policy);
@@ -970,6 +971,9 @@ export class Pipeline {
     if (card.prNumber === null || card.headSha === null) {
       return this.escalate(card, "lead", "no PR to merge");
     }
+    // Before any await, however the gate was reached, so a removal during the read falls back to
+    // the policy in force when the merge decision began.
+    this.recordPolicy(card);
     const pr = await this.options.github.pullRequest(card.repo, card.prNumber);
     if (pr.state === "MERGED") {
       // A merge Hephaestus made, whose reply was lost, carries its marker.
