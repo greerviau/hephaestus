@@ -51,8 +51,10 @@ beforeEach(() => {
     cards,
     messaging: {
       credentials: () => ({ token: "token", home: CHANNEL }),
-      sendTo: (_platform, chat, text) => {
+      sendTo: (_platform, chat, text, attachments) => {
         posts.push({ chat, text });
+        if (text.includes("MEDIA:") && attachments !== true)
+          throw new Error("media without consent");
         return Promise.resolve();
       },
     },

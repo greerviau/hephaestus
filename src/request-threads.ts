@@ -153,9 +153,10 @@ export class RequestThreads {
     return row?.platform === "discord" ? { platform: "discord", chat: row.chat } : undefined;
   }
 
-  private async post(thread: Thread, text: string): Promise<void> {
+  /** Posts to a thread; only Hephaestus's own evidence lines may attach files. */
+  private async post(thread: Thread, text: string, attachments = false): Promise<void> {
     try {
-      await this.options.messaging.sendTo(thread.platform, thread.chat, text);
+      await this.options.messaging.sendTo(thread.platform, thread.chat, text, attachments);
     } catch (error) {
       // A thread that cannot be reached loses this update; the dashboard still has it.
       console.error(`Posting to thread ${thread.chat} failed`, error);
@@ -181,7 +182,7 @@ export class RequestThreads {
         const name = file.name.replace(/[^A-Za-z0-9._-]/g, "_").replace(/^\.+/, "_");
         const path = join(folder, name);
         writeFileSync(path, file.data, { mode: 0o600 });
-        await this.post(thread, `Evidence: ${name}\nMEDIA:${path}`);
+        await this.post(thread, `Evidence: ${name}\nMEDIA:${path}`, true);
       }
       setMeta(this.db, key, evidence.commit);
     } finally {
