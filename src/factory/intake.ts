@@ -1,5 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type { FactoryConfig } from "../config/document.js";
+import { projectFor, projectKey, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
@@ -119,7 +119,7 @@ export class Intake {
 
   issue(repo: string, number: number): TrackedIssue | undefined {
     const row = this.db
-      .prepare("SELECT * FROM issues WHERE repo = ? AND number = ?")
+      .prepare("SELECT * FROM issues WHERE repo = ? COLLATE NOCASE AND number = ?")
       .get(repo, number) as Row | undefined;
     return row === undefined ? undefined : toIssue(row);
   }
@@ -138,7 +138,7 @@ export class Intake {
   }
 
   private policy(repo: string): ReturnType<typeof resolvePolicy> {
-    const project = this.options.config()?.projects[repo];
+    const project = projectFor(this.options.config()?.projects, repo);
     if (project === undefined) throw new NotAFactoryProjectError(repo);
     return resolvePolicy(project.policy);
   }
@@ -146,6 +146,8 @@ export class Intake {
   /** Files an issue for a factory role and admits it when the project's cap allows. */
   fileIssue(role: string, repo: string, title: string, body: string): Promise<TrackedIssue> {
     return this.serial(async () => {
+      // The config's spelling, so the same repo under another casing shares its cap and record.
+      repo = projectKey(this.options.config()?.projects, repo) ?? repo;
       this.policy(repo);
       const number = await this.options.github.createIssue(repo, title, body);
       this.record({
@@ -207,12 +209,14 @@ export class Intake {
    * joined the line, to stay well inside GitHub's rate limit.
    */
   private async reconcile(repo: string, open: Set<number>, reads: number): Promise<void> {
-    const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
+    const mark = this.db.prepare(
+      "UPDATE issues SET closed = ? WHERE repo = ? COLLATE NOCASE AND number = ?",
+    );
     const complete = open.size < OPEN_ISSUES_LIMIT;
     const rows = this.db
       .prepare(
         `SELECT i.number, i.state, i.closed, i.card_id AS cardId, c.started_at AS startedAt, c.stage
-         FROM issues i LEFT JOIN cards c ON c.id = i.card_id WHERE i.repo = ?
+         FROM issues i LEFT JOIN cards c ON c.id = i.card_id WHERE i.repo = ? COLLATE NOCASE
          AND i.state IN ('admitted', 'awaiting-owner', 'held-cap') ORDER BY i.read_order`,
       )
       .all(repo) as Candidate[];
@@ -269,7 +273,7 @@ export class Intake {
     this.db
       .prepare(
         `UPDATE issues SET read_order = (SELECT COALESCE(MAX(read_order), 0) + 1 FROM issues)
-         WHERE repo = ? AND number = ?`,
+         WHERE repo = ? COLLATE NOCASE AND number = ?`,
       )
       .run(repo, number);
     try {
@@ -304,7 +308,7 @@ export class Intake {
     return this.serial(() => {
       const result = this.db
         .prepare(
-          `UPDATE issues SET state = 'rejected', updated_at = ? WHERE repo = ? AND number = ?
+          `UPDATE issues SET state = 'rejected', updated_at = ? WHERE repo = ? COLLATE NOCASE AND number = ?
            AND state IN ('awaiting-owner', 'held-cap')`,
         )
         .run(this.now().toISOString(), repo, number);
@@ -321,7 +325,7 @@ export class Intake {
       this.db
         .prepare(
           `SELECT COUNT(*) AS n FROM issues i JOIN cards c ON c.id = i.card_id
-           WHERE i.repo = ? AND i.provenance = 'factory' AND c.started_at IS NULL
+           WHERE i.repo = ? COLLATE NOCASE AND i.provenance = 'factory' AND c.started_at IS NULL
            AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
         )
         .get(repo) as { n: number }
@@ -347,7 +351,7 @@ export class Intake {
     });
     this.db
       .prepare(
-        "UPDATE issues SET state = 'admitted', card_id = ?, updated_at = ? WHERE repo = ? AND number = ?",
+        "UPDATE issues SET state = 'admitted', card_id = ?, updated_at = ? WHERE repo = ? COLLATE NOCASE AND number = ?",
       )
       .run(card.id, this.now().toISOString(), issue.repo, issue.number);
     const board = this.options.board?.();
@@ -389,7 +393,9 @@ export class Intake {
 
   private setState(repo: string, number: number, state: IssueState): void {
     this.db
-      .prepare("UPDATE issues SET state = ?, updated_at = ? WHERE repo = ? AND number = ?")
+      .prepare(
+        "UPDATE issues SET state = ?, updated_at = ? WHERE repo = ? COLLATE NOCASE AND number = ?",
+      )
       .run(state, this.now().toISOString(), repo, number);
   }
 }

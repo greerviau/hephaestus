@@ -406,6 +406,103 @@ describe("Pipeline", () => {
     expect(h.github.reopened).toEqual([5]);
   });
 
+  it("finishes a merge in flight under its last policy when its project is removed, and finds a project by any casing", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Validating");
+    delete h.config.projects["octo/app"];
+    // The merge fails its checks after the project is gone: it is still reverted.
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
+    expect(h.github.reverted).toEqual([5]);
+    await h.pipeline.tick();
+    h.finish(`t${String(h.t3.launches.length)}`, reviewResult("approve", SHA2));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([5, 9]);
+    expect(h.github.reopened).toEqual([5]);
+    // Back in Implementing, new work waits until the project is added again.
+    await h.pipeline.tick();
+    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
+
+    // The project comes back under GitHub's spelling; a card recorded as Octo/App still finds it.
+    const other = harness((config) => {
+      config.projects = { "octo/app": { policy: { preset: "standard", overrides: {} } } };
+    });
+    const card = other.cards.create({ repo: "Octo/App", issueNumber: 5, title: "Old casing" }).id;
+    other.github.issues.set(5, { number: 5, title: "x", body: "", author: "x", state: "OPEN" });
+    await other.pipeline.startWork(card, "brief");
+    expect(other.t3.launches).toHaveLength(1);
+  });
+
+  it("merges under the snapshot this pass recorded, when the project is removed mid-pass", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    // The project turns strict; while the gate reads the PR, the project is removed.
+    h.config.projects["octo/app"] = { policy: { preset: "strict", overrides: {} } };
+    h.github.commits.set(SHA, checks("success", ["ci"]));
+    const read = h.github.pullRequest.bind(h.github);
+    h.github.pullRequest = async (repo, number) => {
+      delete h.config.projects["octo/app"];
+      return read(repo, number);
+    };
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+  });
+
+  it("keeps the policy in force at approval when the project is removed during the board update", async () => {
+    let removeDuringMirror = false;
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.config.projects["octo/app"] = { policy: { preset: "strict", overrides: {} } };
+    h.github.commits.set(SHA, checks("success", ["ci"]));
+    const board = h.pipeline as unknown as { mirror: (...args: unknown[]) => Promise<void> };
+    const mirror = board.mirror.bind(h.pipeline);
+    board.mirror = async (...args: unknown[]) => {
+      if (removeDuringMirror) delete h.config.projects["octo/app"];
+      return mirror(...args);
+    };
+    removeDuringMirror = true;
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.github.merged).toEqual([]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+  });
+
+  it("starts no new merge for a removed project, though its review approves", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    delete h.config.projects["octo/app"];
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Reviewing");
+    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
+    expect(h.github.merged).toEqual([]);
+  });
+
+  it("records the policy of a card already validating, so its project's removal cannot strand it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    // As after an upgrade that added the snapshot: the card has none yet.
+    h.cards.update(id, { policy: null });
+    await h.pipeline.tick();
+    delete h.config.projects["octo/app"];
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    expect(h.github.reverted).toEqual([5]);
+  });
+
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
     const h = harness();
     const id = admitted(h);

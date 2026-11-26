@@ -6,6 +6,7 @@ import { pipelineRoutes } from "./pipeline.js";
 import { activityRoutes } from "./activity.js";
 import { analyticsRoutes } from "./analytics.js";
 import { improvementRoutes } from "./improvement.js";
+import { projectsRoutes } from "./projects.js";
 
 /** Every factory page and owner action. */
 export function dashboardRoutes(factory: FactoryPages): Route[] {
@@ -16,6 +17,7 @@ export function dashboardRoutes(factory: FactoryPages): Route[] {
     ...activityRoutes(factory),
     ...analyticsRoutes(factory),
     ...improvementRoutes(factory),
+    ...projectsRoutes(factory),
     ...factoryActionRoutes(factory),
   ];
 }

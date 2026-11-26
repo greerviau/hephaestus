@@ -38,16 +38,7 @@ On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` 
 
 2. Open `http://<host>:7700` and sign in.
 3. On **Workers**, name a private repo for config versions, such as `you/hephaestus-config`. Hephaestus creates it if it does not exist. Then click **Use as a worker** on each machine that should run factory threads.
-4. On **Settings**, add your factory repos under `projects` and save. Each repo takes a policy preset: `yolo`, `standard` (the default), or `strict`.
-
-   ```json
-   "projects": {
-     "you/your-repo": { "policy": { "preset": "standard", "overrides": {} } }
-   }
-   ```
-
-   Approve the new version. Approving deploys it to every worker and to the factory's Hermes profiles.
-
+4. On **Projects**, add each factory repo. Pick it from the list of repos your `gh` account can see, choose a policy preset (`yolo`, `standard`, the default, or `strict`), and change any setting from the preset if you need to. Adding a project creates a config version and approves and deploys it to every worker and to the factory's Hermes profiles.
 5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret card that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
 6. Give the factory's Hermes profiles a model and a channel for the planner:
 

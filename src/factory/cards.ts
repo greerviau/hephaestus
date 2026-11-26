@@ -1,3 +1,4 @@
+import type { PolicySettings } from "../config/policy.js";
 import type { Database } from "better-sqlite3";
 import type { Stage } from "../hermes/board.js";
 
@@ -47,6 +48,8 @@ export interface Card {
   foreignMerge: boolean;
   /** Set from the failed validation that opened a revert PR until that revert merges. */
   reverting: boolean;
+  /** The policy the card last ran under, kept so a merge in flight can finish if its project is removed. */
+  policy: PolicySettings | null;
   /** Counts every change, so a form from an earlier state of the card is refused. */
   version: number;
   createdAt: string;
@@ -116,6 +119,7 @@ interface Row {
   started_at: string | null;
   foreign_merge: number;
   reverting: number;
+  policy: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -152,6 +156,7 @@ const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt" | "versi
   startedAt: "started_at",
   foreignMerge: "foreign_merge",
   reverting: "reverting",
+  policy: "policy",
 };
 
 function toCard(row: Row): Card {
@@ -189,6 +194,7 @@ function toCard(row: Row): Card {
     startedAt: row.started_at,
     foreignMerge: row.foreign_merge === 1,
     reverting: row.reverting === 1,
+    policy: row.policy === null ? null : (JSON.parse(row.policy) as PolicySettings),
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -278,7 +284,10 @@ export class CardStore {
           ? value === true
             ? 1
             : 0
-          : key === "handled" || (key === "expectedChecks" && value !== null && value !== undefined)
+          : key === "handled" ||
+              ((key === "expectedChecks" || key === "policy") &&
+                value !== null &&
+                value !== undefined)
             ? JSON.stringify(value ?? {})
             : (value ?? null),
       );

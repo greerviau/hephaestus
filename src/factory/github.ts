@@ -207,6 +207,31 @@ export class GitHub {
     await this.gh(["issue", "reopen", String(number), "-R", repo, "--comment", comment]);
   }
 
+  /** Repos the gh account owns, collaborates on, or reaches through an organization, for the Projects page's suggestions. */
+  async repos(): Promise<string[]> {
+    const listed = await this.gh(
+      [
+        "api",
+        "user/repos?affiliation=owner,collaborator,organization_member&per_page=100&sort=pushed",
+        "--jq",
+        ".[].full_name",
+      ],
+      INTAKE_READ_TIMEOUT_MS,
+    );
+    return [...new Set(listed.split("\n").filter((line) => line !== ""))].sort((a, b) =>
+      a.localeCompare(b),
+    );
+  }
+
+  /** The repo's owner/name as GitHub spells it; throws when gh cannot read the repo. */
+  async canonicalName(repo: string): Promise<string> {
+    const result = await this.json<{ nameWithOwner: string }>(
+      ["repo", "view", repo, "--json", "nameWithOwner"],
+      INTAKE_READ_TIMEOUT_MS,
+    );
+    return result.nameWithOwner;
+  }
+
   async defaultBranch(repo: string): Promise<string> {
     const result = await this.json<{ defaultBranchRef: { name: string } }>([
       "repo",

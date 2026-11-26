@@ -1,5 +1,5 @@
 import type { Database } from "better-sqlite3";
-import type { FactoryConfig } from "../config/document.js";
+import { projectFor, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
@@ -455,9 +455,11 @@ export class Pipeline {
         await this.gate(card);
         return;
       case "Validating":
+        this.recordPolicy(card);
         await this.validate(card);
         return;
       case "Reverting":
+        this.recordPolicy(card);
         await this.revert(card);
         return;
       default:
@@ -466,9 +468,20 @@ export class Pipeline {
   }
 
   private policy(card: Card): PolicySettings {
-    const project = this.options.config()?.document.projects[card.repo];
-    if (project === undefined) throw new Error(`${card.repo} is no longer a factory project.`);
-    return resolvePolicy(project.policy);
+    const project = projectFor(this.options.config()?.document.projects, card.repo);
+    if (project === undefined) {
+      // A merge in flight finishes under the policy it last ran under, read afresh, since this
+      // pass may have recorded a newer one after the card was loaded.
+      const saved = this.cards.get(card.id);
+      if (saved.policy !== null && mergeInFlight(saved)) return saved.policy;
+      throw new Error(`${card.repo} is no longer a factory project.`);
+    }
+    const settings = resolvePolicy(project.policy);
+    const current = this.cards.get(card.id).policy;
+    if (JSON.stringify(current) !== JSON.stringify(settings)) {
+      this.cards.update(card.id, { policy: settings });
+    }
+    return settings;
   }
 
   private wait(card: Card, reason: string): void {
@@ -539,7 +552,7 @@ export class Pipeline {
         this.wait(card, "No config version is deployed.");
         return undefined;
       }
-      if (!this.isFactoryProject(card.repo)) {
+      if (!this.works(card)) {
         this.wait(card, `${card.repo} is no longer a factory project.`);
         return undefined;
       }
@@ -558,7 +571,7 @@ export class Pipeline {
       if (!still(current)) return undefined;
       // Everything is checked again after the preparation's awaits, on the same worker.
       const again = pending === undefined ? this.pickWorker(current) : worker;
-      const blocked = !this.isFactoryProject(card.repo)
+      const blocked = !this.works(current)
         ? `${card.repo} is no longer a factory project.`
         : typeof again === "string" || again.environmentId !== worker.environmentId
           ? "The card's worker changed or is not ready."
@@ -576,8 +589,25 @@ export class Pipeline {
     });
   }
 
+  /**
+   * Keeps the card's policy snapshot current on every pass of a merge in flight, so a card that
+   * was already merging when the snapshot was introduced, or whose policy changed, has one.
+   */
+  private recordPolicy(card: Card): void {
+    if (this.isFactoryProject(card.repo)) this.policy(card);
+  }
+
+  /**
+   * Whether the pipeline may work on the card: its project is a factory
+   * project, or the card's merge is in flight and finishes under the policy
+   * it last ran under, though the project was removed meanwhile.
+   */
+  private works(card: Card): boolean {
+    return this.isFactoryProject(card.repo) || (card.policy !== null && mergeInFlight(card));
+  }
+
   private isFactoryProject(repo: string): boolean {
-    return this.options.config()?.document.projects[repo] !== undefined;
+    return projectFor(this.options.config()?.document.projects, repo) !== undefined;
   }
 
   private modelOptions(provider: Provider): Pick<LaunchOptions, "model" | "options"> {
@@ -907,6 +937,13 @@ export class Pipeline {
       );
     }
     if (review.verdict === "approve") {
+      // A project removed meanwhile starts no new merge; the approval waits until it is added back.
+      if (!this.isFactoryProject(card.repo)) {
+        this.wait(card, `${card.repo} is no longer a factory project.`);
+        return;
+      }
+      // Recorded before the board update awaits, so a removal during it keeps the policy in force now.
+      this.recordPolicy(card);
       const next = this.cards.transition(card.id, "Merging", `approved at ${review.headSha}`, done);
       await this.mirror(next, "Merging");
       await this.gate(next);
@@ -936,6 +973,9 @@ export class Pipeline {
     if (card.prNumber === null || card.headSha === null) {
       return this.escalate(card, "lead", "no PR to merge");
     }
+    // Before any await, however the gate was reached, so a removal during the read falls back to
+    // the policy in force when the merge decision began.
+    this.recordPolicy(card);
     const pr = await this.options.github.pullRequest(card.repo, card.prNumber);
     if (pr.state === "MERGED") {
       // A merge Hephaestus made, whose reply was lost, carries its marker.
@@ -1612,4 +1652,14 @@ End your final message with this block, filled in:
 ${RESULT_FENCE}hephaestus-result
 {"verdict": "approve" or "changes", "headSha": "${headSha}", "findings": "<numbered findings, each with file:line and the fix; empty when you approve>"}
 ${RESULT_FENCE}`;
+}
+
+/** A card whose merge is in flight: merging, validating, or reverting it. */
+function mergeInFlight(card: Card): boolean {
+  return (
+    card.stage === "Merging" ||
+    card.stage === "Validating" ||
+    card.stage === "Reverting" ||
+    card.reverting
+  );
 }

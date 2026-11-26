@@ -366,6 +366,36 @@ describe("Intake", () => {
     expect((await h.intake.fileIssue("planner", "octo/app", "two", "")).state).toBe("admitted");
   });
 
+  it("files under the config's spelling, so another casing shares the cap", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: { openIssueCap: 1 } },
+      };
+    });
+    expect((await h.intake.fileIssue("planner", "octo/app", "one", "")).state).toBe("admitted");
+    const second = await h.intake.fileIssue("planner", "Octo/App", "two", "");
+    expect(second).toMatchObject({ repo: "octo/app", state: "held-cap" });
+    await h.intake.poll();
+    expect(h.intake.issues().filter((issue) => issue.number === second.number)).toHaveLength(1);
+  });
+
+  it("tracks an issue once whatever casing earlier records used", async () => {
+    const h = harness();
+    // An issue recorded while the project was spelled Octo/App, then polled under octo/app.
+    h.db
+      .prepare(
+        `INSERT INTO issues (repo, number, title, author, provenance, filed_by, state, created_at, updated_at)
+         VALUES ('Octo/App', 7, 'Old', 'x', 'external', NULL, 'awaiting-owner', 'x', 'x')`,
+      )
+      .run();
+    h.github.issues.set(7, { number: 7, title: "Old", body: "", author: "x", state: "OPEN" });
+    await h.intake.poll();
+    expect(h.intake.issues().filter((issue) => issue.number === 7)).toHaveLength(1);
+    await h.intake.approve("octo/app", 7);
+    await expect(h.intake.approve("octo/app", 7)).resolves.toBeDefined();
+    expect(h.cards.list()).toHaveLength(1);
+  });
+
   it("refuses a repo that is not a factory project", async () => {
     const h = harness();
     await expect(h.intake.fileIssue("planner", "octo/other", "x", "")).rejects.toThrow(

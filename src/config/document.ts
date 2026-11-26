@@ -70,6 +70,28 @@ export interface FactoryConfig {
   skills: Record<string, Record<string, string>>;
 }
 
+/**
+ * A project's config by repo. GitHub repo names are not case-sensitive, so a
+ * card or issue recorded under another casing still finds its project.
+ */
+export function projectFor(
+  projects: Record<string, ProjectConfig> | undefined,
+  repo: string,
+): ProjectConfig | undefined {
+  const key = projectKey(projects, repo);
+  return key === undefined ? undefined : projects?.[key];
+}
+
+/** The config's own spelling of a project's repo, found without regard to case. */
+export function projectKey(
+  projects: Record<string, ProjectConfig> | undefined,
+  repo: string,
+): string | undefined {
+  if (projects === undefined) return undefined;
+  if (projects[repo] !== undefined) return repo;
+  return Object.keys(projects).find((name) => name.toLowerCase() === repo.toLowerCase());
+}
+
 export class ConfigValidationError extends Error {
   constructor(readonly problems: string[]) {
     super(`Invalid config: ${problems.join("; ")}`);
