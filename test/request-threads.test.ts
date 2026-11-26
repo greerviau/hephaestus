@@ -254,7 +254,13 @@ describe("milestone", () => {
     });
     expect(
       milestone(
-        { id: 1, cardId: id, at: "", kind: "stage:Escalated", detail: "to the owner: approve" },
+        {
+          id: 1,
+          cardId: id,
+          at: "",
+          kind: "stage:Escalated",
+          detail: "to the owner: the PR touches .github/workflows/ci.yml",
+        },
         escalated,
         "http://host:7700/",
       ),
@@ -377,5 +383,76 @@ describe("RequestThreads, catch-up text", () => {
     db.prepare("UPDATE cards SET stage = 'Reverting' WHERE id = ?").run(reverting);
     await threads.follow("octo/app", 24, { platform: "discord", chat: THREAD });
     expect(posts.at(-1)?.text).toContain("being reverted with PR #12.");
+  });
+});
+
+describe("RequestThreads, an updated PR", () => {
+  it("says a PR back in review is updated or the same, a new PR is opened, and links each event's own PR", async () => {
+    const id = card();
+    const other = card(8);
+    await threads.progress();
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    // Another card's PR #5 does not count for this one.
+    cards.transition(other, "Implementing", "work started");
+    cards.transition(other, "Reviewing", "PR #5 at aaa");
+    cards.transition(id, "Implementing", "work started");
+    cards.update(id, { prNumber: 55 });
+    cards.transition(id, "Reviewing", "PR #55 at abc");
+    cards.update(id, { prNumber: 5 });
+    cards.transition(id, "Implementing", "the lead restarted the work");
+    cards.transition(id, "Reviewing", "PR #5 at abc");
+    cards.transition(id, "Implementing", "the reviewer asked for changes");
+    cards.transition(id, "Reviewing", "PR #5 at abd");
+    cards.transition(id, "Implementing", "the lead restarted the work");
+    cards.transition(id, "Reviewing", "PR #5 at abd");
+    cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
+    cards.transition(id, "Merging", "PR #5 at abe; the policy needs no review");
+    cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
+    cards.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
+    cards.transition(id, "Implementing", "the lead restarted the work");
+    cards.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
+    await threads.progress();
+    expect(
+      posts.map((post) => post.text).filter((text) => /review|merges once/.test(text)),
+    ).toEqual([
+      "PR opened, now in review: https://github.com/octo/app/pull/55",
+      "PR opened, now in review: https://github.com/octo/app/pull/5",
+      "The review asked for changes. The engineer is on them.",
+      "The PR is updated and back in review: https://github.com/octo/app/pull/5",
+      "The PR is back in review: https://github.com/octo/app/pull/5",
+      "The PR is updated; it merges once its checks pass: https://github.com/octo/app/pull/5",
+      "The PR is updated; it merges once its checks pass: https://github.com/octo/app/pull/5",
+      "The PR merges once its checks pass: https://github.com/octo/app/pull/5",
+    ]);
+  });
+
+  it("posts a revert once, linking the revert PR its event names", async () => {
+    const id = card();
+    await threads.progress();
+    await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    db.prepare("UPDATE cards SET stage = 'Validating', revert_pr = 20 WHERE id = ?").run(id);
+    cards.transition(id, "Reverting", "checks failed on m1 (ci); opened revert PR #12");
+    cards.transition(id, "Escalated", "to the owner: approve the revert merge", {
+      escalatedTo: "owner",
+      reason: "approve the revert merge",
+    });
+    cards.transition(id, "Reverting", "the owner approved the merge", {
+      reason: null,
+      escalatedTo: null,
+    });
+    cards.transition(id, "Escalated", "to the owner: the revert has not merged after an hour", {
+      escalatedTo: "owner",
+    });
+    cards.transition(id, "Reverting", "revert PR #12 merged on GitHub");
+    // The card's reason by the time the pass runs is a later one; the escalation keeps its own.
+    cards.update(id, { reason: "yes, carry on" });
+    await threads.progress();
+    const texts = posts.map((post) => post.text);
+    expect(texts.filter((text) => text.includes("being reverted"))).toEqual([
+      "Checks failed on the default branch after the merge, so it is being reverted with https://github.com/octo/app/pull/12.",
+    ]);
+    expect(texts.find((text) => text.startsWith("This needs you"))).toMatch(
+      /^This needs you: approve the revert merge\./,
+    );
   });
 });
