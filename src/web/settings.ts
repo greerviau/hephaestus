@@ -2,6 +2,8 @@ import type { Change } from "../config/diff.js";
 import { ConfigValidationError, MAX_CONFIG_BYTES } from "../config/document.js";
 import { VersionNotFoundError, type ConfigStore, type ConfigVersion } from "../config/store.js";
 import { ownerReason } from "./environments.js";
+import { applyFactorySettings, factorySettingsForm } from "./factory-settings.js";
+import { publishVersion } from "./versions.js";
 import {
   banner,
   card,
@@ -22,8 +24,8 @@ import { readBody, redirect, sendHtml, sendJson, type Route, type RouteContext }
  */
 const MAX_EDIT_BYTES = 3 * MAX_CONFIG_BYTES + 64 * 1024;
 
-/** Publishes a version and deploys it to every worker. */
-export type Deploy = (id: number) => Promise<{ hermesError?: string }>;
+export type { Deploy } from "./versions.js";
+import type { Deploy } from "./versions.js";
 
 /** Settings: config versions, their diffs, and edits that create new versions. */
 export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
@@ -43,6 +45,7 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
       },
     },
     { method: "POST", path: /^\/settings\/versions$/, handle: (context) => create(context) },
+    { method: "POST", path: /^\/settings\/factory$/, handle: (context) => saveFactory(context) },
     {
       method: "POST",
       path: /^\/settings\/versions\/(\d+)\/(approve|reject|revert)$/,
@@ -103,8 +106,9 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
   }
 
   function list(
-    { response }: RouteContext,
+    { response, url }: RouteContext,
     problem?: { text: string; errors: string[]; parentId: string; message: string },
+    factoryErrors?: string[],
   ): void {
     const current = store.current();
     const rows = store
@@ -126,7 +130,7 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
         : `<div class="banner err" role="alert"><strong class="status s-crit">The draft was not saved</strong><ul>${problem.errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`;
     sendHtml(
       response,
-      problem === undefined ? 200 : 400,
+      problem === undefined && factoryErrors === undefined ? 200 : 400,
       settingsPage(
         "Settings",
         `<div class="grid">${card({
@@ -145,7 +149,18 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
                   ],
                   rows,
                 ),
-        })}${card({
+        })}${
+          current === undefined
+            ? ""
+            : card({
+                title: "Factory settings",
+                body: `${url.searchParams.get("notice") === "factory-saved" ? banner("info", "Factory settings saved", "The new version is deployed.") : ""}${
+                  factoryErrors === undefined
+                    ? ""
+                    : `<div class="banner err" role="alert"><strong class="status s-crit">Not saved</strong><ul>${factoryErrors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`
+                }<p class="lede">Limits, models, and schedules. Saving creates a version built from version ${String(current.id)}. Projects are on <a href="/projects">Projects</a>; instructions, skills, and role personas are in the editor below.</p>${factorySettingsForm(current.document, current.id)}`,
+              })
+        }${card({
           title: "Edit the config",
           body: `<p class="lede">Saving creates a draft version built from version ${parentId === "" ? "none" : escapeHtml(parentId)}. Nothing changes until the draft is approved and deployed.</p>
 ${errors}
@@ -293,6 +308,54 @@ ${errors}
         });
       else throw error;
     }
+  }
+
+  async function saveFactory(context: RouteContext): Promise<void> {
+    const body = await readBody(context.request, 64 * 1024);
+    if (body === undefined) {
+      sendHtml(
+        context.response,
+        413,
+        settingsPage("Too large", banner("err", "Too large", "The form is too large.")),
+      );
+      return;
+    }
+    const form = new URLSearchParams(body);
+    const base = store.current();
+    if (base === undefined || String(base.id) !== (form.get("parentId") ?? "")) {
+      list(context, undefined, [
+        "The config changed since the page was loaded. Check the settings and save again.",
+      ]);
+      return;
+    }
+    const applied = applyFactorySettings(base.document, form);
+    if (applied.errors.length > 0) {
+      list(context, undefined, applied.errors);
+      return;
+    }
+    let published;
+    try {
+      published = await publishVersion({
+        store,
+        deploy,
+        document: applied.config,
+        message: "Change the factory settings",
+        parentId: base.id,
+        deployNow: form.get("deploy") === "on",
+      });
+    } catch (error) {
+      if (error instanceof ConfigValidationError) list(context, undefined, error.problems);
+      else if (error instanceof Error) list(context, undefined, [error.message]);
+      else throw error;
+      return;
+    }
+    const id = String(published.id);
+    if (published.state === "draft") redirect(context.response, `/settings/versions/${id}`);
+    else if (published.state === "deploy-failed")
+      redirect(context.response, `/settings/versions/${id}?deploy=failed`);
+    else if (published.state === "deployed" && published.hermesError !== undefined)
+      redirect(context.response, `/settings/versions/${id}?hermes=failed`);
+    else redirect(context.response, "/settings?notice=factory-saved");
   }
 
   async function act({ response, params }: RouteContext): Promise<void> {

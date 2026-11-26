@@ -578,4 +578,10 @@ ul.prog .hint { margin: 4px 0 0; }
   details.act > form { min-width: 0; }
   .chart svg.plot { min-width: 560px; }
 }
+
+.setup-steps { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 10px; }
+.setup-steps li { display: flex; gap: 10px; align-items: flex-start; }
+.setup-steps li.done strong { color: var(--muted); font-weight: 500; }
+.setup-steps .sub { margin: 2px 0 0; }
+label.check { display: flex; gap: 8px; align-items: center; font-size: 14px; }
 `;

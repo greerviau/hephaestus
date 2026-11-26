@@ -1,3 +1,4 @@
+import { setupCard } from "./setup.js";
 import type { Card } from "../factory/cards.js";
 import type { TrackedIssue } from "../factory/intake.js";
 import type { StoredThread } from "../t3/events.js";
@@ -300,6 +301,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
                     )}</ul>${t3.state === "loading" ? loading("Checking T3 links...") : ""}`;
 
         const body = [
+          setupCard(factory, workers.ok ? workers.value : []),
           card({
             title: "Needs you",
             className: needs.length > 0 ? "needbox" : undefined,

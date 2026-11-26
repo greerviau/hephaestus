@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { accessSync, constants, existsSync, mkdirSync, realpathSync } from "node:fs";
+import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -490,6 +490,8 @@ async function main(argv: string[]): Promise<number> {
             environments,
             deploy: (id) => workers.deployVersion(id),
             github: engine.github,
+            configRepo: () => getMeta(db, CONFIG_REPO_KEY),
+            hermesModel: () => hermesDefaultModel(paths.hermes),
           }),
           ...settingsRoutes(store, (id) => workers.deployVersion(id)),
           ...environmentRoutes(environments, Date.now, {
@@ -565,4 +567,14 @@ function executablePath(path: string): string {
     throw new Error(`${absolute} is not an executable file.`);
   }
   return absolute;
+}
+
+/** The default model in the factory Hermes root's config, or undefined when none is set. */
+function hermesDefaultModel(hermesHome: string): string | undefined {
+  try {
+    const text = readFileSync(join(hermesHome, "config.yaml"), "utf8");
+    return /^model:[ \t]*\n(?:[ \t]+.*\n)*?[ \t]+default:[ \t]*["']?([^"'\s#]+)/m.exec(text)?.[1];
+  } catch {
+    return undefined;
+  }
 }
