@@ -290,14 +290,11 @@ export class Pipeline {
         throw new Error(`Card ${String(cardId)} is not waiting for the owner.`);
       }
       // A form from an earlier escalation of the same card must not act on this one.
-      if (version !== undefined && version !== card.updatedAt) {
+      if (version !== undefined && version !== String(card.version)) {
         throw new Error(`Card ${String(cardId)} changed since the page was loaded.`);
       }
       // A rollback stays with the owner: the lead's restart would rebuild the reverted work.
-      if (
-        card.ownerAction === "revert-merge" ||
-        (card.revertPr !== null && card.prNumber !== null && card.mergeSha !== null)
-      ) {
+      if (card.reverting) {
         throw new Error(
           `Card ${String(cardId)} is reverting a merge; approve the revert or abandon the card.`,
         );
@@ -348,7 +345,7 @@ export class Pipeline {
 
   abandon(cardId: number, reason: string, version?: string): Promise<Card> {
     return this.withCard(cardId, () => {
-      if (version !== undefined && version !== this.cards.get(cardId).updatedAt) {
+      if (version !== undefined && version !== String(this.cards.get(cardId).version)) {
         throw new Error(`Card ${String(cardId)} changed since the page was loaded.`);
       }
       return Promise.resolve(this.cards.transition(cardId, "Abandoned", reason, { reason }));
@@ -1020,6 +1017,7 @@ export class Pipeline {
       `checks failed on ${card.mergeSha} (${checks.failed.join(", ")}); opened revert PR #${String(revertPr)}`,
       {
         revertPr,
+        reverting: true,
         reviewThread: null,
         ownerApprovedSha: null,
         ownerAction: null,
@@ -1158,13 +1156,24 @@ export class Pipeline {
       }
     } else if (pr.state !== "MERGED") {
       return this.escalate(card, "owner", `the revert PR #${String(pr.number)} was closed`);
-    } else if (!this.cards.mergedByHephaestus(card.repo, pr.number)) {
-      this.cards.recordMerge(card.repo, pr.number, pr.mergeSha ?? "", card.id, true, true);
-      this.cards.event(
-        card.id,
-        "foreign-merge",
-        `revert PR #${String(pr.number)} merged outside Hephaestus`,
-      );
+    } else if (!this.cards.hasMerge(card.repo, pr.number)) {
+      // A merge Hephaestus made, whose record was lost, carries its marker.
+      const ours =
+        pr.mergeSha === null
+          ? false
+          : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
+      if (ours === undefined) {
+        this.wait(card, "reading back whether the revert merge was Hephaestus's");
+        return;
+      }
+      this.cards.recordMerge(card.repo, pr.number, pr.mergeSha ?? "", card.id, true, !ours);
+      if (!ours) {
+        this.cards.event(
+          card.id,
+          "foreign-merge",
+          `revert PR #${String(pr.number)} merged outside Hephaestus`,
+        );
+      }
     }
     const reverted = card.prNumber;
     if (card.issueNumber !== null) {
@@ -1195,6 +1204,7 @@ export class Pipeline {
         pendingMessage: null,
         rounds: 0,
         waiting: null,
+        reverting: false,
       },
     );
     await this.mirror(next, "Implementing");
@@ -1233,6 +1243,24 @@ export class Pipeline {
     for (const { id } of this.cards.list(["Implementing", "Reviewing", "Merging", "Escalated"])) {
       await this.withCard(id, async () => {
         const card = this.cards.get(id);
+        if (card.stage === "Escalated" && card.reverting && card.revertPr !== null) {
+          // A revert PR merged on GitHub while it waited for the owner completes the revert.
+          let revert;
+          try {
+            revert = await this.options.github.pullRequest(card.repo, card.revertPr);
+          } catch {
+            return;
+          }
+          if (revert.state !== "MERGED") return;
+          const next = this.cards.transition(
+            card.id,
+            "Reverting",
+            `revert PR #${String(card.revertPr)} merged on GitHub`,
+            { ownerAction: null, escalatedTo: null, reason: null },
+          );
+          await this.mirror(next, "Reverting");
+          return;
+        }
         if (card.prNumber === null || card.foreignMerge || card.stage === "Done") return;
         if (this.cards.mergedByHephaestus(card.repo, card.prNumber)) return;
         let pr;

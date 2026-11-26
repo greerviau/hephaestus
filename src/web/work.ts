@@ -128,7 +128,8 @@ export function workRoutes(factory: FactoryPages): Route[] {
             (issue) => project === "" || issue.repo === project,
           );
           const waiting = inProject.filter(
-            (issue) => issue.state === "awaiting-owner" || issue.state === "held-cap",
+            (issue) =>
+              !issue.closed && (issue.state === "awaiting-owner" || issue.state === "held-cap"),
           );
           const rejected = inProject.filter((issue) => issue.state === "rejected");
           issuesBody =
@@ -247,7 +248,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const back = `/work/${String(id)}`;
         const actions = escalationActions(item, back);
 
-        const reverting = item.stage === "Reverting" || item.ownerAction === "revert-merge";
+        const reverting = item.reverting;
         const kv: [string, string][] = [
           ["Stage", stagePill(item)],
           [

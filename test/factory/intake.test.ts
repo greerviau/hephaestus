@@ -102,6 +102,20 @@ describe("Intake", () => {
     expect((await h.intake.approve("octo/app", 7)).issueNumber).toBe(7);
   });
 
+  it("finds a reopened issue that a full open list leaves out", async () => {
+    const h = harness();
+    h.github.issues.set(7, { number: 7, title: "Old", body: "", author: "x", state: "OPEN" });
+    await h.intake.poll();
+    h.github.issues.set(7, { number: 7, title: "Old", body: "", author: "x", state: "CLOSED" });
+    await h.intake.poll();
+    for (let number = 1000; number < 1200; number += 1) {
+      h.github.issues.set(number, { number, title: "New", body: "", author: "x", state: "OPEN" });
+    }
+    h.github.issues.set(7, { number: 7, title: "Old", body: "", author: "x", state: "OPEN" });
+    await h.intake.poll();
+    expect(h.intake.issue("octo/app", 7)?.closed).toBe(false);
+  });
+
   it("frees the cap when an unstarted issue is closed", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {

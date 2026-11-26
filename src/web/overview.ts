@@ -75,7 +75,7 @@ export function escalationActions(item: Card, back: string): string {
         `/work/${id}/send-to-lead`,
         "Send to lead",
         { name: "note", label: "Note for the lead", placeholder: "What to change" },
-        { fields: { back, version: item.updatedAt } },
+        { fields: { back, version: String(item.version) } },
       ),
     );
   }
@@ -85,7 +85,7 @@ export function escalationActions(item: Card, back: string): string {
         `/work/${id}/abandon`,
         "Abandon",
         { name: "reason", label: "Why abandon it" },
-        { fields: { back, version: item.updatedAt }, crit: true },
+        { fields: { back, version: String(item.version) }, crit: true },
       ),
     );
   }

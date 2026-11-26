@@ -287,17 +287,60 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.cards.get(id).stage).toBe("Escalated");
 
+    // The owner merges the revert on GitHub instead of approving it on the dashboard.
     h.github.prs.set(
       9,
       pr(9, SHA2, { headBranch: "revert-5", state: "MERGED", mergeSha: "f".repeat(40) }),
     );
-    await h.pipeline.approveMerge(id, SHA2, "revert-merge");
+    h.github.reopenFailures = 1;
+    h.setClock(Date.parse("2026-11-25T13:00:00Z"));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Reverting");
+    // The issue's reopen fails once; the retry a day later keeps the revert's day and logs it once.
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Reverting");
+    h.setClock(Date.parse("2026-11-26T13:00:00Z"));
     await h.pipeline.tick();
 
     expect(h.github.merged).toEqual([5]);
     expect(h.cards.revertCount()).toBe(1);
     expect(h.cards.mergedByHephaestus("octo/app", 9)).toBe(false);
     expect(h.github.reopened).toEqual([5]);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", reverting: false });
+    expect(h.cards.events(id).filter((event) => event.kind === "foreign-merge")).toHaveLength(1);
+    expect(h.db.prepare("SELECT at FROM merges WHERE pr_number = 9").get()).toEqual({
+      at: "2026-11-25T13:00:00.000Z",
+    });
+  });
+
+  it("counts its own revert merge as its own when the record of it was lost", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    // Hephaestus merged the revert, and the write that records it failed.
+    h.github.prs.set(
+      9,
+      pr(9, SHA2, { headBranch: "revert-5", state: "MERGED", mergeSha: "8".repeat(40) }),
+    );
+    h.github.ownMerges.add("8".repeat(40));
+    await h.pipeline.tick();
+
+    expect(h.cards.mergedByHephaestus("octo/app", 9)).toBe(true);
+    expect(h.cards.events(id).some((event) => event.kind === "foreign-merge")).toBe(false);
+  });
+
+  it("lets the owner send a retried card to the lead after its earlier revert completed", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.escalateToOwner(id, "checks failed on the retry's merge commit");
+    h.cards.update(id, { revertPr: 9, prNumber: 12, mergeSha: MERGE, reverting: false });
+
+    await h.pipeline.sendToLead(id, "look again");
+    expect(h.cards.get(id).escalatedTo).toBe("lead");
   });
 
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
@@ -439,8 +482,8 @@ describe("Pipeline", () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.escalateToOwner(id, "first question");
-    const seen = h.cards.get(id).updatedAt;
-    h.setClock(Date.parse(seen) + 1000);
+    // The clock stands still: both escalations share a timestamp, and only the version tells them apart.
+    const seen = String(h.cards.get(id).version);
     await h.pipeline.sendToLead(id, "answer", seen);
     await h.pipeline.escalateToOwner(id, "second question");
 

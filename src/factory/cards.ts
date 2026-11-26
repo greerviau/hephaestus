@@ -45,6 +45,10 @@ export interface Card {
   /** When the first implement thread started, for cycle time. */
   startedAt: string | null;
   foreignMerge: boolean;
+  /** Set from the failed validation that opened a revert PR until that revert merges. */
+  reverting: boolean;
+  /** Counts every change, so a form from an earlier state of the card is refused. */
+  version: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,11 +115,13 @@ interface Row {
   pending_message: string | null;
   started_at: string | null;
   foreign_merge: number;
+  reverting: number;
+  version: number;
   created_at: string;
   updated_at: string;
 }
 
-const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt">, string> = {
+const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt" | "version">, string> = {
   repo: "repo",
   issueNumber: "issue_number",
   title: "title",
@@ -145,6 +151,7 @@ const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt">, string
   pendingMessage: "pending_message",
   startedAt: "started_at",
   foreignMerge: "foreign_merge",
+  reverting: "reverting",
 };
 
 function toCard(row: Row): Card {
@@ -181,6 +188,8 @@ function toCard(row: Row): Card {
     pendingMessage: row.pending_message,
     startedAt: row.started_at,
     foreignMerge: row.foreign_merge === 1,
+    reverting: row.reverting === 1,
+    version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -243,13 +252,13 @@ export class CardStore {
 
   update(
     id: number,
-    fields: Partial<Omit<Card, "id" | "createdAt" | "updatedAt" | "stage">>,
+    fields: Partial<Omit<Card, "id" | "createdAt" | "updatedAt" | "stage" | "version">>,
   ): Card {
     const entries = Object.entries(fields) as [keyof typeof COLUMNS, unknown][];
     if (entries.length > 0) {
       const sets = entries.map(([key]) => `${COLUMNS[key]} = ?`).join(", ");
       const values = entries.map(([key, value]) =>
-        key === "foreignMerge"
+        key === "foreignMerge" || key === "reverting"
           ? value === true
             ? 1
             : 0
@@ -258,7 +267,7 @@ export class CardStore {
             : (value ?? null),
       );
       this.db
-        .prepare(`UPDATE cards SET ${sets}, updated_at = ? WHERE id = ?`)
+        .prepare(`UPDATE cards SET ${sets}, updated_at = ?, version = version + 1 WHERE id = ?`)
         .run(...(values as (string | number | null)[]), this.now().toISOString(), id);
     }
     return this.get(id);
@@ -269,13 +278,13 @@ export class CardStore {
     id: number,
     to: Stage,
     detail: string,
-    fields: Partial<Omit<Card, "id" | "createdAt" | "updatedAt" | "stage">> = {},
+    fields: Partial<Omit<Card, "id" | "createdAt" | "updatedAt" | "stage" | "version">> = {},
   ): Card {
     return this.db.transaction(() => {
       const card = this.get(id);
       if (!TRANSITIONS[card.stage].includes(to)) throw new TransitionError(card, to);
       this.db
-        .prepare("UPDATE cards SET stage = ?, updated_at = ? WHERE id = ?")
+        .prepare("UPDATE cards SET stage = ?, updated_at = ?, version = version + 1 WHERE id = ?")
         .run(to, this.now().toISOString(), id);
       this.update(id, fields);
       this.event(id, `stage:${to}`, detail);
@@ -372,6 +381,15 @@ export class CardStore {
     return (
       this.db.prepare("SELECT COUNT(*) AS n FROM merges WHERE revert = 1").get() as { n: number }
     ).n;
+  }
+
+  /** Whether any merge of the PR is recorded, by Hephaestus or anyone else. */
+  hasMerge(repo: string, prNumber: number): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM merges WHERE repo = ? AND pr_number = ?")
+        .get(repo, prNumber) !== undefined
+    );
   }
 
   mergedByHephaestus(repo: string, prNumber: number): boolean {

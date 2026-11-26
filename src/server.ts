@@ -140,7 +140,7 @@ export function createDashboardServer({
       return;
     }
     loginsInFlight += 1;
-    reserveAttempt(client);
+    const reserved = reserveAttempt(client);
     let valid = false;
     try {
       const body = await readBody(request, MAX_LOGIN_FORM_BYTES);
@@ -155,7 +155,7 @@ export function createDashboardServer({
       } catch (error) {
         // An outage is not a wrong password, so the reserved attempt is given back.
         console.error("Reading the password from the store failed", error);
-        releaseAttempt(client);
+        releaseAttempt(client, reserved);
         send(response, 503, HTML, storeDownPage());
         return;
       }
@@ -187,21 +187,23 @@ export function createDashboardServer({
     return entry.count >= LOGIN_FAILURE_LIMIT;
   }
 
-  function releaseAttempt(client: string): void {
+  /** Gives back a reserved attempt, unless its window has since been replaced by a new one. */
+  function releaseAttempt(client: string, reserved: { count: number; since: number }): void {
     const entry = failures.get(client);
-    if (entry === undefined) return;
+    if (entry !== reserved) return;
     entry.count -= 1;
     if (entry.count <= 0) failures.delete(client);
   }
 
   /** Counts an attempt against the client's limit before its password is checked. */
-  function reserveAttempt(client: string): void {
+  function reserveAttempt(client: string): { count: number; since: number } {
     for (const [key, entry] of failures) {
       if (now() - entry.since >= LOGIN_FAILURE_WINDOW_MS) failures.delete(key);
     }
     const entry = failures.get(client) ?? { count: 0, since: now() };
     entry.count += 1;
     failures.set(client, entry);
+    return entry;
   }
 }
 

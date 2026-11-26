@@ -3,6 +3,9 @@ import { commandRunner, type CommandRun } from "../workers/config-repo.js";
 export type CheckState = "success" | "pending" | "failure" | "none";
 
 /** GitHub may have merged the PR, and Hephaestus could not read back whether it did. */
+/** The most open issues one read lists; an issue missing from a full list may still be open. */
+export const OPEN_ISSUES_LIMIT = 200;
+
 export class MergeOutcomeUnknownError extends Error {
   constructor(
     readonly number: number,
@@ -158,7 +161,7 @@ export class GitHub {
       "--state",
       "open",
       "--limit",
-      "200",
+      String(OPEN_ISSUES_LIMIT),
       "--json",
       "number,title,body,author",
     ]);

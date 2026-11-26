@@ -2,7 +2,7 @@ import type { Database } from "better-sqlite3";
 import type { FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
-import type { GitHub } from "./github.js";
+import { OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
 export type IssueState = "admitted" | "awaiting-owner" | "held-cap" | "rejected";
 
@@ -15,6 +15,8 @@ export interface TrackedIssue {
   filedBy: string | null;
   state: IssueState;
   cardId: number | null;
+  /** Closed on GitHub while it waited for the owner; it returns to the queue if reopened. */
+  closed: boolean;
   createdAt: string;
 }
 
@@ -50,6 +52,7 @@ interface Row {
   filed_by: string | null;
   state: IssueState;
   card_id: number | null;
+  closed: number;
   created_at: string;
 }
 
@@ -63,6 +66,7 @@ function toIssue(row: Row): TrackedIssue {
     filedBy: row.filed_by,
     state: row.state,
     cardId: row.card_id,
+    closed: row.closed === 1,
     createdAt: row.created_at,
   };
 }
@@ -204,12 +208,24 @@ export class Intake {
       )
       .all(repo) as { number: number; closed: number }[];
     const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
+    // A full list may leave out a reopened issue, which is then read on its own.
+    const complete = open.size < OPEN_ISSUES_LIMIT;
     for (const issue of waiting) {
       if (open.has(issue.number)) {
         if (issue.closed === 1) mark.run(0, repo, issue.number);
-      } else if (issue.closed === 0 && (await this.isClosed(repo, issue.number))) {
-        mark.run(1, repo, issue.number);
+      } else if (issue.closed === 0) {
+        if (await this.isClosed(repo, issue.number)) mark.run(1, repo, issue.number);
+      } else if (!complete && (await this.isOpen(repo, issue.number))) {
+        mark.run(0, repo, issue.number);
       }
+    }
+  }
+
+  private async isOpen(repo: string, number: number): Promise<boolean> {
+    try {
+      return (await this.options.github.issue(repo, number)).state === "OPEN";
+    } catch {
+      return false;
     }
   }
 
@@ -309,7 +325,7 @@ export class Intake {
     return this.options.cards.get(card.id);
   }
 
-  private record(issue: Omit<TrackedIssue, "state" | "cardId" | "createdAt">): void {
+  private record(issue: Omit<TrackedIssue, "state" | "cardId" | "closed" | "createdAt">): void {
     const at = this.now().toISOString();
     this.db
       .prepare(

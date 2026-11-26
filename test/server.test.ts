@@ -1,4 +1,5 @@
 import type { AddressInfo } from "node:net";
+import { request } from "node:http";
 import type { Server } from "node:http";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -156,6 +157,38 @@ describe("a store that cannot be read", () => {
       expect(response.status).toBe(503);
       expect(await response.text()).toContain("cannot read its store");
     }
+    db = openStore(":memory:");
+  });
+
+  it("gives back only the attempt the failed sign-in reserved, not one from a later window", async () => {
+    // A sign-in reserves its attempt, then stalls before sending its password.
+    const { hostname, port } = new URL(base);
+    const stalled = request({
+      hostname,
+      port,
+      path: "/login",
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "content-length": "40" },
+    });
+    const answered = new Promise<number>((resolve) => {
+      stalled.on("response", (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+    });
+    stalled.write("password=");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    // Its window passes, and a new one fills up.
+    now += LOGIN_FAILURE_WINDOW_MS;
+    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT; attempt += 1) {
+      expect((await login("wrong horse battery")).status).toBe(401);
+    }
+
+    db.close();
+    stalled.end("x".repeat(31));
+    expect(await answered).toBe(503);
+    expect((await login(PASSWORD)).status).toBe(429);
     db = openStore(":memory:");
   });
 });

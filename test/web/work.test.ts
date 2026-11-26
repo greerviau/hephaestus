@@ -31,6 +31,19 @@ describe("Work items", () => {
     expect(html).toContain('<option value="octo/app"');
   });
 
+  it("leaves a closed issue out of the issues waiting for the owner", async () => {
+    dashboard = await startDashboard();
+    await externalIssue(dashboard.h);
+    const issue = dashboard.h.github.issues.get(42);
+    if (issue !== undefined) issue.state = "CLOSED";
+    await dashboard.h.intake.poll();
+
+    const { html } = await dashboard.get("/work");
+
+    expect(html).not.toContain("Crash on &lt;empty&gt; input");
+    expect(html).toContain("No issue is waiting for you.");
+  });
+
   it("filters by project and stage", async () => {
     dashboard = await startDashboard();
     runningCard(dashboard.h);

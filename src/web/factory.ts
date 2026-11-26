@@ -157,10 +157,7 @@ export function cardActions(card: Card): CardActions {
   return {
     approveMerge: withOwner && card.ownerAction !== null && card.headSha !== null,
     // A rollback stays with the owner; the lead's restart would rebuild the reverted work.
-    sendToLead:
-      withOwner &&
-      card.ownerAction !== "revert-merge" &&
-      !(card.revertPr !== null && card.prNumber !== null && card.mergeSha !== null),
+    sendToLead: withOwner && !card.reverting,
     abandon: ABANDONABLE.includes(card.stage),
   };
 }

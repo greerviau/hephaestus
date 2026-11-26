@@ -153,7 +153,7 @@ describe("Overview", () => {
     await dashboard.h.pipeline.escalateToOwner(card, "Decide on the CI change");
     const { html } = await dashboard.get("/");
     expect(html).toContain("Decide on the CI change");
-    const version = dashboard.h.cards.get(card).updatedAt;
+    const version = String(dashboard.h.cards.get(card).version);
     expect(html).toContain(`name="version" value="${version}"`);
     await dashboard.post(`/work/${String(card)}/send-to-lead`, {
       note: "Split the CI change out",
@@ -169,7 +169,7 @@ describe("Overview", () => {
 
     const abandoned = await dashboard.post(`/work/${String(card)}/abandon`, {
       reason: "Not needed",
-      version: dashboard.h.cards.get(card).updatedAt,
+      version: String(dashboard.h.cards.get(card).version),
     });
     expect(abandoned.headers.get("location")).toBe(`/work/${String(card)}?notice=abandoned`);
     expect(dashboard.h.cards.get(card).stage).toBe("Abandoned");

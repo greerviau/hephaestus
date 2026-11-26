@@ -3,6 +3,7 @@ import type { FactoryConfig } from "../../src/config/document.js";
 import { CardStore } from "../../src/factory/cards.js";
 import {
   AlreadyMergedError,
+  OPEN_ISSUES_LIMIT,
   type CheckState,
   type CheckSummary,
   type Issue,
@@ -35,14 +36,26 @@ export class FakeGitHub {
     this.issues.set(number, { number, title, body, author: "owner", state: "OPEN" });
     return Promise.resolve(number);
   }
+  /** Like gh: the newest open issues, at most the limit. */
   openIssues(): Promise<Issue[]> {
-    return Promise.resolve([...this.issues.values()].filter((issue) => issue.state === "OPEN"));
+    return Promise.resolve(
+      [...this.issues.values()]
+        .filter((issue) => issue.state === "OPEN")
+        .sort((a, b) => b.number - a.number)
+        .slice(0, OPEN_ISSUES_LIMIT),
+    );
   }
   issue(_repo: string, number: number): Promise<Issue> {
     const issue = this.issues.get(number);
     return issue === undefined ? Promise.reject(new Error("no issue")) : Promise.resolve(issue);
   }
+  /** Reopens that fail before one goes through. */
+  reopenFailures = 0;
   reopenIssue(_repo: string, number: number): Promise<void> {
+    if (this.reopenFailures > 0) {
+      this.reopenFailures -= 1;
+      return Promise.reject(new Error("GitHub is down"));
+    }
     this.reopened.push(number);
     return Promise.resolve();
   }
