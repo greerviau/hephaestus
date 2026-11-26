@@ -2,7 +2,7 @@ import type { Database } from "better-sqlite3";
 import type { FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
-import { OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
+import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
 /** Issues missing from the open lists that one poll reads on their own, split among the projects; each gets at least one. */
 const LOOKUPS_PER_POLL = 10;
@@ -273,7 +273,7 @@ export class Intake {
       )
       .run(repo, number);
     try {
-      return (await this.options.github.issue(repo, number)).state;
+      return (await this.options.github.issue(repo, number, INTAKE_READ_TIMEOUT_MS)).state;
     } catch {
       return undefined;
     }

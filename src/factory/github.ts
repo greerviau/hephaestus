@@ -185,7 +185,8 @@ export class GitHub {
     }));
   }
 
-  async issue(repo: string, number: number): Promise<Issue> {
+  /** One issue; intake passes a timeout, so a stalled read cannot hold up its poll. */
+  async issue(repo: string, number: number, timeoutMs?: number): Promise<Issue> {
     const issue = await this.json<{
       number: number;
       title: string;
@@ -194,7 +195,7 @@ export class GitHub {
       state: "OPEN" | "CLOSED";
     }>(
       ["issue", "view", String(number), "-R", repo, "--json", "number,title,body,author,state"],
-      INTAKE_READ_TIMEOUT_MS,
+      timeoutMs,
     );
     return { ...issue, author: issue.author?.login ?? "" };
   }

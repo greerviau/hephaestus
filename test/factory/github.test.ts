@@ -125,8 +125,14 @@ describe("GitHub", () => {
     };
     const github = new GitHub("gh", exec);
     await github.openIssues("octo/app");
+    await github.issue("octo/app", 7, INTAKE_READ_TIMEOUT_MS);
     await github.issue("octo/app", 7);
     await github.createIssue("octo/app", "t", "b");
-    expect(timeouts).toEqual([INTAKE_READ_TIMEOUT_MS, INTAKE_READ_TIMEOUT_MS, undefined]);
+    expect(timeouts).toEqual([
+      INTAKE_READ_TIMEOUT_MS,
+      INTAKE_READ_TIMEOUT_MS,
+      undefined,
+      undefined,
+    ]);
   });
 });

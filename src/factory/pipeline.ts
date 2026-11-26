@@ -1258,7 +1258,26 @@ export class Pipeline {
         } catch {
           return;
         }
-        if (pr.state === "MERGED") await this.foreignMerge(card, pr.mergeSha);
+        if (pr.state !== "MERGED") return;
+        // A merge Hephaestus made, whose reply was lost, carries its marker; the merge step
+        // records it and validates the merge commit.
+        const ours =
+          pr.mergeSha === null
+            ? false
+            : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
+        if (ours === undefined) return;
+        if (!ours) {
+          await this.foreignMerge(card, pr.mergeSha);
+          return;
+        }
+        if (card.stage === "Merging") return;
+        const next = this.cards.transition(card.id, "Merging", "found merged by Hephaestus", {
+          escalatedTo: null,
+          ownerAction: null,
+          reason: null,
+          waiting: null,
+        });
+        await this.mirror(next, "Merging");
       });
     }
   }

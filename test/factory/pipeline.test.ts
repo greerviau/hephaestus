@@ -467,6 +467,16 @@ describe("Pipeline", () => {
     await other.pipeline.tick();
     expect(other.cards.get(card)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
     expect(other.cards.get(card).reason).toMatch(/could not read back/);
+
+    // The merge went through after all, with Hephaestus's marker: the scan for merges made
+    // elsewhere hands it to the merge step, which validates it like any of its merges.
+    other.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    other.github.ownMerges.add(MERGE);
+    other.setClock(Date.parse("2026-11-25T13:00:00Z"));
+    await other.pipeline.tick();
+    await other.pipeline.tick();
+    expect(other.cards.get(card)).toMatchObject({ stage: "Validating", foreignMerge: false });
+    expect(other.cards.mergedByHephaestus("octo/app", 5)).toBe(true);
   });
 
   it("does not abandon a card that started work", async () => {
