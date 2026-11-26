@@ -1,3 +1,4 @@
+import type { FactoryPages } from "../../src/web/factory.js";
 import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import type { Database } from "better-sqlite3";
@@ -56,6 +57,7 @@ export interface DashboardOptions {
   github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
   configRepo?: string;
   hermesModel?: string;
+  messaging?: FactoryPages["messaging"];
 }
 
 /** A dashboard on a factory harness. Sessions live in a database of their own, so tests can break the factory's. */
@@ -93,6 +95,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
       ...(options.github === undefined ? {} : { github: options.github }),
       configRepo: () => options.configRepo,
+      ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
       hermesModel: () => options.hermesModel,
       now: () => NOW,
       t3WaitMs: options.t3WaitMs ?? 1000,

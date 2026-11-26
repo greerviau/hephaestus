@@ -79,6 +79,6 @@ export function setupCard(factory: FactoryPages, workers: WorkerView[]): string 
     title: "Set up the factory",
     className: "setup",
     meta: `<span class="meta">${String(done)} of ${String(steps.length)} done</span>`,
-    body: `<ol class="setup-steps">${items}</ol><p class="sub">Optional: connect a messaging platform to the factory gateway, so you can ask the planner for work. See the <a href="https://github.com/greerviau/hephaestus/blob/main/docs/hermes.md">factory Hermes docs</a>.</p>`,
+    body: `<ol class="setup-steps">${items}</ol><p class="sub">Optional: <a href="/messaging">connect a messaging platform</a>, to ask for work in a chat and get alerts there.</p>`,
   });
 }

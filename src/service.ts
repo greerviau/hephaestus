@@ -115,6 +115,14 @@ export class SystemdUserService implements ServiceManager {
     this.systemctl("enable", "--now", this.name);
   }
 
+  /** Restarts the service, so it rereads settings it loads only at start. */
+  restart(): void {
+    if (!this.unitExists() || !readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
+      throw new Error(`${this.unitPath} is not a unit Hephaestus wrote.`);
+    }
+    this.systemctl("restart", this.name);
+  }
+
   stop(): void {
     if (!this.unitExists()) {
       this.assertStopped();

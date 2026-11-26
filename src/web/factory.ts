@@ -1,3 +1,4 @@
+import type { Messaging } from "../messaging.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Analytics } from "../factory/analytics.js";
 import type { Card, CardStore } from "../factory/cards.js";
@@ -34,6 +35,11 @@ export interface FactoryPages {
   environments: EnvironmentSource;
   /** Publishes a version and deploys it to every worker; Improvement approval calls it. */
   deploy?: Deploy;
+  /** The chat Hephaestus talks to the owner in; absent without the factory's Hermes. */
+  messaging?: Pick<
+    Messaging,
+    "ready" | "states" | "connect" | "disconnect" | "send" | "alertsOn" | "setAlerts"
+  >;
   /** The config repo named on Workers, for the setup checklist. */
   configRepo?: () => string | undefined;
   /** The factory Hermes root's default model, when one is set, for the setup checklist. */

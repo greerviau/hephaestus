@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -10,6 +11,7 @@ import { importSkill } from "./config/defaults.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
 import { hermesModel } from "./hermes/model.js";
+import { Messaging } from "./messaging.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
@@ -475,6 +477,26 @@ async function main(argv: string[]): Promise<number> {
           console.error("Advancing worker tasks failed", error);
         });
       }, 5_000);
+      const messaging =
+        config.hermesPath === undefined
+          ? undefined
+          : new Messaging({
+              root: paths.hermes,
+              run: hermesRunner(config.hermesPath, paths.hermes),
+              restartGateway: () => {
+                new SystemdUserService(
+                  join(dirname(config.unitPath), GATEWAY_SERVICE_NAME),
+                ).restart();
+              },
+              db,
+              cards: engine.cards,
+              dashboardUrl: () => dashboardUrl(config.host, config.port),
+            });
+      const alerting = setInterval(() => {
+        messaging?.sendAlerts().catch((error: unknown) => {
+          console.error("Sending alerts failed", error);
+        });
+      }, 20_000);
       const server = createDashboardServer({
         db,
         instanceId: config.instanceId,
@@ -493,6 +515,7 @@ async function main(argv: string[]): Promise<number> {
             github: engine.github,
             configRepo: () => getMeta(db, CONFIG_REPO_KEY),
             hermesModel: () => hermesDefaultModel(paths.hermes),
+            ...(messaging === undefined ? {} : { messaging }),
           }),
           ...settingsRoutes(store, (id) => workers.deployVersion(id)),
           ...environmentRoutes(environments, Date.now, {
@@ -513,6 +536,7 @@ async function main(argv: string[]): Promise<number> {
       });
       stopBackups();
       clearInterval(ticking);
+      clearInterval(alerting);
       for (const timer of engineTicks) clearInterval(timer);
       await new Promise((resolve) => mcpServer.close(resolve));
       following.abort();
@@ -590,4 +614,20 @@ function hermesDefaultModel(hermesHome: string): string | undefined {
     if (existsSync(path) && hermesModel(read(path)) === undefined) return undefined;
   }
   return model;
+}
+
+/**
+ * The dashboard's address for links in alerts: the host's first LAN address
+ * when the dashboard listens on every interface, since a phone cannot reach
+ * 0.0.0.0 or localhost.
+ */
+function dashboardUrl(host: string, port: number): string {
+  let address = host;
+  if (host === "0.0.0.0" || host === "::") {
+    const lan = Object.values(networkInterfaces())
+      .flat()
+      .find((entry) => entry !== undefined && entry.family === "IPv4" && !entry.internal);
+    address = lan?.address ?? "localhost";
+  }
+  return `http://${address}:${String(port)}/`;
 }
