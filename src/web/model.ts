@@ -1,5 +1,6 @@
 import {
   ModelError,
+  ModelWarning,
   type DeviceLogin,
   type ModelCatalog,
   type ProviderRow,
@@ -22,7 +23,8 @@ const NOTICES: Record<string, { title: string; text: string }> = {
   },
 };
 
-type Problem = { provider: string; text: string };
+/** Why a change did not happen; a warning keeps what the owner typed so they can save it anyway. */
+type Problem = { text: string; warning?: { model: string; baseUrl: string } };
 
 /** The Model page: give the factory Hermes a provider and model, with any provider Hermes supports. */
 export function modelRoutes(factory: FactoryPages): Route[] {
@@ -64,16 +66,25 @@ export function modelRoutes(factory: FactoryPages): Route[] {
       } else {
         const baseUrl = form.get("base_url")?.trim() ?? "";
         const key = form.get("key")?.trim() ?? "";
-        await model.setModel({
-          provider,
-          model: form.get("model") ?? "",
-          ...(baseUrl === "" ? {} : { baseUrl }),
-          ...(key === "" ? {} : { key }),
-        });
+        const chosen = form.get("model") ?? "";
+        try {
+          await model.setModel({
+            provider,
+            model: chosen,
+            ...(baseUrl === "" ? {} : { baseUrl }),
+            ...(key === "" ? {} : { key }),
+            ...(form.get("force") === "on" ? { force: true } : {}),
+          });
+        } catch (error) {
+          if (!(error instanceof ModelWarning)) throw error;
+          const problem = { text: error.message, warning: { model: chosen, baseUrl } };
+          sendHtml(response, 400, await page(provider, "", problem));
+          return;
+        }
         redirect(response, `${back}&notice=saved`);
       }
     } catch (error) {
-      sendHtml(response, 400, await page(provider, "", { provider, text: messageOf(error) }));
+      sendHtml(response, 400, await page(provider, "", { text: messageOf(error) }));
     }
   }
 
@@ -116,9 +127,17 @@ export function modelRoutes(factory: FactoryPages): Route[] {
     const shown = NOTICES[notice];
     const waiting = login?.status === "waiting" && login.provider === provider?.slug;
     const body = `${head}${shown === undefined ? "" : banner("info", shown.title, shown.text)}${
-      problem === undefined ? "" : banner("err", "Not changed", problem.text)
+      problem === undefined
+        ? ""
+        : banner(
+            "err",
+            problem.warning === undefined ? "Not changed" : "Not changed: Hermes warned",
+            problem.warning === undefined
+              ? problem.text
+              : `${problem.text} Check the name, or tick Use it anyway and save again.`,
+          )
     }<div class="grid">${currentCard(catalog)}${pickerCard(catalog, provider?.slug ?? "")}${
-      provider === undefined ? "" : providerCard(catalog, provider, login)
+      provider === undefined ? "" : providerCard(catalog, provider, login, problem?.warning)
     }</div>`;
     return layout("Model", body, { section: SECTION, ...(waiting ? { refreshSeconds: 5 } : {}) });
   }
@@ -174,17 +193,18 @@ function providerCard(
   catalog: ModelCatalog,
   provider: ProviderRow,
   login: DeviceLogin | undefined,
+  warned: { model: string; baseUrl: string } | undefined,
 ): string {
   const custom = provider.slug === "custom";
   const signIn = custom ? "" : signInHtml(catalog, provider, login);
   const models = provider.models
     .map((name) => `<option value="${escapeHtml(name)}"></option>`)
     .join("");
-  const current = catalog.provider === provider.slug ? catalog.model : "";
+  const current = warned?.model ?? (catalog.provider === provider.slug ? catalog.model : "");
   const endpoint = custom
-    ? `<div class="field"><label for="base_url">Endpoint URL</label><input type="url" id="base_url" name="base_url" required placeholder="http://localhost:8080/v1"><span class="meta">An OpenAI-compatible API.</span></div><div class="field"><label for="custom-key">API key (optional)</label><input type="password" id="custom-key" name="key" autocomplete="off"><span class="meta">Kept in files only you can read on this host. It is never shown again.</span></div>`
+    ? `<div class="field"><label for="base_url">Endpoint URL</label><input type="url" id="base_url" name="base_url" required placeholder="http://localhost:8080/v1" value="${escapeHtml(warned?.baseUrl ?? "")}"><span class="meta">An OpenAI-compatible API.</span></div><div class="field"><label for="custom-key">API key (optional)</label><input type="password" id="custom-key" name="key" autocomplete="off"><span class="meta">Kept in files only you can read on this host. It is never shown again.</span></div>`
     : "";
-  const form = `<form method="post" action="/model/set" class="form-grid" autocomplete="off"><input type="hidden" name="provider" value="${escapeHtml(provider.slug)}">${endpoint}<div class="field"><label for="model">Model</label><input type="text" id="model" name="model" required value="${escapeHtml(current)}"${models === "" ? "" : ' list="models"'} autocomplete="off">${models === "" ? "" : `<datalist id="models">${models}</datalist>`}<span class="meta">${models === "" ? "Type the model's name as the provider spells it." : "Pick one Hermes lists, or type another."} Hermes checks it before saving.</span></div><div class="btn-row"><button type="submit" class="btn-primary">Use this model</button></div></form>`;
+  const form = `<form method="post" action="/model/set" class="form-grid" autocomplete="off"><input type="hidden" name="provider" value="${escapeHtml(provider.slug)}">${endpoint}<div class="field"><label for="model">Model</label><input type="text" id="model" name="model" required value="${escapeHtml(current)}"${models === "" ? "" : ' list="models"'} autocomplete="off">${models === "" ? "" : `<datalist id="models">${models}</datalist>`}<span class="meta">${models === "" ? "Type the model's name as the provider spells it." : "Pick one Hermes lists, or type another."} Hermes checks it before saving.</span></div>${warned === undefined ? "" : `<div class="field"><label><input type="checkbox" name="force"> Use it anyway</label>${custom ? '<span class="meta">Enter the key again if the endpoint needs one.</span>' : ""}</div>`}<div class="btn-row"><button type="submit" class="btn-primary">Use this model</button></div></form>`;
   return card({
     title: provider.name,
     span: 12,
@@ -220,7 +240,7 @@ function signInHtml(
   if (provider.auth_type === "api_key" && provider.key_env !== "") {
     const setupToken =
       provider.slug === "anthropic"
-        ? " A token that <code>claude setup-token</code> prints works too."
+        ? " A token that <code>claude setup-token</code> prints works too, and is saved as <code>ANTHROPIC_TOKEN</code>."
         : "";
     return `<form method="post" action="/model/key" class="form-grid" autocomplete="off"><input type="hidden" name="provider" value="${escapeHtml(provider.slug)}"><div class="field"><label for="key">API key</label><input type="password" id="key" name="key" required autocomplete="off"><span class="meta">Saved as <code>${escapeHtml(provider.key_env)}</code> in files only you can read on this host. It is never shown again.${setupToken}</span></div><div class="btn-row"><button type="submit" class="${provider.authenticated ? "btn-secondary" : "btn-primary"}">${provider.authenticated ? "Replace the key" : "Save the key"}</button></div></form>`;
   }

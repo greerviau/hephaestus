@@ -54,6 +54,9 @@ export interface LoginProcess {
 /** A refusal the owner can act on; its message is safe to show. */
 export class ModelError extends Error {}
 
+/** Hermes would save the model but warned, for example that the provider does not list it. */
+export class ModelWarning extends ModelError {}
+
 export interface FactoryModelOptions {
   /** Whether the factory Hermes has the Hephaestus plugin yet; a deploy installs it. */
   ready: () => boolean;
@@ -106,6 +109,8 @@ export class FactoryModel {
     model: string;
     baseUrl?: string;
     key?: string;
+    /** Save even when Hermes warns about the model. */
+    force?: boolean;
   }): Promise<void> {
     if (choice.model.trim() === "") throw new ModelError("Pick or type a model.");
     const args = [
@@ -121,6 +126,7 @@ export class FactoryModel {
     if (baseUrl !== "") args.push("--base-url", baseUrl);
     const key = choice.key?.trim() ?? "";
     if (key !== "") args.push("--key-on-stdin");
+    if (choice.force === true) args.push("--force");
     await this.call(args, key === "" ? undefined : key);
     await this.options.restartGateway();
   }
@@ -200,6 +206,8 @@ export class FactoryModel {
       );
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      const warning = /Hermes warned: (.*)/.exec(text)?.[1];
+      if (warning !== undefined) throw new ModelWarning(warning);
       const refusal =
         /(Hermes refused the model: .*|Hermes has no provider named .*|.* does not take an API key\.|The key is empty\.)/.exec(
           text,

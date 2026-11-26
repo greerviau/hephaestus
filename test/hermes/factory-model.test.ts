@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   FactoryModel,
   ModelError,
+  ModelWarning,
   type LoginProcess,
   type ModelCatalog,
 } from "../../src/hermes/factory-model.js";
@@ -225,6 +226,30 @@ describe("FactoryModel", () => {
       "Hermes refused the model: unknown model nope",
     );
     expect(restarts).toEqual([]);
+  });
+
+  it("reports Hermes's warning as a warning, and passes --force when the owner insists", async () => {
+    const calls: string[][] = [];
+    const warning = new FactoryModel({
+      ready: () => true,
+      run: (args) => {
+        calls.push(args);
+        return args.includes("--force")
+          ? Promise.resolve('{"ok": true}\n')
+          : Promise.reject(
+              new Error("hermes hephaestus set-model failed: Hermes warned: `x` was not found."),
+            );
+      },
+      restartGateway: () => Promise.resolve(),
+      startLogin: () => fakeLogin().process,
+    });
+
+    await expect(warning.setModel({ provider: "anthropic", model: "x" })).rejects.toBeInstanceOf(
+      ModelWarning,
+    );
+    await warning.setModel({ provider: "anthropic", model: "x", force: true });
+
+    expect(calls[1]).toContain("--force");
   });
 
   it("shows a device login's link and code, then reports it signed in and restarts the gateway", async () => {

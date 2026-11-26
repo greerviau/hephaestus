@@ -134,20 +134,31 @@ def _login(args):
     sys.exit(1)
 
 
+def _refusal(error):
+    return getattr(error, "detail", None) or str(error)
+
+
 def _set_model(args):
     from hermes_cli.config import load_config
-    from hermes_cli.web_server_config import _apply_main_assignment_sync
+    from hermes_cli.web_server_config import _apply_main_assignment_sync, _prepare_main_assignment
+
     from hermes_cli.web_server_profiles import _profile_scope
 
     api_key = sys.stdin.read().strip() if args.key_on_stdin else ""
+    # Check once at the root before writing anything, so a refusal or a warning changes nothing.
+    try:
+        _, checked = _prepare_main_assignment(load_config(), args.provider, args.model, args.base_url or "", api_key)
+    except Exception as error:
+        raise SystemExit(f"Hermes refused the model: {_refusal(error)}") from None
+    if checked.warning_message and not args.force:
+        raise SystemExit(f"Hermes warned: {checked.warning_message}")
     chosen = None
     for scope in _scopes(args):
         with _profile_scope(scope):
             try:
                 _apply_main_assignment_sync(load_config(), args.provider, args.model, args.base_url or "", api_key)
             except Exception as error:
-                detail = getattr(error, "detail", None) or str(error)
-                raise SystemExit(f"Hermes refused the model: {detail}") from None
+                raise SystemExit(f"Hermes refused the model: {_refusal(error)}") from None
             model = load_config().get("model") or {}
             chosen = chosen or {"provider": model.get("provider"), "model": model.get("default")}
     _emit({"ok": True, **(chosen or {})})
@@ -170,6 +181,7 @@ def _setup(parser):
     set_model.add_argument("--model", required=True)
     set_model.add_argument("--base-url", default="")
     set_model.add_argument("--key-on-stdin", action="store_true")
+    set_model.add_argument("--force", action="store_true", help="Save even when Hermes warns")
     set_model.add_argument("--profiles", default="")
 
 

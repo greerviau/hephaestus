@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { ModelError, type DeviceLogin, type ModelCatalog } from "../../src/hermes/factory-model.js";
+import {
+  ModelError,
+  ModelWarning,
+  type DeviceLogin,
+  type ModelCatalog,
+} from "../../src/hermes/factory-model.js";
 import type { FactoryPages } from "../../src/web/factory.js";
 import { startDashboard, type Dashboard } from "./dashboard.js";
 
@@ -92,6 +97,7 @@ function fakeModel(
     ready?: boolean;
     catalog?: ModelCatalog;
     refuse?: string;
+    warn?: string;
     login?: DeviceLogin;
   } = {},
 ): FakeModel {
@@ -112,6 +118,9 @@ function fakeModel(
     },
     setModel: (choice) => {
       if (options.refuse !== undefined) return Promise.reject(new ModelError(options.refuse));
+      if (options.warn !== undefined && choice.force !== true) {
+        return Promise.reject(new ModelWarning(options.warn));
+      }
       choices.push(choice);
       return Promise.resolve();
     },
@@ -234,6 +243,32 @@ describe("Model page", () => {
     const html = await response.text();
     expect(html).toContain("Hermes refused the model: unknown model nope");
     expect(html).toContain('<option value="anthropic" selected');
+  });
+
+  it("stops on Hermes's warning, keeps the model typed, and saves it when the owner insists", async () => {
+    const model = fakeModel({
+      warn: "`clade-opus` was not found in Anthropic's /v1/models listing.",
+    });
+    dashboard = await startDashboard({ model });
+
+    const warned = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "clade-opus",
+    });
+    expect(warned.status).toBe(400);
+    const html = await warned.text();
+    expect(html).toContain("Hermes warned");
+    expect(html).toContain('value="clade-opus"');
+    expect(html).toContain('name="force"');
+    expect(model.choices).toEqual([]);
+
+    const forced = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "clade-opus",
+      force: "on",
+    });
+    expect(forced.headers.get("location")).toBe("/model?provider=anthropic&notice=saved");
+    expect(model.choices).toEqual([{ provider: "anthropic", model: "clade-opus", force: true }]);
   });
 
   it("warns when parts of the factory use another model", async () => {
