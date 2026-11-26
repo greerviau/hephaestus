@@ -109,6 +109,44 @@ describe("GitHub", () => {
     ).rejects.toThrow(AlreadyMergedError);
   });
 
+  it("names a conflict by the PR's mergeable state, never on a merged or closed PR", async () => {
+    const exec =
+      (state: string, mergeable: string, mergeCommit: { oid: string } | null): CommandRun =>
+      (_file, args) => {
+        if (args[0] === "api" && args[1] === "-X") {
+          return Promise.reject(new Error("gh: Pull Request is not mergeable (HTTP 405)"));
+        }
+        if (args[0] === "pr") {
+          return Promise.resolve(
+            JSON.stringify({
+              number: 5,
+              url: "u",
+              state,
+              headRefOid: "h",
+              headRefName: "b",
+              baseRefName: "main",
+              isCrossRepository: false,
+              mergeCommit,
+              mergeable,
+            }),
+          );
+        }
+        if (args[0] === "api" && args.at(-1) === ".commit.message")
+          return Promise.resolve("theirs");
+        return Promise.resolve("{}");
+      };
+    const merge = (run: CommandRun): Promise<string> =>
+      new GitHub("gh", run).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1.");
+    await expect(merge(exec("OPEN", "CONFLICTING", null))).rejects.toThrow(MergeConflictError);
+    await expect(merge(exec("MERGED", "CONFLICTING", { oid: "m" }))).rejects.toThrow(
+      AlreadyMergedError,
+    );
+    await expect(merge(exec("CLOSED", "CONFLICTING", null))).rejects.not.toThrow(
+      MergeConflictError,
+    );
+    await expect(merge(exec("OPEN", "MERGEABLE", null))).rejects.not.toThrow(MergeConflictError);
+  });
+
   it("tells a merge refused for conflicts from other failures", async () => {
     const exec =
       (error: string): CommandRun =>

@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Fetch } from "../src/discord.js";
-import { CardStore } from "../src/factory/cards.js";
+import { CardStore, MERGE_CONFLICT_DETAIL } from "../src/factory/cards.js";
 import { RequestThreads, milestone, trackingLine } from "../src/request-threads.js";
 import { openStore } from "../src/store.js";
 
@@ -233,6 +233,18 @@ describe("RequestThreads, under bad input", () => {
 });
 
 describe("milestone", () => {
+  it("says the engineer is updating a PR that conflicts with its base", () => {
+    const store = new CardStore(openStore(":memory:"));
+    const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;
+    expect(
+      milestone(
+        { id: 1, cardId: id, at: "", kind: "stage:Implementing", detail: MERGE_CONFLICT_DETAIL },
+        store.get(id),
+        "",
+      ),
+    ).toBe("The PR conflicts with changes merged since it opened. The engineer is updating it.");
+  });
+
   it("tells the owner when a card needs them, with a link, and skips lead escalations", () => {
     const store = new CardStore(openStore(":memory:"));
     const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;

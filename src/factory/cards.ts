@@ -76,7 +76,7 @@ export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
   // Done straight from Implementing, Reviewing, or Merging is a PR merged outside Hephaestus.
   Implementing: ["Implementing", "Reviewing", "Merging", "Escalated", "Abandoned", "Done"],
   Reviewing: ["Reviewing", "Implementing", "Merging", "Escalated", "Abandoned", "Done"],
-  // Back to Implementing only when GitHub refused the merge, such as for conflicts.
+  // Back to Implementing only when the PR conflicts with its base, so nothing was merged.
   Merging: ["Validating", "Implementing", "Escalated", "Abandoned", "Done"],
   Validating: ["Done", "Reverting", "Escalated"],
   Reverting: ["Implementing", "Escalated"],

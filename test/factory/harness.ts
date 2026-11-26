@@ -118,6 +118,7 @@ export function pr(
     baseBranch: "main",
     fromFork: false,
     mergeSha: null,
+    mergeable: "MERGEABLE",
     files: ["src/app.ts"],
     filesComplete: true,
     checks: "success",

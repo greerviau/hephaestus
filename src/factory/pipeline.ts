@@ -1009,6 +1009,8 @@ export class Pipeline {
         `the PR head moved to ${pr.headSha} after ${card.headSha} was reviewed`,
       );
     }
+    // GitHub starts no checks for a head that conflicts with its base, so the conflict is named first.
+    if (pr.mergeable === "CONFLICTING") return this.conflicted(card, pr);
     const decision = decideMerge({
       policy: this.policy(card),
       checks: pr.checks,
@@ -1071,6 +1073,16 @@ export class Pipeline {
     await this.recordOwnMerge(card, pr, mergeSha);
   }
 
+  /** A revert PR that conflicts with its base needs a person: a later change touched the same lines. */
+  private revertConflicted(card: Card, number: number): Promise<void> {
+    return this.escalate(
+      card,
+      "owner",
+      `revert PR #${String(number)} conflicts with the default branch, so it cannot merge; resolve it on GitHub, then approve the revert merge`,
+      { ownerAction: "revert-merge" },
+    );
+  }
+
   /** Sends a PR that no longer merges cleanly back to its engineer, as one more round. */
   private async conflicted(card: Card, pr: PullRequest): Promise<void> {
     const policy = this.policy(card);
@@ -1084,7 +1096,7 @@ export class Pipeline {
     const next = this.cards.transition(card.id, "Implementing", MERGE_CONFLICT_DETAIL, {
       rounds: card.rounds + 1,
       reviewThread: null,
-      pendingMessage: `GitHub cannot merge PR #${String(pr.number)}: it conflicts with \`${pr.baseBranch}\`, which changed since you started. Fetch origin, merge or rebase \`origin/${pr.baseBranch}\` into the same branch, resolve the conflicts keeping both changes' intent, run the tests, push, and end with a new result block with the new head SHA. The PR is reviewed again at the new head.`,
+      pendingMessage: `GitHub cannot merge PR #${String(pr.number)}: it conflicts with \`${pr.baseBranch}\`, which changed since you started. Fetch origin, then merge \`origin/${pr.baseBranch}\` into the branch or rebase the branch onto it, resolve the conflicts keeping both changes' intent, run the tests, push the same branch, and end with a new result block with the new head SHA.`,
     });
     await this.mirror(next, "Implementing", next.implementThread ?? undefined);
     await this.resume(next);
@@ -1274,6 +1286,7 @@ export class Pipeline {
       });
       card = this.cards.update(card.id, done);
     }
+    if (pr.mergeable === "CONFLICTING") return this.revertConflicted(card, pr.number);
     const decision = decideMerge({
       policy,
       checks: pr.checks,
@@ -1323,6 +1336,7 @@ export class Pipeline {
           { ownerAction: "revert-merge" },
         );
       }
+      if (error instanceof MergeConflictError) return this.revertConflicted(card, pr.number);
       if (!(error instanceof AlreadyMergedError)) throw error;
       this.cards.recordForeignRevert(card.repo, pr.number, error.mergeSha ?? "", card.id);
     }

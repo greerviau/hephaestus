@@ -34,7 +34,6 @@ async function retry<T>(work: () => Promise<T>, attempts = 3): Promise<T> {
   throw last;
 }
 
-/** The PR was merged, but not by this merge call. */
 /** GitHub refused the merge because the PR conflicts with its base branch. */
 export class MergeConflictError extends Error {
   constructor(
@@ -45,6 +44,7 @@ export class MergeConflictError extends Error {
   }
 }
 
+/** The PR was merged, but not by this merge call. */
 export class AlreadyMergedError extends Error {
   constructor(
     readonly number: number,
@@ -72,6 +72,8 @@ export interface PullRequest {
   /** Whether the PR comes from another repository. */
   fromFork: boolean;
   mergeSha: string | null;
+  /** GitHub's view of whether the PR merges cleanly; it reads UNKNOWN for a while after the base moves. */
+  mergeable: "MERGEABLE" | "CONFLICTING" | "UNKNOWN";
   /** Every changed file, with the old name of a renamed one. */
   files: string[];
   /** False when GitHub could not list every file, so the escalation paths cannot be checked. */
@@ -326,6 +328,7 @@ export class GitHub {
       baseRefName: string;
       isCrossRepository: boolean;
       mergeCommit: { oid: string } | null;
+      mergeable?: PullRequest["mergeable"];
     }>([
       "pr",
       "view",
@@ -333,7 +336,7 @@ export class GitHub {
       "-R",
       repo,
       "--json",
-      "number,url,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit",
+      "number,url,state,headRefOid,headRefName,baseRefName,isCrossRepository,mergeCommit,mergeable",
     ]);
     const listed = await this.gh([
       "api",
@@ -353,6 +356,7 @@ export class GitHub {
       baseBranch: pr.baseRefName,
       fromFork: pr.isCrossRepository,
       mergeSha: pr.mergeCommit?.oid ?? null,
+      mergeable: pr.mergeable ?? "UNKNOWN",
       files,
       // GitHub lists at most 3000 files for a PR.
       filesComplete: files.length < 3000,
@@ -389,7 +393,11 @@ export class GitHub {
       const current = await retry(() => this.pullRequest(repo, number)).catch(() => undefined);
       if (current === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
       if (current.state !== "MERGED" || current.mergeSha === null) {
-        if (/merge conflict/i.test(String(error))) {
+        // The refusal's wording varies, and mergeable can lag; either one names a conflict.
+        if (
+          current.state === "OPEN" &&
+          (current.mergeable === "CONFLICTING" || /merge conflict/i.test(String(error)))
+        ) {
           throw new MergeConflictError(number, { cause: error });
         }
         throw error;
