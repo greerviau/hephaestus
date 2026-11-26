@@ -35,7 +35,7 @@ export interface FactoryPages {
   /** Publishes a version and deploys it to every worker; Improvement approval calls it. */
   deploy?: Deploy;
   /** GitHub reads for the Projects page: repo suggestions, and a check that a new repo is readable. */
-  github?: { repos(): Promise<string[]>; defaultBranch(repo: string): Promise<string> };
+  github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
   now?: () => number;
   /** How long a page waits for T3 before it shows that section as loading. */
   t3WaitMs?: number;

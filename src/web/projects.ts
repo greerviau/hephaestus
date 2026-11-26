@@ -9,6 +9,7 @@ import {
   type PresetName,
 } from "../config/policy.js";
 import type { ConfigVersion } from "../config/store.js";
+import type { Card } from "../factory/cards.js";
 import { ACTIVE_STAGES, STORE_ERROR, read, type FactoryPages } from "./factory.js";
 import {
   banner,
@@ -23,6 +24,7 @@ import {
   table,
 } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
+import { publishVersion } from "./versions.js";
 
 const MAX_FORM_BYTES = 64 * 1024;
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
@@ -108,6 +110,11 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
     kind: "info",
     title: "Saved as a draft",
     text: "Nothing changes until you approve the draft on Settings.",
+  },
+  "hermes-failed": {
+    kind: "err",
+    title: "The factory Hermes root was not updated",
+    text: "The version is deployed to the workers, but applying it to the factory Hermes root failed. The service log has the error.",
   },
   "deploy-failed": {
     kind: "err",
@@ -249,42 +256,58 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     const form = await fields(context);
     if (form === undefined) return;
     const mode = form.get("mode") === "edit" ? "edit" : "add";
-    const repo = (form.get("repo") ?? "").trim();
+    let repo = (form.get("repo") ?? "").trim();
     const parsed = parsePolicy(form);
-    const back = (errors: string[]): Promise<void> => {
-      const problem = { repo, policy: parsed.policy, errors };
+    const back = (errors: string[], policy: Policy = parsed.policy): Promise<void> => {
+      const problem = { repo, policy, errors };
       return mode === "add" ? listPage(context, problem) : editPage(context, problem);
     };
     if (parsed.errors.length > 0) return back(parsed.errors);
     if (!REPO.test(repo)) return back([`Name the repo as owner/name, such as you/your-repo.`]);
     const base = current();
-    if (String(base?.id ?? "") !== (form.get("parentId") ?? "")) {
-      return back([
-        "The config changed since the page was loaded. Check the projects and save again.",
-      ]);
-    }
-    const document = base === undefined ? undefined : structuredClone(base.document);
-    if (document === undefined) return back(["There is no config version to build on yet."]);
-    if (mode === "add" && document.projects[repo] !== undefined) {
-      return back([`${repo} is already a factory project. Edit it from the list instead.`]);
-    }
-    if (mode === "edit" && document.projects[repo] === undefined) {
-      return back([`${repo} is not a factory project any more.`]);
-    }
+    const stale = (): Promise<void> => {
+      // An edit form built on an older version comes back with the policy now in force, so a
+      // second submit cannot overwrite a change made meanwhile.
+      const now = current()?.document.projects[repo]?.policy;
+      return back(
+        [
+          mode === "edit"
+            ? "The config changed since the page was loaded. The form now shows the policy in force; make your change again."
+            : "The config changed since the page was loaded. Check the projects and save again.",
+        ],
+        mode === "edit" && now !== undefined ? now : parsed.policy,
+      );
+    };
+    if (base === undefined) return back(["There is no config version to build on yet."]);
+    if (String(base.id) !== (form.get("parentId") ?? "")) return stale();
     if (mode === "add" && factory.github !== undefined) {
+      // GitHub's own spelling, so the same repo cannot be added twice under different casing.
       try {
-        await factory.github.defaultBranch(repo);
+        repo = await factory.github.canonicalName(repo);
       } catch {
         return back([
           `Hephaestus cannot read ${repo} with gh. Check the name, and that the gh account on this host can read it.`,
         ]);
       }
+      // The lookup awaited; the version it checked must still be the one the change builds on.
+      if (current()?.id !== base.id) return stale();
+    }
+    const document = structuredClone(base.document);
+    const existing = Object.keys(document.projects).find(
+      (name) => name.toLowerCase() === repo.toLowerCase(),
+    );
+    if (mode === "add" && existing !== undefined) {
+      return back([`${existing} is already a factory project. Edit it from the list instead.`]);
+    }
+    if (mode === "edit" && document.projects[repo] === undefined) {
+      return back([`${repo} is not a factory project any more.`]);
     }
     document.projects[repo] = { policy: parsed.policy };
     await publish(
       context,
       form,
       document,
+      base.id,
       mode === "add" ? `Add the project ${repo}` : `Change the policy of ${repo}`,
       mode === "add" ? "added" : "saved",
       back,
@@ -302,7 +325,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
         policy: base?.document.projects[repo]?.policy ?? { preset: "standard", overrides: {} },
         errors,
       });
-    if (base === undefined || base.document.projects[repo] === undefined) {
+    if (base?.document.projects[repo] === undefined) {
       redirect(context.response, "/projects");
       return;
     }
@@ -312,51 +335,56 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       ]);
       return;
     }
+    // A merge that may still need validating or reverting needs the project's policy.
+    const merging = factory.cards
+      .list()
+      .filter((card) => card.repo === repo && mergeInFlight(card));
+    if (merging.length > 0) {
+      await back([
+        `Card ${merging.map((card) => String(card.id)).join(", ")} is merging, validating, or reverting a merge in ${repo}. Remove the project once that finishes, or abandon the card first.`,
+      ]);
+      return;
+    }
     const document = structuredClone(base.document);
     document.projects = Object.fromEntries(
       Object.entries(document.projects).filter(([name]) => name !== repo),
     );
-    await publish(context, form, document, `Remove the project ${repo}`, "removed", back);
+    await publish(context, form, document, base.id, `Remove the project ${repo}`, "removed", back);
   }
 
-  /** Creates a version from `document`, then approves and deploys it unless the owner kept it as a draft. */
+  /** Creates a version from `document` on `parentId`, then approves and deploys it unless the owner kept it as a draft. */
   async function publish(
     { response }: RouteContext,
     form: URLSearchParams,
     document: FactoryConfig,
+    parentId: number,
     message: string,
     notice: string,
     back: (errors: string[]) => Promise<void>,
   ): Promise<void> {
-    const base = current();
-    let version: ConfigVersion;
+    let published;
     try {
-      version = factory.store.createVersion({
+      published = await publishVersion({
+        store: factory.store,
+        deploy: factory.deploy,
         document,
-        author: "owner",
         message,
-        ...(base === undefined ? {} : { parentId: base.id }),
+        parentId,
+        deployNow: form.get("deploy") === "on",
       });
     } catch (error) {
       if (error instanceof ConfigValidationError) return back(error.problems);
       if (error instanceof Error) return back([error.message]);
       throw error;
     }
-    if (form.get("deploy") !== "on") {
-      redirect(response, `/settings/versions/${String(version.id)}`);
-      return;
-    }
-    factory.store.approve(version.id);
-    if (factory.deploy === undefined) {
-      redirect(response, `/projects?notice=${notice}`);
-      return;
-    }
-    try {
-      await factory.deploy(version.id);
-      redirect(response, `/projects?notice=${notice}`);
-    } catch (error) {
-      console.error(`Deploying version ${String(version.id)} failed`, error);
+    if (published.state === "draft") {
+      redirect(response, `/settings/versions/${String(published.id)}`);
+    } else if (published.state === "deploy-failed") {
       redirect(response, "/projects?notice=deploy-failed");
+    } else if (published.state === "deployed" && published.hermesError !== undefined) {
+      redirect(response, "/projects?notice=hermes-failed");
+    } else {
+      redirect(response, `/projects?notice=${notice}`);
     }
   }
 
@@ -373,14 +401,15 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     return new URLSearchParams(body);
   }
 
-  /** A note when a newer version than the deployed one is waiting, so the owner knows edits build on the deployed one. */
+  /** A note when a version newer than the one edits build on is waiting, naming both. */
   function pending(): string {
     const latest = read("versions", () => factory.store.list()[0]);
-    if (!latest.ok || latest.value === undefined) return "";
+    const base = read("config", () => current());
+    if (!latest.ok || !base.ok || latest.value === undefined) return "";
     const { id, state } = latest.value;
-    if (state !== "draft" && state !== "approved") return "";
+    if ((state !== "draft" && state !== "approved") || id === base.value?.id) return "";
     const what = state === "draft" ? "is a draft" : "is approved but not deployed";
-    return `<div class="banner info"><strong class="status s-neutral">Version ${String(id)} ${what}</strong><p>Changes here build on the config in force, not on version ${String(id)}. <a href="/settings/versions/${String(id)}">Open version ${String(id)}</a>.</p></div>`;
+    return `<div class="banner info"><strong class="status s-neutral">Version ${String(id)} ${what}</strong><p>Changes here build on version ${String(base.value?.id ?? "none")}, not on version ${String(id)}. <a href="/settings/versions/${String(id)}">Open version ${String(id)}</a>.</p></div>`;
   }
 
   /** Repos the gh account can see, for the repo field's suggestions; none when gh cannot be read. */
@@ -392,6 +421,16 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       return [];
     }
   }
+}
+
+/** A card whose merge may still need validating or reverting under its project's policy. */
+function mergeInFlight(card: Card): boolean {
+  return (
+    card.stage === "Merging" ||
+    card.stage === "Validating" ||
+    card.stage === "Reverting" ||
+    card.reverting
+  );
 }
 
 interface Problem {
@@ -441,6 +480,14 @@ function presetValue(preset: PresetName, name: SettingName): string {
   return String(value);
 }
 
+/** What each preset sets, since the page cannot update the hint when the preset changes. */
+function presetHint(name: SettingName): string {
+  const values = PRESET_NAMES.map((preset) => presetValue(preset, name));
+  return values.every((value) => value === values[0])
+    ? `Preset (${values[0] ?? ""})`
+    : `Preset (${PRESET_NAMES.map((preset, index) => `${preset}: ${values[index] ?? ""}`).join("; ")})`;
+}
+
 function policyForm(options: {
   mode: "add" | "edit";
   repo: string;
@@ -474,11 +521,11 @@ function settingField(setting: (typeof SETTINGS)[number], policy: Policy): strin
   const { name } = setting;
   const override = policy.overrides[name];
   const id = `s-${name}`;
-  const fromPreset = `Preset (${escapeHtml(presetValue(policy.preset, name))})`;
+  const fromPreset = escapeHtml(presetHint(name));
   const help = `<span class="meta">${escapeHtml(setting.help)}</span>`;
   if (LIST_SETTINGS.has(name)) {
     const custom = Array.isArray(override);
-    return `<div class="field"><label for="${id}-mode">${escapeHtml(setting.label)}</label><select id="${id}-mode" name="${name}.mode"><option value="preset"${custom ? "" : " selected"}>${fromPreset}</option><option value="custom"${custom ? " selected" : ""}>The list below</option></select><textarea id="${id}" name="${name}" rows="3" aria-label="${escapeHtml(setting.label)}">${escapeHtml(custom ? override.join("\n") : "")}</textarea>${help}</div>`;
+    return `<div class="field"><label for="${id}-mode">${escapeHtml(setting.label)}</label><select id="${id}-mode" name="${name}.mode"><option value="preset"${custom ? "" : " selected"}>${fromPreset}</option><option value="custom"${custom ? " selected" : ""}>The list below (empty for none)</option></select><textarea id="${id}" name="${name}" rows="3" aria-label="${escapeHtml(setting.label)}">${escapeHtml(custom ? override.join("\n") : "")}</textarea>${help}</div>`;
   }
   if (NUMBER_SETTINGS.has(name)) {
     return `<div class="field"><label for="${id}">${escapeHtml(setting.label)}</label><input type="number" id="${id}" name="${name}" min="0" step="1" value="${override === undefined ? "" : escapeHtml(String(override))}" placeholder="${fromPreset}">${help}</div>`;
@@ -498,18 +545,19 @@ export function parsePolicy(form: URLSearchParams): { policy: Policy; errors: st
   const overrides: Partial<PolicySettings> = {};
   for (const { name, label } of SETTINGS) {
     if (LIST_SETTINGS.has(name)) {
-      if (form.get(`${name}.mode`) !== "custom") continue;
       const items = (form.get(name) ?? "")
         .split("\n")
         .map((line) => line.trim())
         .filter((line) => line !== "");
+      // Text typed into the list counts even when the selector was left on the preset.
+      if (form.get(`${name}.mode`) !== "custom" && items.length === 0) continue;
       (overrides as Record<string, unknown>)[name] = items;
     } else if (NUMBER_SETTINGS.has(name)) {
       const text = (form.get(name) ?? "").trim();
       if (text === "") continue;
       const value = Number(text);
-      if (!Number.isInteger(value) || value < 0) {
-        errors.push(`${label}: give a whole number of 0 or more.`);
+      if (!Number.isSafeInteger(value) || value < 0 || value > 1000) {
+        errors.push(`${label}: give a whole number from 0 to 1000.`);
         continue;
       }
       (overrides as Record<string, unknown>)[name] = value;
@@ -517,6 +565,8 @@ export function parsePolicy(form: URLSearchParams): { policy: Policy; errors: st
       const text = form.get(name) ?? "";
       if (text === "on" || text === "off") {
         (overrides as Record<string, unknown>)[name] = text === "on";
+      } else if (text !== "") {
+        errors.push(`${label}: choose the preset, on, or off.`);
       }
     }
   }

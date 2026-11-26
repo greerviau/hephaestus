@@ -11,8 +11,11 @@ afterEach(async () => {
 
 const github = {
   repos: () => Promise.resolve(["octo/app", "octo/lib", "octo/site"]),
-  defaultBranch: (repo: string) =>
-    repo === "octo/missing" ? Promise.reject(new Error("not found")) : Promise.resolve("main"),
+  // GitHub resolves any casing to its own spelling.
+  canonicalName: (repo: string) =>
+    repo.toLowerCase() === "octo/missing"
+      ? Promise.reject(new Error("not found"))
+      : Promise.resolve(repo.toLowerCase()),
 };
 
 /** What the service's deploy does to the store once workers have the version. */
@@ -108,7 +111,9 @@ describe("Projects", () => {
     const base = dashboard.store.current()?.id ?? 0;
     const edit = await dashboard.get("/projects/edit?repo=octo%2Fapp");
     expect(edit.html).toContain('<option value="standard" selected>standard</option>');
-    expect(edit.html).toContain("Preset (.github/workflows/**)");
+    expect(edit.html).toContain(
+      "Preset (yolo: none; standard: .github/workflows/**; strict: .github/workflows/**)",
+    );
 
     await dashboard.post("/projects/save", {
       mode: "edit",
@@ -163,7 +168,130 @@ describe("Projects", () => {
   });
 });
 
+describe("Projects, under concurrent changes", () => {
+  it("refuses an add when Settings deployed a version while the repo was looked up", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    dashboard = await startDashboard({
+      deploy: markDeployed,
+      github: {
+        ...github,
+        canonicalName: async (repo: string) => {
+          await held;
+          return repo;
+        },
+      },
+    });
+    const base = dashboard.store.current()?.id ?? 0;
+    const adding = dashboard.post("/projects/save", added("octo/lib", base));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    // Meanwhile Settings deploys a lower thread limit.
+    const lowered = structuredClone(dashboard.store.current()?.document);
+    if (lowered === undefined) throw new Error("no config");
+    lowered.factory.limits.threads = 1;
+    const settings = dashboard.store.createVersion({
+      document: lowered,
+      author: "owner",
+      message: "Lower the limit",
+      parentId: base,
+    });
+    dashboard.store.approve(settings.id);
+    dashboard.store.markDeployed(settings.id);
+    release();
+
+    const response = await adding;
+    expect(response.status).toBe(400);
+    expect(dashboard.store.current()?.document.factory.limits.threads).toBe(1);
+    expect(dashboard.store.current()?.document.projects["octo/lib"]).toBeUndefined();
+  });
+
+  it("refuses the same repo under another casing", async () => {
+    dashboard = await startDashboard({ github, deploy: markDeployed });
+    const base = dashboard.store.current()?.id ?? 0;
+    const response = await dashboard.post("/projects/save", added("Octo/App", base));
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("octo/app is already a factory project");
+  });
+
+  it("returns a stale edit with the policy now in force", async () => {
+    dashboard = await startDashboard({ github, deploy: markDeployed });
+    const stale = dashboard.store.current()?.id ?? 0;
+    await dashboard.post("/projects/save", {
+      mode: "edit",
+      repo: "octo/app",
+      parentId: String(stale),
+      preset: "strict",
+      deploy: "on",
+    });
+    const response = await dashboard.post("/projects/save", {
+      mode: "edit",
+      repo: "octo/app",
+      parentId: String(stale),
+      preset: "yolo",
+      deploy: "on",
+    });
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain('<option value="strict" selected>strict</option>');
+    expect(dashboard.store.current()?.document.projects["octo/app"]?.policy.preset).toBe("strict");
+  });
+
+  it("will not remove a project while one of its merges may still need reverting", async () => {
+    dashboard = await startDashboard({ github, deploy: markDeployed });
+    const id = dashboard.h.cards.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
+    dashboard.h.cards.transition(id, "Implementing", "started");
+    dashboard.h.cards.transition(id, "Reviewing", "PR #5");
+    dashboard.h.cards.transition(id, "Merging", "approved");
+    dashboard.h.cards.transition(id, "Validating", "merged");
+    const response = await dashboard.post("/projects/remove", {
+      repo: "octo/app",
+      parentId: String(dashboard.store.current()?.id ?? 0),
+      deploy: "on",
+    });
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("validating, or reverting a merge");
+    expect(dashboard.store.current()?.document.projects["octo/app"]).toBeDefined();
+  });
+
+  it("says when the factory Hermes root was not updated", async () => {
+    dashboard = await startDashboard({
+      github,
+      deploy: (id) => {
+        dashboard?.store.markDeployed(id);
+        return Promise.resolve({ hermesError: "hermes failed" });
+      },
+    });
+    const response = await dashboard.post(
+      "/projects/save",
+      added("octo/lib", dashboard.store.current()?.id ?? 0),
+    );
+    expect(response.headers.get("location")).toBe("/projects?notice=hermes-failed");
+  });
+});
+
 describe("parsePolicy", () => {
+  it("takes a typed list even when its selector was left on the preset", () => {
+    const form = new URLSearchParams({
+      preset: "standard",
+      "requiredChecks.mode": "preset",
+      requiredChecks: "unit",
+    });
+    expect(parsePolicy(form).policy.overrides).toEqual({ requiredChecks: ["unit"] });
+  });
+
+  it("refuses a switch that is not the preset, on, or off, and a number too large", () => {
+    const { errors } = parsePolicy(
+      new URLSearchParams({
+        preset: "standard",
+        autoMerge: "yes",
+        openIssueCap: "9007199254740993",
+      }),
+    );
+    expect(errors).toHaveLength(2);
+  });
+
   it("leaves settings on their preset and reads changed ones", () => {
     const form = new URLSearchParams({
       preset: "yolo",
@@ -171,7 +299,7 @@ describe("parsePolicy", () => {
       allowNoChecks: "on",
       maxReviewRounds: "",
       "requiredChecks.mode": "preset",
-      requiredChecks: "ignored",
+      requiredChecks: "",
     });
     expect(parsePolicy(form)).toEqual({
       policy: { preset: "yolo", overrides: { allowNoChecks: true } },

@@ -53,7 +53,7 @@ export interface DashboardOptions {
   workers?: WorkerView[];
   deploy?: Deploy;
   t3WaitMs?: number;
-  github?: { repos(): Promise<string[]>; defaultBranch(repo: string): Promise<string> };
+  github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
 }
 
 /** A dashboard on a factory harness. Sessions live in a database of their own, so tests can break the factory's. */
