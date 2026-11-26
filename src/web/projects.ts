@@ -299,6 +299,15 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       // The lookup awaited; the version it checked must still be the one the change builds on.
       if (current()?.id !== base.id) return stale();
     }
+    if (mode === "add") {
+      // A repo added before keeps the spelling its cards and issues were recorded under, so its
+      // cap and issue records stay one.
+      const known = [
+        ...factory.cards.list().map((card) => card.repo),
+        ...factory.intake.issues().map((issue) => issue.repo),
+      ].find((name) => name.toLowerCase() === repo.toLowerCase());
+      if (known !== undefined) repo = known;
+    }
     const document = structuredClone(base.document);
     const existing = Object.keys(document.projects).find(
       (name) => name.toLowerCase() === repo.toLowerCase(),

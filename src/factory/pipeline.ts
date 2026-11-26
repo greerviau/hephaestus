@@ -452,12 +452,15 @@ export class Pipeline {
         else await this.afterReview(card);
         return;
       case "Merging":
+        this.recordPolicy(card);
         await this.gate(card);
         return;
       case "Validating":
+        this.recordPolicy(card);
         await this.validate(card);
         return;
       case "Reverting":
+        this.recordPolicy(card);
         await this.revert(card);
         return;
       default:
@@ -583,6 +586,14 @@ export class Pipeline {
       });
       return { threadId, worker };
     });
+  }
+
+  /**
+   * Keeps the card's policy snapshot current on every pass of a merge in flight, so a card that
+   * was already merging when the snapshot was introduced, or whose policy changed, has one.
+   */
+  private recordPolicy(card: Card): void {
+    if (this.isFactoryProject(card.repo)) this.policy(card);
   }
 
   /**
@@ -925,6 +936,11 @@ export class Pipeline {
       );
     }
     if (review.verdict === "approve") {
+      // A project removed meanwhile starts no new merge; the approval waits until it is added back.
+      if (!this.isFactoryProject(card.repo)) {
+        this.wait(card, `${card.repo} is no longer a factory project.`);
+        return;
+      }
       const next = this.cards.transition(card.id, "Merging", `approved at ${review.headSha}`, done);
       await this.mirror(next, "Merging");
       await this.gate(next);

@@ -438,6 +438,33 @@ describe("Pipeline", () => {
     expect(other.t3.launches).toHaveLength(1);
   });
 
+  it("starts no new merge for a removed project, though its review approves", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    delete h.config.projects["octo/app"];
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Reviewing");
+    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
+    expect(h.github.merged).toEqual([]);
+  });
+
+  it("records the policy of a card already validating, so its project's removal cannot strand it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    // As after an upgrade that added the snapshot: the card has none yet.
+    h.cards.update(id, { policy: null });
+    await h.pipeline.tick();
+    delete h.config.projects["octo/app"];
+    h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+    await h.pipeline.tick();
+    expect(h.github.reverted).toEqual([5]);
+  });
+
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
     const h = harness();
     const id = admitted(h);

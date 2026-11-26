@@ -215,6 +215,13 @@ describe("Projects, under concurrent changes", () => {
     expect(await response.text()).toContain("octo/app is already a factory project");
   });
 
+  it("re-adds a repo under the spelling its cards were recorded with", async () => {
+    dashboard = await startDashboard({ github, deploy: markDeployed });
+    dashboard.h.cards.create({ repo: "Octo/Lib", issueNumber: 1, title: "Old" });
+    await dashboard.post("/projects/save", added("octo/lib", dashboard.store.current()?.id ?? 0));
+    expect(Object.keys(dashboard.store.current()?.document.projects ?? {})).toContain("Octo/Lib");
+  });
+
   it("returns a stale edit with the policy now in force", async () => {
     dashboard = await startDashboard({ github, deploy: markDeployed });
     const stale = dashboard.store.current()?.id ?? 0;
