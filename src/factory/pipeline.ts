@@ -1374,32 +1374,19 @@ export class Pipeline {
     tried: Set<string>,
   ): { environmentId: string; threadId: string } | undefined {
     const at = this.now().getTime();
+    // Read afresh before each call, since a pass can run while a card picks a thread up again.
+    const held = this.cards.activeThreadIds();
     let best: { environmentId: string; threadId: string; last: number } | undefined;
     for (const thread of this.options.events.unsettledEnded()) {
-      if (tried.has(thread.threadId)) continue;
+      if (tried.has(thread.threadId) || held.has(thread.threadId)) continue;
       const backoff = this.settleBackoff.get(thread.threadId);
       if (backoff !== undefined && backoff.until > at) continue;
       const last = backoff?.last ?? 0;
-      if (best !== undefined && best.last <= last) continue;
-      // Checked right before each call, since a pass can run while a card picks a thread up again.
-      if (!this.settleable(thread.environmentId, thread.threadId)) continue;
-      best = { environmentId: thread.environmentId, threadId: thread.threadId, last };
+      if (best === undefined || last < best.last) {
+        best = { environmentId: thread.environmentId, threadId: thread.threadId, last };
+      }
     }
     return best;
-  }
-
-  /** Whether a thread is still ended and no active card uses it as its implement or review thread. */
-  private settleable(environmentId: string, threadId: string): boolean {
-    const stored = this.options.events.thread(environmentId, threadId);
-    if (stored === undefined || !ENDED_STATUSES.has(stored.status)) return false;
-    return !this.cards
-      .list()
-      .some(
-        (card) =>
-          card.stage !== "Done" &&
-          card.stage !== "Abandoned" &&
-          (card.implementThread === threadId || card.reviewThread === threadId),
-      );
   }
 
   /** Flags factory PRs merged by anything but Hephaestus, at most every few minutes. */
