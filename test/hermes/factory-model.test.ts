@@ -34,7 +34,6 @@ const CATALOG: ModelCatalog = {
       name: "OpenAI Codex",
       flow: "device_code",
       cli_command: "hermes auth add openai-codex",
-      logged_in: false,
     },
   ],
   profiles: {
@@ -54,8 +53,10 @@ function fakeLogin(): {
   process: LoginProcess;
   line(text: string): void;
   exit(code: number): void;
+  stopped(): boolean;
 } {
   const listeners: ((line: string) => void)[] = [];
+  let stopped = false;
   let finish: (code: number) => void = () => undefined;
   const done = new Promise<number>((resolve) => {
     finish = resolve;
@@ -65,6 +66,7 @@ function fakeLogin(): {
       onLine: (listener) => listeners.push(listener),
       done,
       stop: () => {
+        stopped = true;
         finish(143);
       },
     },
@@ -74,6 +76,7 @@ function fakeLogin(): {
     exit: (code) => {
       finish(code);
     },
+    stopped: () => stopped,
   };
 }
 
@@ -172,84 +175,64 @@ describe("FactoryModel", () => {
           "--profiles",
           "planner,lead,improver",
         ],
+        input: '{"api_key":"","base_url":""}',
       },
     ]);
     expect(restarts).toHaveLength(1);
   });
 
-  it("sends a custom endpoint's URL as an argument and its key on stdin", async () => {
+  it("sends a custom endpoint's URL and key on stdin, never on the command line", async () => {
     const { model, calls } = setup(() => '{"ok": true}\n');
 
     await model.setModel({
       provider: "custom",
       model: "llama-3",
-      baseUrl: "http://localhost:8080/v1",
+      baseUrl: "http://user:pass@localhost:8080/v1",
       key: "local-key",
     });
 
-    expect(calls[0]).toEqual({
-      args: [
-        "hephaestus",
-        "set-model",
-        "--provider",
-        "custom",
-        "--model",
-        "llama-3",
-        "--profiles",
-        "planner,lead,improver",
-        "--base-url",
-        "http://localhost:8080/v1",
-        "--key-on-stdin",
-      ],
-      input: "local-key",
-    });
+    expect(calls[0]?.input).toBe(
+      '{"api_key":"local-key","base_url":"http://user:pass@localhost:8080/v1"}',
+    );
+    expect(JSON.stringify(calls[0]?.args)).not.toMatch(/local-key|user:pass/);
   });
 
-  it("turns Hermes's refusal into a message the owner can act on", async () => {
-    const restarts: number[] = [];
-    const refusing = new FactoryModel({
-      ready: () => true,
-      run: () =>
-        Promise.reject(
-          new Error(
-            "hermes hephaestus set-model failed: Hermes refused the model: unknown model nope",
-          ),
-        ),
-      restartGateway: () => {
-        restarts.push(1);
-        return Promise.resolve();
-      },
-      startLogin: () => fakeLogin().process,
-    });
+  it("turns the plugin's refusal into a message the owner can act on, and does not restart", async () => {
+    const { model, restarts } = setup(
+      () => 'noise\n{"refused": "Hermes refused the model: unknown model nope"}\n',
+    );
 
-    await expect(refusing.setModel({ provider: "anthropic", model: "nope" })).rejects.toThrow(
+    await expect(model.setModel({ provider: "anthropic", model: "nope" })).rejects.toThrow(
       "Hermes refused the model: unknown model nope",
     );
     expect(restarts).toEqual([]);
   });
 
-  it("reports Hermes's warning as a warning, and passes --force when the owner insists", async () => {
-    const calls: string[][] = [];
-    const warning = new FactoryModel({
+  it("reports the plugin's warning as a warning, and passes --force when the owner insists", async () => {
+    const { model, calls } = setup((args) =>
+      args.includes("--force") ? '{"ok": true}\n' : '{"warning": "`x` was not found."}\n',
+    );
+
+    await expect(model.setModel({ provider: "anthropic", model: "x" })).rejects.toBeInstanceOf(
+      ModelWarning,
+    );
+    await model.setModel({ provider: "anthropic", model: "x", force: true });
+
+    expect(calls[1]?.args).toContain("--force");
+  });
+
+  it("says Hermes is out of date when the plugin cannot find Hermes code, or Hermes fails", async () => {
+    const outdated = setup(() => '{"outdated": "ImportError: cannot import name x"}\n');
+    await expect(outdated.model.addKey("deepseek", "k")).rejects.toThrow("Update Hermes");
+    expect(outdated.restarts).toEqual([]);
+
+    const failing = new FactoryModel({
       ready: () => true,
-      run: (args) => {
-        calls.push(args);
-        return args.includes("--force")
-          ? Promise.resolve('{"ok": true}\n')
-          : Promise.reject(
-              new Error("hermes hephaestus set-model failed: Hermes warned: `x` was not found."),
-            );
-      },
+      run: () => Promise.reject(new Error("hermes hephaestus add-key failed: Traceback")),
       restartGateway: () => Promise.resolve(),
       startLogin: () => fakeLogin().process,
     });
-
-    await expect(warning.setModel({ provider: "anthropic", model: "x" })).rejects.toBeInstanceOf(
-      ModelWarning,
-    );
-    await warning.setModel({ provider: "anthropic", model: "x", force: true });
-
-    expect(calls[1]).toContain("--force");
+    await expect(failing.addKey("deepseek", "k")).rejects.toThrow("Update Hermes");
   });
 
   it("shows a device login's link and code, then reports it signed in and restarts the gateway", async () => {
@@ -278,6 +261,28 @@ describe("FactoryModel", () => {
     expect(restarts).toHaveLength(1);
   });
 
+  it("keeps a sign-in whose gateway restart failed, says so, and never rejects in the background", async () => {
+    const login = fakeLogin();
+    const model = new FactoryModel({
+      ready: () => true,
+      run: () => Promise.resolve(""),
+      restartGateway: () => Promise.reject(new Error("the gateway did not restart")),
+      startLogin: () => login.process,
+    });
+
+    const started = model.startDeviceLogin("nous");
+    login.line('{"url": "https://a/", "code": "C", "expires_in": 900}');
+    await started;
+    login.line('{"status": "approved", "error": ""}');
+    login.exit(0);
+
+    await expect(model.settled()).resolves.toBeUndefined();
+    expect(model.deviceLogin()).toMatchObject({
+      status: "signed-in",
+      error: expect.stringContaining("did not restart") as unknown,
+    });
+  });
+
   it("reports a login that failed with Hermes's reason and leaves the gateway alone", async () => {
     const { model, logins, restarts } = setup();
 
@@ -298,27 +303,53 @@ describe("FactoryModel", () => {
     expect(restarts).toEqual([]);
   });
 
+  it("fails the start with Hermes's reason when the plugin refuses it", async () => {
+    const { model, logins } = setup();
+
+    const started = model.startDeviceLogin("xai-oauth");
+    logins[0]?.login.line('{"refused": "Hermes could not start the sign-in: 504"}');
+    logins[0]?.login.exit(0);
+
+    await expect(started).rejects.toThrow("Hermes could not start the sign-in: 504");
+    expect(model.deviceLogin()).toMatchObject({ status: "failed" });
+  });
+
   it("fails the start when Hermes exits before giving a code", async () => {
     const { model, logins } = setup();
 
     const started = model.startDeviceLogin("xai-oauth");
     logins[0]?.login.exit(1);
 
-    await expect(started).rejects.toThrow(ModelError);
+    await expect(started).rejects.toThrow("Update Hermes");
     expect(model.deviceLogin()).toMatchObject({ status: "failed" });
   });
 
-  it("replaces a login still waiting when a new one starts", async () => {
+  it("stops a login still waiting when a new one starts, and ignores what the old one says", async () => {
     const { model, logins } = setup();
     const first = model.startDeviceLogin("nous");
     logins[0]?.login.line('{"url": "https://a/", "code": "ONE", "expires_in": 900}');
     await first;
 
     const second = model.startDeviceLogin("openai-codex");
+    expect(logins[0]?.login.stopped()).toBe(true);
+    logins[0]?.login.line('{"status": "approved", "error": ""}');
     logins[1]?.login.line('{"url": "https://b/", "code": "TWO", "expires_in": 900}');
     await second;
-    await logins[0]?.login.process.done;
 
-    expect(model.deviceLogin()).toMatchObject({ provider: "openai-codex", code: "TWO" });
+    expect(model.deviceLogin()).toMatchObject({
+      provider: "openai-codex",
+      code: "TWO",
+      status: "waiting",
+    });
+  });
+
+  it("settles a start that is replaced before its code arrives", async () => {
+    const { model } = setup();
+    const first = model.startDeviceLogin("nous");
+    const second = model.startDeviceLogin("nous");
+
+    await expect(first).rejects.toThrow("replaced");
+    expect(model.deviceLogin()).toMatchObject({ status: "starting" });
+    void second.catch(() => undefined);
   });
 });

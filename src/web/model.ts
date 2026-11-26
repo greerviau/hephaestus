@@ -5,6 +5,7 @@ import {
   type ModelCatalog,
   type ProviderRow,
 } from "../hermes/factory-model.js";
+import { RestartError } from "../messaging.js";
 import type { FactoryPages } from "./factory.js";
 import { banner, card, empty, escapeHtml, layout, pageHead, pill } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
@@ -24,7 +25,12 @@ const NOTICES: Record<string, { title: string; text: string }> = {
 };
 
 /** Why a change did not happen; a warning keeps what the owner typed so they can save it anyway. */
-type Problem = { text: string; warning?: { model: string; baseUrl: string } };
+type Problem = {
+  text: string;
+  warning?: { model: string; baseUrl: string };
+  /** The change was saved but the gateway did not restart. */
+  saved?: boolean;
+};
 
 /** The Model page: give the factory Hermes a provider and model, with any provider Hermes supports. */
 export function modelRoutes(factory: FactoryPages): Route[] {
@@ -84,6 +90,10 @@ export function modelRoutes(factory: FactoryPages): Route[] {
         redirect(response, `${back}&notice=saved`);
       }
     } catch (error) {
+      if (error instanceof RestartError) {
+        sendHtml(response, 400, await page(provider, "", { text: error.message, saved: true }));
+        return;
+      }
       sendHtml(response, 400, await page(provider, "", { text: messageOf(error) }));
     }
   }
@@ -124,18 +134,24 @@ export function modelRoutes(factory: FactoryPages): Route[] {
       catalog.providers.find((row) => row.slug === chosen) ??
       catalog.providers.find((row) => row.slug === catalog.provider) ??
       catalog.providers[0];
-    const shown = NOTICES[notice];
+    const shown = Object.hasOwn(NOTICES, notice) ? NOTICES[notice] : undefined;
     const waiting = login?.status === "waiting" && login.provider === provider?.slug;
     const body = `${head}${shown === undefined ? "" : banner("info", shown.title, shown.text)}${
       problem === undefined
         ? ""
-        : banner(
-            "err",
-            problem.warning === undefined ? "Not changed" : "Not changed: Hermes warned",
-            problem.warning === undefined
-              ? problem.text
-              : `${problem.text} Check the name, or tick Use it anyway and save again.`,
-          )
+        : problem.saved === true
+          ? banner(
+              "err",
+              "Saved, but the chat did not restart",
+              `${problem.text} Restart it on the Messaging page.`,
+            )
+          : banner(
+              "err",
+              problem.warning === undefined ? "Not changed" : "Not changed: Hermes warned",
+              problem.warning === undefined
+                ? problem.text
+                : `${problem.text} Check the name, or tick Use it anyway and save again.`,
+            )
     }<div class="grid">${currentCard(catalog)}${pickerCard(catalog, provider?.slug ?? "")}${
       provider === undefined ? "" : providerCard(catalog, provider, login, problem?.warning)
     }</div>`;
@@ -227,11 +243,15 @@ function signInHtml(
   if (oauth?.flow === "device_code") {
     const mine = login?.provider === provider.slug ? login : undefined;
     if (mine?.status === "waiting" && mine.url !== undefined && mine.code !== undefined) {
-      return `<p class="lede">Open <a href="${escapeHtml(mine.url)}" rel="noreferrer" target="_blank">${escapeHtml(mine.url)}</a> and enter <code>${escapeHtml(mine.code)}</code>. This page updates when you are signed in.</p>`;
+      // Only a web address becomes a link; anything else is shown as text.
+      const link = /^https?:\/\//i.test(mine.url)
+        ? `<a href="${escapeHtml(mine.url)}" rel="noreferrer" target="_blank">${escapeHtml(mine.url)}</a>`
+        : `<code>${escapeHtml(mine.url)}</code>`;
+      return `<p class="lede">Open ${link} and enter <code>${escapeHtml(mine.code)}</code>. This page updates when you are signed in.</p>`;
     }
     const outcome =
       mine?.status === "signed-in"
-        ? banner("info", "Signed in", "Pick a model below.")
+        ? banner("info", "Signed in", mine.error ?? "Pick a model below.")
         : mine?.status === "failed"
           ? banner("err", "Sign-in failed", mine.error ?? "Try again.")
           : "";

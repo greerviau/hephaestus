@@ -5,6 +5,7 @@ import {
   type DeviceLogin,
   type ModelCatalog,
 } from "../../src/hermes/factory-model.js";
+import { RestartError } from "../../src/messaging.js";
 import type { FactoryPages } from "../../src/web/factory.js";
 import { startDashboard, type Dashboard } from "./dashboard.js";
 
@@ -67,14 +68,12 @@ function catalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
         name: "OpenAI Codex",
         flow: "device_code",
         cli_command: "hermes auth add openai-codex",
-        logged_in: false,
       },
       {
         id: "qwen-oauth",
         name: "Qwen",
         flow: "external",
         cli_command: "hermes auth add qwen-oauth",
-        logged_in: false,
       },
     ],
     profiles: {
@@ -98,6 +97,7 @@ function fakeModel(
     catalog?: ModelCatalog;
     refuse?: string;
     warn?: string;
+    restartFails?: boolean;
     login?: DeviceLogin;
   } = {},
 ): FakeModel {
@@ -122,6 +122,11 @@ function fakeModel(
         return Promise.reject(new ModelWarning(options.warn));
       }
       choices.push(choice);
+      if (options.restartFails === true) {
+        return Promise.reject(
+          new RestartError("The settings were saved, but the messaging gateway did not restart."),
+        );
+      }
       return Promise.resolve();
     },
     startDeviceLogin: (provider) => {
@@ -285,5 +290,75 @@ describe("Model page", () => {
     });
 
     expect((await dashboard.get("/model")).html).toContain("not all on this model");
+  });
+
+  it("says a save took when only the gateway restart failed", async () => {
+    dashboard = await startDashboard({ model: fakeModel({ restartFails: true }) });
+
+    const response = await dashboard.post("/model/set", {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+    });
+
+    expect(response.status).toBe(400);
+    const html = await response.text();
+    expect(html).toContain("Saved, but the chat did not restart");
+    expect(html).not.toContain("Not changed");
+  });
+
+  it("refuses a change with no provider", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    const response = await dashboard.post("/model/set", { model: "claude-opus-5-5" });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("Pick a provider first.");
+    expect(model.choices).toEqual([]);
+  });
+
+  it("ignores notice names that are not its own", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    for (const notice of ["constructor", "__proto__", "toString"]) {
+      expect((await dashboard.get(`/model?notice=${notice}`)).status).toBe(200);
+    }
+  });
+
+  it("escapes everything Hermes reports, and links only a web address", async () => {
+    const hostile = "<img src=x onerror=alert(1)>";
+    const base = catalog();
+    dashboard = await startDashboard({
+      model: fakeModel({
+        catalog: {
+          ...base,
+          provider: "evil",
+          model: hostile,
+          providers: [
+            {
+              slug: "evil",
+              name: hostile,
+              auth_type: "api_key",
+              key_env: hostile,
+              authenticated: false,
+              models: [hostile],
+            },
+          ],
+          oauth: [{ id: "evil", name: hostile, flow: "device_code", cli_command: hostile }],
+        },
+        login: {
+          provider: "evil",
+          url: "javascript:alert(1)",
+          code: hostile,
+          status: "waiting",
+        },
+      }),
+    });
+
+    const html = (await dashboard.get("/model?provider=evil")).html;
+
+    expect(html).not.toContain(hostile);
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    expect(html).not.toContain('href="javascript:');
   });
 });

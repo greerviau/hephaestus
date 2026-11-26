@@ -68,8 +68,9 @@ export class FactoryProfiles {
 
   /**
    * A profile has its own config.yaml, and a role without a model cannot run.
-   * A profile that names no model gets the root's model and provider, which
-   * the owner sets with `hermes model`; one the owner configured is left alone.
+   * A profile that names no model gets the root's model and provider, for a
+   * root the owner set with `hermes model` on the host; one already configured,
+   * for example from the Model page, is left alone.
    */
   private async inheritModel(role: RoleName, profileDir: string): Promise<void> {
     const read = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "");
@@ -77,8 +78,8 @@ export class FactoryProfiles {
     const root = hermesModelBlock(read(join(this.hermes.root, "config.yaml")));
     if ((root.default ?? root.model) === undefined) return;
     // A named custom provider also needs its custom_providers entry, and a key lives in the root's
-    // .env, which a profile does not read; copying either would mean copying a secret. The owner
-    // sets the model on each such profile, and the setup checklist says so.
+    // .env, which a profile does not read; copying either would mean copying a secret. The Model
+    // page sets such a model on every profile itself.
     if (root.provider?.startsWith("custom:") === true || root.api_key !== undefined) return;
     // Every key, so a custom endpoint's base_url, api_key, and api_mode come along.
     for (const [key, value] of Object.entries(root)) {

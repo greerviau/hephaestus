@@ -22,7 +22,6 @@ export interface OAuthRow {
   /** `device_code` signs in from the dashboard; `external` needs a command on the host. */
   flow: string;
   cli_command: string;
-  logged_in: boolean;
 }
 
 /** What the `hermes hephaestus catalog` action prints. */
@@ -90,11 +89,9 @@ export class FactoryModel {
   }
 
   async catalog(): Promise<ModelCatalog> {
-    const output = await this.call(["catalog", "--profiles", PROFILES]);
-    const catalog = lastJson(output) as ModelCatalog | undefined;
-    if (catalog === undefined || !Array.isArray(catalog.providers))
-      throw new ModelError(OUT_OF_DATE);
-    return catalog;
+    const catalog = (await this.call(["catalog", "--profiles", PROFILES])) as Partial<ModelCatalog>;
+    if (!Array.isArray(catalog.providers)) throw this.outdated(catalog);
+    return catalog as ModelCatalog;
   }
 
   async addKey(provider: string, key: string): Promise<void> {
@@ -122,12 +119,13 @@ export class FactoryModel {
       "--profiles",
       PROFILES,
     ];
-    const baseUrl = choice.baseUrl?.trim() ?? "";
-    if (baseUrl !== "") args.push("--base-url", baseUrl);
-    const key = choice.key?.trim() ?? "";
-    if (key !== "") args.push("--key-on-stdin");
     if (choice.force === true) args.push("--force");
-    await this.call(args, key === "" ? undefined : key);
+    // The endpoint URL can carry credentials too, so it goes on stdin with the key.
+    const secrets = JSON.stringify({
+      api_key: choice.key?.trim() ?? "",
+      base_url: choice.baseUrl?.trim() ?? "",
+    });
+    await this.call(args, secrets);
     await this.options.restartGateway();
   }
 
@@ -160,63 +158,90 @@ export class FactoryModel {
       shown = resolve;
       refused = reject;
     });
+    const fail = (error: string): void => {
+      Object.assign(login, { status: "failed", error });
+    };
 
     process.onLine((line) => {
       const message = parseJson(line) as
-        { url?: string; code?: string; status?: string; error?: string } | undefined;
+        (Outcome & { url?: string; code?: string; status?: string; error?: string }) | undefined;
       if (message === undefined || !current()) return;
       if (message.url !== undefined && message.code !== undefined) {
         Object.assign(login, { url: message.url, code: message.code, status: "waiting" });
         shown({ ...login });
+      } else if (message.refused !== undefined) {
+        fail(message.refused);
+      } else if (message.outdated !== undefined) {
+        console.error("The factory Hermes sign-in could not start", message.outdated);
+        fail(OUT_OF_DATE);
       } else if (message.status !== undefined) {
-        Object.assign(
-          login,
-          message.status === "approved"
-            ? { status: "signed-in" }
-            : { status: "failed", error: message.error || `The sign-in ended: ${message.status}.` },
-        );
+        if (message.status === "approved") login.status = "signed-in";
+        else fail(message.error || `The sign-in ended: ${message.status}.`);
       }
     });
 
     this.finishing = process.done.then(async (code) => {
-      if (!current()) return;
+      if (!current()) {
+        // Replaced by a newer sign-in; a caller still waiting for this one's code stops waiting.
+        refused(new ModelError("Another sign-in replaced this one."));
+        return;
+      }
       this.process = undefined;
       if (login.status === "signed-in") {
-        await this.options.restartGateway();
+        try {
+          await this.options.restartGateway();
+        } catch (error) {
+          console.error("Restarting the factory gateway after a sign-in failed", error);
+          login.error =
+            "Signed in, but the factory's chat did not restart. Restart it on the Messaging page.";
+        }
         return;
       }
       if (login.status !== "failed") {
-        Object.assign(login, {
-          status: "failed",
-          error:
-            login.code === undefined ? OUT_OF_DATE : `The sign-in ended with code ${String(code)}.`,
-        });
+        fail(
+          login.code === undefined ? OUT_OF_DATE : `The sign-in ended with code ${String(code)}.`,
+        );
       }
       refused(new ModelError(login.error ?? OUT_OF_DATE));
     });
     return started;
   }
 
-  /** Runs one plugin action, turning Hermes's refusal into a message the owner can read. */
-  private async call(args: string[], input?: string): Promise<string> {
+  /**
+   * Runs one plugin action and returns its JSON result. The plugin reports a
+   * refusal, a warning, or missing Hermes code as JSON on stdout, so the
+   * reason survives however much Hermes prints on stderr.
+   */
+  private async call(args: string[], input?: string): Promise<Record<string, unknown>> {
+    let output: string;
     try {
-      return await this.options.run(
+      output = await this.options.run(
         ["hephaestus", ...args],
         input === undefined ? undefined : { input },
       );
     } catch (error) {
-      const text = error instanceof Error ? error.message : String(error);
-      const warning = /Hermes warned: (.*)/.exec(text)?.[1];
-      if (warning !== undefined) throw new ModelWarning(warning);
-      const refusal =
-        /(Hermes refused the model: .*|Hermes has no provider named .*|.* does not take an API key\.|The key is empty\.)/.exec(
-          text,
-        )?.[1];
-      if (refusal !== undefined) throw new ModelError(refusal);
       console.error("A factory Hermes model action failed", error);
       throw new ModelError(OUT_OF_DATE);
     }
+    const result = lastJson(output) as (Outcome & Record<string, unknown>) | undefined;
+    if (result === undefined) throw this.outdated(output);
+    if (typeof result.refused === "string") throw new ModelError(result.refused);
+    if (typeof result.warning === "string") throw new ModelWarning(result.warning);
+    if (typeof result.outdated === "string") throw this.outdated(result.outdated);
+    return result;
   }
+
+  private outdated(detail: unknown): ModelError {
+    console.error("The factory Hermes model plugin did not answer as expected", detail);
+    return new ModelError(OUT_OF_DATE);
+  }
+}
+
+/** How the plugin reports an action that did not happen. */
+interface Outcome {
+  refused?: string;
+  warning?: string;
+  outdated?: string;
 }
 
 function parseJson(line: string): unknown {
