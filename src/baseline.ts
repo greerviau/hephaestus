@@ -35,6 +35,34 @@ export function resolveRoots(env: NodeJS.ProcessEnv, home: string): ConfigRoots 
 const HERMES_PROFILE_PATHS = ["config.yaml", ".env", "SOUL.md", "skills", "hooks"];
 
 /**
+ * Usage counts and skill locks, curator state and backups, hub caches, the
+ * bundled-skill manifest, and lock files that Hermes rewrites in a skills
+ * folder whenever it uses, curates, searches, or updates skills, so they would
+ * show as drift on every run. A changed skill lock is therefore not reported.
+ * They are skipped directly under any covered folder named `skills`, so a
+ * Claude or Codex skills folder linked to the Hermes one compares cleanly too.
+ */
+const HERMES_SKILL_BOOKKEEPING = new Set([
+  ".usage.json",
+  ".usage.json.lock",
+  ".curator_state",
+  ".curator_ledger.jsonl",
+  ".curator_backups",
+  ".hub",
+  ".bundled_manifest",
+  ".locks",
+]);
+
+/** Whether a baseline key is Hermes skill bookkeeping, or a file inside it. */
+function isHermesSkillBookkeeping(path: string): boolean {
+  const parts = path.split("/");
+  return parts.some(
+    (part, index) =>
+      index > 0 && parts[index - 1] === "skills" && HERMES_SKILL_BOOKKEEPING.has(part),
+  );
+}
+
+/**
  * Owner-authored config that Hephaestus must leave unchanged, relative to each
  * tool's config root. Credentials and runtime state are left out because they
  * change during normal use, and so is `~/.claude.json`, which Claude Code
@@ -136,6 +164,7 @@ function record(
   isTarget: boolean,
 ): void {
   const name = key(home, absolute);
+  if (isHermesSkillBookkeeping(name)) return;
   let stats;
   try {
     stats = lstatSync(absolute);
@@ -202,11 +231,16 @@ function hashFile(path: string): string {
   }
 }
 
-/** Entries that differ between two baselines, sorted by path. A missing entry counts as absent. */
+/**
+ * Entries that differ between two baselines, sorted by path. A missing entry
+ * counts as absent. Hermes skill bookkeeping is skipped, so a baseline taken
+ * before it was left out compares cleanly.
+ */
 export function diffBaselines(before: Baseline, after: Baseline): Drift[] {
   const paths = new Set([...Object.keys(before.entries), ...Object.keys(after.entries)]);
   const drift: Drift[] = [];
   for (const path of [...paths].sort()) {
+    if (isHermesSkillBookkeeping(path)) continue;
     const was = before.entries[path] ?? ABSENT;
     const now = after.entries[path] ?? ABSENT;
     if (was !== now) drift.push({ path, before: was, after: now });

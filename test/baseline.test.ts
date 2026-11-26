@@ -199,6 +199,54 @@ describe("takeBaseline", () => {
     expect(Object.keys(baseline.entries).some((key) => key.includes("logs"))).toBe(false);
     expect(baseline.entries[".claude/history.jsonl"]).toBeUndefined();
   });
+
+  it("leaves out the usage and curator files Hermes rewrites in its skills folders", () => {
+    write(".hermes/skills/review/SKILL.md", "# review\n");
+    for (const skills of [".hermes/skills", ".hermes/profiles/work/skills"]) {
+      write(`${skills}/.usage.json`, "{}\n");
+      write(`${skills}/.usage.json.lock`, "");
+      write(`${skills}/.curator_state`, "{}\n");
+      write(`${skills}/.curator_ledger.jsonl`, "{}\n");
+      write(`${skills}/.locks/abc.lock`, "");
+      write(`${skills}/.curator_backups/2026-11-26/skills.tar.gz`, "x");
+      write(`${skills}/.hub/index-cache/search.json`, "{}\n");
+      write(`${skills}/.bundled_manifest`, "x\n");
+    }
+
+    const keys = Object.keys(takeBaseline(home).entries);
+
+    expect(keys.filter((key) => key.includes("/skills/"))).toEqual([
+      ".hermes/skills/review/SKILL.md",
+    ]);
+  });
+
+  it("still records bookkeeping names that are not directly under a skills folder", () => {
+    write(".hermes/skills/review/.usage.json", "{}\n");
+    write(".hermes/hooks/.locks/pre.sh", "#!/bin/sh\n");
+
+    const baseline = takeBaseline(home);
+
+    expect(baseline.entries[".hermes/skills/review/.usage.json"]).toMatch(/^sha256:/);
+    expect(baseline.entries[".hermes/hooks/.locks/pre.sh"]).toMatch(/^sha256:/);
+  });
+
+  it("leaves out Hermes skill bookkeeping when HERMES_HOME is outside the home folder", () => {
+    const outside = mkdtempSync(join(tmpdir(), "hephaestus-hermes-"));
+    try {
+      writeFileSync(join(outside, "config.yaml"), "model: x\n");
+      mkdirSync(join(outside, "skills/.locks"), { recursive: true });
+      writeFileSync(join(outside, "skills/.usage.json"), "{}\n");
+      writeFileSync(join(outside, "skills/.locks/abc.lock"), "");
+      const roots = resolveRoots({ HERMES_HOME: outside }, home);
+
+      const keys = Object.keys(takeBaseline(home, roots).entries);
+
+      expect(keys).toContain(join(outside, "config.yaml"));
+      expect(keys.filter((key) => key.startsWith(join(outside, "skills")))).toEqual([]);
+    } finally {
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("diffBaselines", () => {
@@ -224,6 +272,28 @@ describe("diffBaselines", () => {
     expect(drift.find((change) => change.path === ".agents/skills/new/SKILL.md")?.before).toBe(
       "absent",
     );
+  });
+
+  it("ignores Hermes skill bookkeeping recorded by a baseline taken before it was left out", () => {
+    write(".hermes/skills/review/SKILL.md", "# review\n");
+    const before = takeBaseline(home);
+    before.entries[".hermes/skills/.usage.json"] = "sha256:old";
+    before.entries[".hermes/profiles/work/skills/.locks/abc.lock"] = "sha256:old";
+
+    expect(diffBaselines(before, takeBaseline(home))).toEqual([]);
+  });
+
+  it("still reports a changed skill next to the Hermes bookkeeping", () => {
+    write(".hermes/skills/review/SKILL.md", "# v1\n");
+    write(".hermes/skills/.usage.json", "{}\n");
+    const before = takeBaseline(home);
+
+    write(".hermes/skills/review/SKILL.md", "# v2\n");
+    write(".hermes/skills/.usage.json", '{"review": 1}\n');
+
+    expect(diffBaselines(before, takeBaseline(home)).map((change) => change.path)).toEqual([
+      ".hermes/skills/review/SKILL.md",
+    ]);
   });
 });
 
