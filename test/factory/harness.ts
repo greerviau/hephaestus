@@ -114,7 +114,7 @@ export function pr(
     url: `https://github.com/octo/app/pull/${String(number)}`,
     state: "OPEN",
     headSha,
-    headBranch: "factory/card-1",
+    headBranch: "factory/0123abcd-card-1",
     baseBranch: "main",
     fromFork: false,
     mergeSha: null,
@@ -201,6 +201,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     threads,
     events,
     config: () => ({ id: 3, document: config }),
+    install: "0123abcd-ffff-4fff-8fff-ffffffffffff",
     now,
     checksSettleMs: 0,
   });

@@ -18,6 +18,7 @@ let unreadable: Set<string>;
 let failPosts: number;
 let messages: Record<string, { id: string; content: string; author: { id: string } }[]>;
 let evidence: { tree: string; files: { name: string; data: Buffer }[] } | undefined;
+let refs: string[] = [];
 let threads: RequestThreads;
 
 const fetcher: Fetch = (url) => {
@@ -56,6 +57,7 @@ beforeEach(() => {
   failPosts = 0;
   messages = {};
   evidence = undefined;
+  refs = [];
   threads = new RequestThreads({
     db,
     cards,
@@ -70,7 +72,13 @@ beforeEach(() => {
         return Promise.resolve();
       },
     },
-    github: { evidence: () => Promise.resolve(evidence) },
+    github: {
+      evidence: (_repo, ref) => {
+        refs.push(ref);
+        return Promise.resolve(evidence);
+      },
+    },
+    install: "0123abcd-ffff-4fff-8fff-ffffffffffff",
     dashboardUrl: () => "http://host:7700/",
     fetcher,
   });
@@ -148,6 +156,8 @@ describe("RequestThreads", () => {
     cards.update(id, { prNumber: 5 });
     cards.transition(id, "Reviewing", "PR #5 at abc");
     await threads.progress();
+    // Scoped to this install, so a reinstall's card 1 never reads the last install's evidence.
+    expect(refs).toContain("hephaestus/evidence/0123abcd-card-1");
     const attached = posts.filter((post) => post.text.startsWith("Evidence:"));
     expect(attached).toHaveLength(1);
     expect(attached[0]?.attachments).toBe(true);

@@ -11,6 +11,7 @@ import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/ma
 import { finalMessage } from "../workers/scripts.js";
 import {
   MERGE_CONFLICT_DETAIL,
+  cardRef,
   type Card,
   type CardStore,
   type EscalationTarget,
@@ -75,6 +76,8 @@ export interface PipelineOptions {
   events: ThreadEvents;
   /** The deployed config version, which factory threads run under. */
   config: () => { id: number; document: FactoryConfig } | undefined;
+  /** This install's id, which scopes card branch and evidence names on GitHub and workers. */
+  install: string;
   board?: () => PipelineBoard | undefined;
   now?: () => Date;
   /** How long a new head's checks get to register before a merge; three minutes by default. */
@@ -631,7 +634,7 @@ export class Pipeline {
 
   private async launchImplement(card: Card): Promise<void> {
     const implementer: Provider = card.implementer ?? "claude";
-    const branch = `factory/card-${String(card.id)}${card.revertPr === null ? "" : `-retry-${String(card.revertPr)}`}`;
+    const branch = `factory/${cardRef(this.options.install, card.id)}${card.revertPr === null ? "" : `-retry-${String(card.revertPr)}`}`;
     const request = `hephaestus-implement-${String(card.id)}-${card.revertPr === null ? "0" : String(card.revertPr)}`;
     const started = await this.launch(
       card,
@@ -656,7 +659,13 @@ export class Pipeline {
             ...this.modelOptions(implementer),
             runtimeMode: "full-access",
             workspace: { type: "worktree", baseRef: `origin/${base}`, branch },
-            message: implementMessage(this.cards.get(card.id), issue, base, branch),
+            message: implementMessage(
+              this.cards.get(card.id),
+              issue,
+              base,
+              branch,
+              evidenceRef(this.options.install, card.id),
+            ),
             clientRequestId: request,
           },
         };
@@ -897,7 +906,7 @@ export class Pipeline {
             workspace: {
               type: "worktree",
               baseRef: `origin/${pr.headBranch}`,
-              branch: `review/card-${String(card.id)}-${String(attempt + 1)}`,
+              branch: `review/${cardRef(this.options.install, card.id)}-${String(attempt + 1)}`,
             },
             message: reviewMessage(card, issue, pr, pr.headSha),
             clientRequestId: request,
@@ -1637,6 +1646,7 @@ function implementMessage(
   issue: IssueText | undefined,
   base: string,
   branch: string,
+  evidence: string,
 ): string {
   const task =
     issue === undefined
@@ -1662,7 +1672,7 @@ ${card.brief ?? "(none)"}
 4. If the change can be seen, such as a page, a command's output, or a generated file, show it: save screenshots, a short recording, or the output to files outside the repository, then push them where the owner's chat picks them up. Run this from the repository, with your file paths in place of the examples:
    \`\`\`sh
    tree=$(for f in /tmp/evidence/screen.png /tmp/evidence/output.txt; do printf '100644 blob %s\\t%s\\n' "$(git hash-object -w "$f")" "$(basename "$f")"; done | git mktree)
-   commit=$(git commit-tree "$tree" -m "Evidence for card ${String(card.id)}") && git push --force origin "\${commit}:refs/${evidenceRef(card.id)}"
+   commit=$(git commit-tree "$tree" -m "Evidence for card ${String(card.id)}") && git push --force origin "\${commit}:refs/${evidence}"
    \`\`\`
    Give each file a different name. This ref holds only the evidence files and is not a branch. Skip this step when there is nothing to show.
 5. End your final message with this block, filled in:

@@ -72,10 +72,11 @@ describe("Pipeline", () => {
       environmentId: "w1",
       projectId: "proj",
       providerInstanceId: FACTORY_CLAUDE,
-      workspace: { type: "worktree", baseRef: "origin/main", branch: "factory/card-1" },
+      workspace: { type: "worktree", baseRef: "origin/main", branch: "factory/0123abcd-card-1" },
     });
     expect(implement?.message).toContain("Please add --flag.");
     expect(implement?.message).toContain("Closes #5");
+    expect(implement?.message).toContain("refs/hephaestus/evidence/0123abcd-card-1");
     expect(h.cards.get(id).stage).toBe("Implementing");
 
     h.github.prs.set(5, pr(5, SHA));
@@ -85,6 +86,7 @@ describe("Pipeline", () => {
     const review = h.t3.launches[1];
     expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
     expect(review?.message).toContain(SHA);
+    expect(review?.workspace).toMatchObject({ branch: "review/0123abcd-card-1-1" });
 
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
@@ -271,7 +273,9 @@ describe("Pipeline", () => {
 
     await h.pipeline.tick();
     expect(h.t3.launches.at(-1)?.message).toContain("reverted");
-    expect(h.t3.launches.at(-1)?.workspace).toMatchObject({ branch: "factory/card-1-retry-9" });
+    expect(h.t3.launches.at(-1)?.workspace).toMatchObject({
+      branch: "factory/0123abcd-card-1-retry-9",
+    });
   });
 
   it("sends a revert PR that touches an escalation path to the owner", async () => {

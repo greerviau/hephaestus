@@ -479,3 +479,12 @@ export class CardStore {
     this.db.prepare("UPDATE notifications SET dismissed = 1 WHERE id = ?").run(id);
   }
 }
+
+/**
+ * A card's name in refs and branches outside Hephaestus, scoped to this
+ * install: card ids restart at 1 after a reinstall, and a bare
+ * `factory/card-1` would collide with the last install's branch on GitHub.
+ */
+export function cardRef(install: string, cardId: number): string {
+  return `${install.slice(0, 8)}-card-${String(cardId)}`;
+}

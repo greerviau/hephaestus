@@ -238,6 +238,7 @@ function factoryEngine(
     threads: new FactoryThreads(t3, events),
     events,
     config: () => deployed(),
+    install: config.instanceId,
     board,
   });
   late.pipeline = pipeline;
@@ -524,6 +525,7 @@ async function main(argv: string[]): Promise<number> {
           ? undefined
           : new RequestThreads({
               db,
+              install: config.instanceId,
               cards: engine.cards,
               messaging,
               github: engine.github,
