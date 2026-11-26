@@ -212,6 +212,9 @@ const MIGRATIONS = [
    WHERE stage NOT IN ('Done', 'Abandoned')
    AND (SELECT MAX(id) FROM card_events WHERE card_id = cards.id AND kind = 'stage:Reverting')
      > COALESCE((SELECT MAX(id) FROM card_events WHERE card_id = cards.id AND kind = 'stage:Implementing'), 0);`,
+  // Issue reads are ordered by a counter, which a clock change cannot reorder.
+  `ALTER TABLE issues DROP COLUMN checked_at;
+   ALTER TABLE issues ADD COLUMN read_order INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

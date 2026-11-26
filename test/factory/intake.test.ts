@@ -144,6 +144,36 @@ describe("Intake", () => {
     expect(new Set(lookups).size).toBe(15);
   });
 
+  it("keeps one lookup budget per poll across projects, and retries failed reads in turn", async () => {
+    const h = harness((config) => {
+      config.projects["octo/lib"] = { policy: { preset: "standard", overrides: {} } };
+    });
+    // The fake answers every repo from one list, so each issue waits in both projects.
+    for (let number = 1; number <= 30; number += 1) {
+      h.github.issues.set(number, { number, title: "Old", body: "", author: "x", state: "OPEN" });
+    }
+    await h.intake.poll();
+    // Deleted issues drop out of the list, and reading them fails.
+    for (let number = 1; number <= 30; number += 1) h.github.issues.delete(number);
+    const read = h.github.issue.bind(h.github);
+    const lookups: string[] = [];
+    h.github.issue = (repo, number) => {
+      lookups.push(`${repo}#${String(number)}`);
+      return read(repo, number);
+    };
+
+    await h.intake.poll();
+    expect(lookups).toHaveLength(10);
+    await h.intake.poll();
+    await h.intake.poll();
+    await h.intake.poll();
+    await h.intake.poll();
+    await h.intake.poll();
+    // Sixty waiting issues, ten reads a poll: each was read once before any was read twice.
+    expect(lookups).toHaveLength(60);
+    expect(new Set(lookups).size).toBe(60);
+  });
+
   it("frees the cap when an unstarted issue is closed", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {

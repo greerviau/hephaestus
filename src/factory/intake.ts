@@ -4,8 +4,17 @@ import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
 import { OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
-/** Waiting issues missing from a full open list that one poll reads on their own. */
-const RECHECKS_PER_POLL = 10;
+/** Issues missing from the open lists that one poll reads on their own, across every project. */
+const LOOKUPS_PER_POLL = 10;
+
+interface Candidate {
+  repo: string;
+  number: number;
+  state: IssueState;
+  closed: number;
+  readOrder: number;
+  cardId: number | null;
+}
 
 export type IssueState = "admitted" | "awaiting-owner" | "held-cap" | "rejected";
 
@@ -148,6 +157,7 @@ export class Intake {
   /** Records open issues nobody has seen. Issues the cap held stay for the owner. */
   poll(): Promise<void> {
     return this.serial(async () => {
+      const lists = new Map<string, Set<number>>();
       for (const repo of Object.keys(this.options.config()?.projects ?? {})) {
         let open;
         try {
@@ -167,91 +177,95 @@ export class Intake {
             filedBy: null,
           });
         }
-        await this.closeUnstarted(repo, new Set(open.map((issue) => issue.number)));
+        lists.set(repo, new Set(open.map((issue) => issue.number)));
       }
+      await this.reconcile(lists);
     });
   }
 
   /**
-   * Abandons the cards of admitted issues that were closed before any thread
-   * started on them, so a closed issue holds no place under the cap.
+   * Follows issues the open lists leave out. An admitted issue closed before
+   * any thread started has its card abandoned, so it holds no place under the
+   * cap. An issue waiting for the owner leaves the queue while it is closed,
+   * and comes back if reopened. A full list may leave out open issues, so
+   * missing issues are read on their own: at most a few per poll across every
+   * project, least recently read first, to stay well inside GitHub's rate limit.
    */
-  private async closeUnstarted(repo: string, open: Set<number>): Promise<void> {
-    const rows = this.db
-      .prepare(
-        `SELECT i.number, c.id AS cardId FROM issues i JOIN cards c ON c.id = i.card_id
-         WHERE i.repo = ? AND i.state = 'admitted' AND c.started_at IS NULL
-         AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
-      )
-      .all(repo) as { number: number; cardId: number }[];
-    for (const row of rows) {
-      // The open list is capped, so an issue missing from it is read on its own before anything changes.
-      if (open.has(row.number) || !(await this.isClosed(repo, row.number))) continue;
-      const pending = this.db
-        .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
-        .get(String(row.cardId));
-      if (pending !== undefined) continue;
-      if (this.options.abandon !== undefined) {
-        await this.options.abandon(row.cardId, "the issue was closed before work started");
-      } else {
-        this.options.cards.transition(
-          row.cardId,
-          "Abandoned",
-          "the issue was closed before work started",
-          {
-            reason: "the issue was closed",
-          },
-        );
-      }
-    }
-    // An issue waiting for the owner leaves the queue while it is closed, and comes back if reopened.
-    const waiting = this.db
-      .prepare(
-        `SELECT number, closed FROM issues WHERE repo = ? AND state IN ('awaiting-owner', 'held-cap')
-         ORDER BY checked_at IS NOT NULL, checked_at`,
-      )
-      .all(repo) as { number: number; closed: number }[];
+  private async reconcile(lists: Map<string, Set<number>>): Promise<void> {
     const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
-    const missing = waiting.filter((issue) => !open.has(issue.number));
-    for (const issue of waiting) {
-      if (open.has(issue.number) && issue.closed === 1) mark.run(0, repo, issue.number);
-    }
-    if (open.size < OPEN_ISSUES_LIMIT) {
-      // A complete list settles it: an issue missing from it is read once, to confirm it closed.
-      for (const issue of missing) {
-        if (issue.closed === 0 && (await this.isClosed(repo, issue.number))) {
-          mark.run(1, repo, issue.number);
+    const candidates: Candidate[] = [];
+    for (const [repo, open] of lists) {
+      const complete = open.size < OPEN_ISSUES_LIMIT;
+      const rows = this.db
+        .prepare(
+          `SELECT i.number, i.state, i.closed, i.read_order AS readOrder, c.id AS cardId, c.started_at AS startedAt,
+           c.stage FROM issues i LEFT JOIN cards c ON c.id = i.card_id WHERE i.repo = ?
+           AND i.state IN ('admitted', 'awaiting-owner', 'held-cap')`,
+        )
+        .all(repo) as (Omit<Candidate, "repo"> & {
+        startedAt: string | null;
+        stage: string | null;
+      })[];
+      for (const row of rows) {
+        if (row.state === "admitted") {
+          const unstarted =
+            row.cardId !== null &&
+            row.startedAt === null &&
+            ["Admitted", "Implementing", "Escalated"].includes(row.stage ?? "");
+          if (unstarted && !open.has(row.number)) candidates.push({ repo, ...row });
+        } else if (open.has(row.number)) {
+          if (row.closed === 1) mark.run(0, repo, row.number);
+        } else if (row.closed === 0 || !complete) {
+          // From a complete list, an issue already marked closed is settled.
+          candidates.push({ repo, ...row });
         }
       }
-      return;
     }
-    // A full list may leave out open issues, which are read on their own a few per poll,
-    // least recently read first, so the lookups stay well inside GitHub's rate limit.
-    const checked = this.db.prepare(
-      "UPDATE issues SET checked_at = ? WHERE repo = ? AND number = ?",
-    );
-    for (const issue of missing.slice(0, RECHECKS_PER_POLL)) {
-      const state = await this.state(repo, issue.number);
-      checked.run(this.now().toISOString(), repo, issue.number);
-      if (state === "OPEN" && issue.closed === 1) mark.run(0, repo, issue.number);
-      if (state === "CLOSED" && issue.closed === 0) mark.run(1, repo, issue.number);
+    candidates.sort((a, b) => a.readOrder - b.readOrder);
+    for (const candidate of candidates.slice(0, LOOKUPS_PER_POLL)) {
+      const state = await this.lookup(candidate.repo, candidate.number);
+      if (candidate.state !== "admitted") {
+        if (state === "OPEN" && candidate.closed === 1)
+          mark.run(0, candidate.repo, candidate.number);
+        if (state === "CLOSED" && candidate.closed === 0)
+          mark.run(1, candidate.repo, candidate.number);
+      } else if (state === "CLOSED" && candidate.cardId !== null) {
+        await this.abandonUnstarted(candidate.cardId);
+      }
     }
   }
 
-  /** The issue's state on GitHub, or undefined when it could not be read. */
-  private async state(repo: string, number: number): Promise<string | undefined> {
+  private async abandonUnstarted(cardId: number): Promise<void> {
+    const pending = this.db
+      .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
+      .get(String(cardId));
+    if (pending !== undefined) return;
+    if (this.options.abandon !== undefined) {
+      await this.options.abandon(cardId, "the issue was closed before work started");
+    } else {
+      this.options.cards.transition(
+        cardId,
+        "Abandoned",
+        "the issue was closed before work started",
+        {
+          reason: "the issue was closed",
+        },
+      );
+    }
+  }
+
+  /** The issue's state on GitHub, or undefined when it could not be read; either way it goes to the back of the line. */
+  private async lookup(repo: string, number: number): Promise<string | undefined> {
+    this.db
+      .prepare(
+        `UPDATE issues SET read_order = (SELECT COALESCE(MAX(read_order), 0) + 1 FROM issues)
+         WHERE repo = ? AND number = ?`,
+      )
+      .run(repo, number);
     try {
       return (await this.options.github.issue(repo, number)).state;
     } catch {
       return undefined;
-    }
-  }
-
-  private async isClosed(repo: string, number: number): Promise<boolean> {
-    try {
-      return (await this.options.github.issue(repo, number)).state === "CLOSED";
-    } catch {
-      return false;
     }
   }
 

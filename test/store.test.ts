@@ -20,7 +20,7 @@ describe("store migrations", () => {
     const latest = db.pragma("user_version", { simple: true }) as number;
     db.exec(`ALTER TABLE merges DROP COLUMN foreign_merge;
       ALTER TABLE issues DROP COLUMN closed;
-      ALTER TABLE issues DROP COLUMN checked_at;
+      ALTER TABLE issues DROP COLUMN read_order;
       ALTER TABLE cards DROP COLUMN version;
       ALTER TABLE cards DROP COLUMN reverting;
       INSERT INTO notifications (at, card_id, text, kind)
@@ -31,7 +31,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 2)}`);
+    db.pragma(`user_version = ${String(latest - 3)}`);
     db.close();
 
     db = openStore(path);
