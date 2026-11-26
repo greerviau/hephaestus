@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { WorkerView } from "../../src/workers/manager.js";
-import { SHA } from "../factory/harness.js";
+import { MERGE, SHA, pr } from "../factory/harness.js";
 import {
   escalatedCard,
   externalIssue,
@@ -173,6 +173,22 @@ describe("Overview", () => {
     });
     expect(abandoned.headers.get("location")).toBe(`/work/${String(card)}?notice=abandoned`);
     expect(dashboard.h.cards.get(card).stage).toBe("Abandoned");
+  });
+
+  it("says the PR already merged when sending its card to the lead settles the merge instead", async () => {
+    dashboard = await startDashboard();
+    const card = escalatedCard(dashboard.h);
+    // Hephaestus merged PR 5, and the reply was lost.
+    dashboard.h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    dashboard.h.github.ownMerges.add(MERGE);
+
+    const response = await dashboard.post(`/work/${String(card)}/send-to-lead`, {
+      note: "Start over",
+      version: String(dashboard.h.cards.get(card).version),
+      back: "/",
+    });
+    expect(response.headers.get("location")).toBe("/?notice=merge-validating");
+    expect(dashboard.h.cards.get(card).stage).toBe("Merging");
   });
 
   it("dismisses a notification", async () => {

@@ -599,6 +599,41 @@ describe("Pipeline", () => {
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
   });
 
+  it("settles a restart queued before GitHub reported the merge, instead of sending it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    h.github.prs.set(5, pr(5, SHA));
+    await h.pipeline.escalateToOwner(id, "check the PR");
+    await h.pipeline.sendToLead(id, "go on");
+    h.pipeline.setPaused(true);
+    await h.pipeline.startWork(id, "new brief");
+    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    const sends = h.t3.sends.length;
+    h.pipeline.setPaused(false);
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(sends);
+    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
+  });
+
+  it("restarts a card whose open PR's checks cannot be read", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    h.github.prs.set(5, pr(5, SHA));
+    await h.pipeline.escalateToOwner(id, "check the PR");
+    await h.pipeline.sendToLead(id, "go on");
+    // The full PR read also reads files and checks; the restart guard needs only the merge state.
+    h.github.pullRequest = () => Promise.reject(new Error("HTTP 503 from the checks API"));
+    expect((await h.pipeline.startWork(id, "new brief")).stage).toBe("Implementing");
+  });
+
   it("settles an unrecorded merge when the lead restarts the card, whoever merged it", async () => {
     const h = harness();
     const ours = admitted(h);

@@ -15,8 +15,29 @@ import {
   AlreadyMergedError,
   MergeOutcomeUnknownError,
   type GitHub,
+  type MergeState,
   type PullRequest,
 } from "./github.js";
+
+/** A card was not restarted because its PR merged with no record of the merge, which this settled. */
+export class MergeSettledError extends Error {
+  constructor(
+    readonly cardId: number,
+    readonly prNumber: number,
+    /** Merging: Hephaestus's merge, to be validated. Done: someone else's. Otherwise still unclear. */
+    readonly stage: Stage,
+  ) {
+    const what =
+      stage === "Merging"
+        ? "Hephaestus merged it, and the merge step will validate the merge"
+        : stage === "Done"
+          ? "it was merged outside Hephaestus, so the card is done"
+          : "Hephaestus could not yet tell whose merge it was; try again shortly";
+    super(
+      `PR #${String(prNumber)} has merged, so card ${String(cardId)} was not restarted: ${what}.`,
+    );
+  }
+}
 
 /** What the pipeline mirrors onto the Hermes board; absent when Hermes is not set up. */
 export interface PipelineBoard {
@@ -33,6 +54,7 @@ export interface PipelineOptions {
     | "issue"
     | "defaultBranch"
     | "pullRequest"
+    | "mergeState"
     | "merge"
     | "mergedWith"
     | "commitChecks"
@@ -226,19 +248,17 @@ export class Pipeline {
    * closes the card. Returns why the card was not restarted, or undefined
    * when the PR has not merged.
    */
-  private async settleUnrecordedMerge(card: Card): Promise<string | undefined> {
+  private async settleUnrecordedMerge(card: Card): Promise<MergeSettledError | undefined> {
     if (card.prNumber === null || this.cards.hasMerge(card.repo, card.prNumber)) return undefined;
-    const pr = await this.options.github.pullRequest(card.repo, card.prNumber);
+    const pr = await this.options.github.mergeState(card.repo, card.prNumber);
     if (pr.state !== "MERGED") return undefined;
     await this.mergedPullRequest(card, pr);
-    const now = this.cards.get(card.id);
-    const what =
-      now.stage === "Merging"
-        ? "Hephaestus merged it, and the merge step will validate the merge"
-        : now.stage === "Done"
-          ? "it was merged outside Hephaestus, so the card is done"
-          : "Hephaestus could not yet tell whose merge it was; try again shortly";
-    return `PR #${String(pr.number)} has merged, so card ${String(card.id)} was not restarted: ${what}.`;
+    return new MergeSettledError(card.id, pr.number, this.cards.get(card.id).stage);
+  }
+
+  private async refuseOnUnrecordedMerge(card: Card): Promise<void> {
+    const settled = await this.settleUnrecordedMerge(card);
+    if (settled !== undefined) throw settled;
   }
 
   /** The lead's start_work: records the brief and starts the implement thread when caps allow. */
@@ -251,8 +271,7 @@ export class Pipeline {
     if (card.stage === "Admitted") {
       this.cards.transition(cardId, "Implementing", "work started", { brief, waiting: null });
     } else if (card.stage === "Escalated" && card.escalatedTo === "lead") {
-      const settled = await this.settleUnrecordedMerge(card);
-      if (settled !== undefined) throw new Error(settled);
+      await this.refuseOnUnrecordedMerge(card);
       // A fresh brief replaces the escalation; an open PR stays, and the implementer continues it.
       this.cards.transition(cardId, "Implementing", "the lead restarted the work", {
         brief,
@@ -323,8 +342,7 @@ export class Pipeline {
           `Card ${String(cardId)} is reverting a merge; approve the revert or abandon the card.`,
         );
       }
-      const settled = await this.settleUnrecordedMerge(card);
-      if (settled !== undefined) throw new Error(settled);
+      await this.refuseOnUnrecordedMerge(card);
       this.cards.update(cardId, { escalatedTo: "lead", reason: note, ownerAction: null });
       this.cards.event(cardId, "escalated:lead", note);
       await this.mirrorHandBack(this.cards.get(cardId), note);
@@ -640,6 +658,12 @@ export class Pipeline {
           : this.blockedBecause(env, thread);
       if (blocked !== undefined) {
         this.wait(current, blocked);
+        return;
+      }
+      // A restart queued before GitHub reported a merge Hephaestus has no record of is settled
+      // instead of sent, so no work resumes on top of it.
+      if ((await this.settleUnrecordedMerge(current)) !== undefined) {
+        this.cards.update(card.id, { pendingMessage: null });
         return;
       }
       // The same message always carries the same request id, so a retry after a lost reply is one send.
@@ -1307,7 +1331,7 @@ export class Pipeline {
    */
   private async mergedPullRequest(
     card: Card,
-    pr: PullRequest,
+    pr: MergeState,
     extra: Partial<Card> = {},
     handOn = true,
   ): Promise<void> {

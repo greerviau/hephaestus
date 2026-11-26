@@ -3,7 +3,7 @@ import type { Analytics } from "../factory/analytics.js";
 import type { Card, CardStore } from "../factory/cards.js";
 import type { FactoryMcp } from "../factory/mcp.js";
 import type { Intake } from "../factory/intake.js";
-import type { Pipeline } from "../factory/pipeline.js";
+import { MergeSettledError, type Pipeline } from "../factory/pipeline.js";
 import type { Stage } from "../hermes/board.js";
 import { ENDED_STATUSES, type StoredThread, type ThreadEvents } from "../t3/events.js";
 import type { WorkerManager, WorkerView } from "../workers/manager.js";
@@ -195,6 +195,21 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     text: "It is no longer escalated, or the Hermes board could not be updated. The service log has the error.",
   },
   abandoned: { kind: "info", title: "Card abandoned", text: "No more threads start for it." },
+  "merge-validating": {
+    kind: "info",
+    title: "The PR has already merged",
+    text: "Hephaestus made the merge, whose reply was lost. The card was not sent back; the merge step will validate the merge.",
+  },
+  "merge-foreign": {
+    kind: "info",
+    title: "The PR has already merged",
+    text: "Someone merged it outside Hephaestus, so the card is done and was not sent back.",
+  },
+  "merge-unclear": {
+    kind: "err",
+    title: "The PR has already merged",
+    text: "Hephaestus could not yet read whose merge it was, so the card was not sent back. Try again shortly.",
+  },
   "abandon-failed": {
     kind: "err",
     title: "The card was not abandoned",
@@ -280,6 +295,17 @@ async function act(
   try {
     await run(fields);
   } catch (error) {
+    if (error instanceof MergeSettledError) {
+      // The card moved on; say where, which is not a failure of the action's own work.
+      const notice =
+        error.stage === "Merging"
+          ? "merge-validating"
+          : error.stage === "Done"
+            ? "merge-foreign"
+            : "merge-unclear";
+      redirect(context.response, withNotice(back, notice));
+      return;
+    }
     console.error("A dashboard action failed", error);
     redirect(context.response, withNotice(back, failed));
     return;

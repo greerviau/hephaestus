@@ -3,6 +3,9 @@ import { commandRunner, type CommandRun } from "../workers/config-repo.js";
 export type CheckState = "success" | "pending" | "failure" | "none";
 
 /** GitHub may have merged the PR, and Hephaestus could not read back whether it did. */
+/** The part of a PR that says whether and how it merged. */
+export type MergeState = Pick<PullRequest, "number" | "state" | "headSha" | "mergeSha">;
+
 /** How long an intake read may run before it is killed, so a stalled read cannot hold up the poll. */
 export const INTAKE_READ_TIMEOUT_MS = 30_000;
 
@@ -220,6 +223,22 @@ export class GitHub {
    * lists are read through the paginated REST API, because `gh pr view`
    * returns at most 100 of each.
    */
+  /** Whether a PR merged, without its files or checks, so a checks outage cannot fail the read. */
+  async mergeState(repo: string, number: number): Promise<MergeState> {
+    const pr = await this.json<{
+      number: number;
+      state: PullRequest["state"];
+      headRefOid: string;
+      mergeCommit: { oid: string } | null;
+    }>(["pr", "view", String(number), "-R", repo, "--json", "number,state,headRefOid,mergeCommit"]);
+    return {
+      number: pr.number,
+      state: pr.state,
+      headSha: pr.headRefOid,
+      mergeSha: pr.mergeCommit?.oid ?? null,
+    };
+  }
+
   async pullRequest(repo: string, number: number): Promise<PullRequest> {
     const pr = await this.json<{
       number: number;

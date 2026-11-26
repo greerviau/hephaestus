@@ -7,6 +7,7 @@ import {
   type CheckState,
   type CheckSummary,
   type Issue,
+  type MergeState,
   type PullRequest,
 } from "../../src/factory/github.js";
 import { Intake } from "../../src/factory/intake.js";
@@ -67,6 +68,16 @@ export class FakeGitHub {
     return pr === undefined
       ? Promise.reject(new Error(`no PR ${String(number)}`))
       : Promise.resolve({ ...pr });
+  }
+  mergeState(_repo: string, number: number): Promise<MergeState> {
+    const pr = this.prs.get(number);
+    if (pr === undefined) return Promise.reject(new Error(`no PR ${String(number)}`));
+    return Promise.resolve({
+      number: pr.number,
+      state: pr.state,
+      headSha: pr.headSha,
+      mergeSha: pr.mergeSha,
+    });
   }
   merge(_repo: string, number: number, headSha: string): Promise<string> {
     const pr = this.prs.get(number);
