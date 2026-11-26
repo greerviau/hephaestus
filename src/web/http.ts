@@ -13,7 +13,8 @@ export function send(
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
-    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'",
+    "content-security-policy":
+      "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; form-action 'self'",
   });
   response.end(body);
 }

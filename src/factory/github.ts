@@ -3,6 +3,15 @@ import { commandRunner, type CommandRun } from "../workers/config-repo.js";
 export type CheckState = "success" | "pending" | "failure" | "none";
 
 /** GitHub may have merged the PR, and Hephaestus could not read back whether it did. */
+/** The part of a PR that says whether and how it merged. */
+export type MergeState = Pick<PullRequest, "number" | "state" | "headSha" | "mergeSha">;
+
+/** How long an intake read may run before it is killed, so a stalled read cannot hold up the poll. */
+export const INTAKE_READ_TIMEOUT_MS = 30_000;
+
+/** The most open issues one read lists; an issue missing from a full list may still be open. */
+export const OPEN_ISSUES_LIMIT = 200;
+
 export class MergeOutcomeUnknownError extends Error {
   constructor(
     readonly number: number,
@@ -132,12 +141,17 @@ export class GitHub {
     private readonly exec: CommandRun = commandRunner,
   ) {}
 
-  private gh(args: string[]): Promise<string> {
-    return this.exec(this.ghPath, args);
+  /**
+   * Only reads that are safe to repeat take a timeout. A write that outlives
+   * one may still have happened on GitHub, which the caller could not tell
+   * from a failure.
+   */
+  private gh(args: string[], timeoutMs?: number): Promise<string> {
+    return this.exec(this.ghPath, args, undefined, timeoutMs);
   }
 
-  private async json<T>(args: string[]): Promise<T> {
-    return JSON.parse(await this.gh(args)) as T;
+  private async json<T>(args: string[], timeoutMs?: number): Promise<T> {
+    return JSON.parse(await this.gh(args, timeoutMs)) as T;
   }
 
   async createIssue(repo: string, title: string, body: string): Promise<number> {
@@ -150,18 +164,21 @@ export class GitHub {
   async openIssues(repo: string): Promise<Issue[]> {
     const issues = await this.json<
       { number: number; title: string; body: string; author: { login: string } | null }[]
-    >([
-      "issue",
-      "list",
-      "-R",
-      repo,
-      "--state",
-      "open",
-      "--limit",
-      "200",
-      "--json",
-      "number,title,body,author",
-    ]);
+    >(
+      [
+        "issue",
+        "list",
+        "-R",
+        repo,
+        "--state",
+        "open",
+        "--limit",
+        String(OPEN_ISSUES_LIMIT),
+        "--json",
+        "number,title,body,author",
+      ],
+      INTAKE_READ_TIMEOUT_MS,
+    );
     return issues.map((issue) => ({
       number: issue.number,
       title: issue.title,
@@ -171,14 +188,18 @@ export class GitHub {
     }));
   }
 
-  async issue(repo: string, number: number): Promise<Issue> {
+  /** One issue; intake passes a timeout, so a stalled read cannot hold up its poll. */
+  async issue(repo: string, number: number, timeoutMs?: number): Promise<Issue> {
     const issue = await this.json<{
       number: number;
       title: string;
       body: string;
       author: { login: string } | null;
       state: "OPEN" | "CLOSED";
-    }>(["issue", "view", String(number), "-R", repo, "--json", "number,title,body,author,state"]);
+    }>(
+      ["issue", "view", String(number), "-R", repo, "--json", "number,title,body,author,state"],
+      timeoutMs,
+    );
     return { ...issue, author: issue.author?.login ?? "" };
   }
 
@@ -202,6 +223,22 @@ export class GitHub {
    * lists are read through the paginated REST API, because `gh pr view`
    * returns at most 100 of each.
    */
+  /** Whether a PR merged, without its files or checks, so a checks outage cannot fail the read. */
+  async mergeState(repo: string, number: number): Promise<MergeState> {
+    const pr = await this.json<{
+      number: number;
+      state: PullRequest["state"];
+      headRefOid: string;
+      mergeCommit: { oid: string } | null;
+    }>(["pr", "view", String(number), "-R", repo, "--json", "number,state,headRefOid,mergeCommit"]);
+    return {
+      number: pr.number,
+      state: pr.state,
+      headSha: pr.headRefOid,
+      mergeSha: pr.mergeCommit?.oid ?? null,
+    };
+  }
+
   async pullRequest(repo: string, number: number): Promise<PullRequest> {
     const pr = await this.json<{
       number: number;

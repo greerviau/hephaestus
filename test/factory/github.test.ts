@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { AlreadyMergedError, GitHub, foldChecks } from "../../src/factory/github.js";
+import {
+  AlreadyMergedError,
+  GitHub,
+  INTAKE_READ_TIMEOUT_MS,
+  foldChecks,
+} from "../../src/factory/github.js";
 import type { CommandRun } from "../../src/workers/config-repo.js";
 
 describe("foldChecks", () => {
@@ -106,5 +111,28 @@ describe("GitHub", () => {
   it("reads the issue number from gh issue create", async () => {
     const exec: CommandRun = () => Promise.resolve("https://github.com/octo/app/issues/42\n");
     expect(await new GitHub("gh", exec).createIssue("octo/app", "t", "b")).toBe(42);
+  });
+
+  it("times out the intake reads, and never a write whose outcome a timeout would hide", async () => {
+    const timeouts: (number | undefined)[] = [];
+    const exec: CommandRun = (_file, args, _cwd, timeoutMs) => {
+      timeouts.push(timeoutMs);
+      if (args[1] === "view") {
+        return Promise.resolve('{"number":7,"title":"t","body":"","author":null,"state":"OPEN"}');
+      }
+      if (args[1] === "create") return Promise.resolve("https://github.com/octo/app/issues/42\n");
+      return Promise.resolve("[]");
+    };
+    const github = new GitHub("gh", exec);
+    await github.openIssues("octo/app");
+    await github.issue("octo/app", 7, INTAKE_READ_TIMEOUT_MS);
+    await github.issue("octo/app", 7);
+    await github.createIssue("octo/app", "t", "b");
+    expect(timeouts).toEqual([
+      INTAKE_READ_TIMEOUT_MS,
+      INTAKE_READ_TIMEOUT_MS,
+      undefined,
+      undefined,
+    ]);
   });
 });

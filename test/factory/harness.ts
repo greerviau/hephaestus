@@ -3,9 +3,11 @@ import type { FactoryConfig } from "../../src/config/document.js";
 import { CardStore } from "../../src/factory/cards.js";
 import {
   AlreadyMergedError,
+  OPEN_ISSUES_LIMIT,
   type CheckState,
   type CheckSummary,
   type Issue,
+  type MergeState,
   type PullRequest,
 } from "../../src/factory/github.js";
 import { Intake } from "../../src/factory/intake.js";
@@ -35,14 +37,26 @@ export class FakeGitHub {
     this.issues.set(number, { number, title, body, author: "owner", state: "OPEN" });
     return Promise.resolve(number);
   }
+  /** Like gh: the newest open issues, at most the limit. */
   openIssues(): Promise<Issue[]> {
-    return Promise.resolve([...this.issues.values()].filter((issue) => issue.state === "OPEN"));
+    return Promise.resolve(
+      [...this.issues.values()]
+        .filter((issue) => issue.state === "OPEN")
+        .sort((a, b) => b.number - a.number)
+        .slice(0, OPEN_ISSUES_LIMIT),
+    );
   }
   issue(_repo: string, number: number): Promise<Issue> {
     const issue = this.issues.get(number);
     return issue === undefined ? Promise.reject(new Error("no issue")) : Promise.resolve(issue);
   }
+  /** Reopens that fail before one goes through. */
+  reopenFailures = 0;
   reopenIssue(_repo: string, number: number): Promise<void> {
+    if (this.reopenFailures > 0) {
+      this.reopenFailures -= 1;
+      return Promise.reject(new Error("GitHub is down"));
+    }
     this.reopened.push(number);
     return Promise.resolve();
   }
@@ -54,6 +68,16 @@ export class FakeGitHub {
     return pr === undefined
       ? Promise.reject(new Error(`no PR ${String(number)}`))
       : Promise.resolve({ ...pr });
+  }
+  mergeState(_repo: string, number: number): Promise<MergeState> {
+    const pr = this.prs.get(number);
+    if (pr === undefined) return Promise.reject(new Error(`no PR ${String(number)}`));
+    return Promise.resolve({
+      number: pr.number,
+      state: pr.state,
+      headSha: pr.headSha,
+      mergeSha: pr.mergeSha,
+    });
   }
   merge(_repo: string, number: number, headSha: string): Promise<string> {
     const pr = this.prs.get(number);

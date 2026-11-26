@@ -237,6 +237,15 @@ export class FactoryMcp {
       );
   }
 
+  /** The threads an improver proposal cites as its reason, for the Improvement page. */
+  evidence(versionId: number): { environmentId: string; threadId: string; note: string }[] {
+    return this.options.db
+      .prepare(
+        "SELECT environment_id AS environmentId, thread_id AS threadId, note FROM version_evidence WHERE version_id = ? ORDER BY rowid",
+      )
+      .all(versionId) as { environmentId: string; threadId: string; note: string }[];
+  }
+
   /** Recent calls, newest first, for the Activity page. */
   calls(limit = 200): {
     id: number;

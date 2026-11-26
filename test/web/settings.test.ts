@@ -223,6 +223,41 @@ describe("Settings page", () => {
     expect(deployed).toEqual([draft.id, next.id]);
   });
 
+  it("reports a failed deploy after approval without the error text", async () => {
+    await new Promise((resolve) => server.close(resolve));
+    server = createDashboardServer({
+      db,
+      instanceId: "test",
+      routes: settingsRoutes(store, () =>
+        Promise.reject(
+          new Error("git push failed: token ghp_secret", { cause: new Error("exit 128") }),
+        ),
+      ),
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+    const draft = store.createVersion({
+      document: sampleConfig(),
+      author: "o",
+      message: "d",
+      parentId: 1,
+    });
+
+    const approved = await post(`/settings/versions/${String(draft.id)}/approve`, {});
+    const location = approved.headers.get("location") ?? "";
+    const page = await (await get(location)).text();
+    store.createVersion({ document: sampleConfig(), author: "o", message: "e", parentId: 1 });
+    const retry = await post(`/settings/versions/${String(draft.id)}/deploy`, {});
+    const retryPage = await retry.text();
+
+    expect(location).toBe(`/settings/versions/${String(draft.id)}?deploy=failed`);
+    expect(page).toContain("Approved, but not deployed");
+    expect(page).not.toContain("ghp_secret");
+    expect(retry.status).toBe(409);
+    expect(retryPage).toContain("T3 or GitHub failed");
+    expect(retryPage).not.toContain("ghp_secret");
+  });
+
   it("answers 404 for a version that does not exist", async () => {
     expect((await get("/settings/versions/99")).status).toBe(404);
     expect((await get("/api/config/versions/99")).status).toBe(404);

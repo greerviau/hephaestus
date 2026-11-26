@@ -75,6 +75,7 @@ Uninstall removes the factory setup from every worker, then the service and `~/.
 
 - [Install and uninstall](docs/install.md): what install records and changes, and dashboard security
 - [Configuration](docs/configuration.md): config versions, policies, factory settings, backups, and secrets
+- [Dashboard](docs/dashboard.md): the pages and the actions on each
 - [Workers](docs/workers.md): how workers are deployed, signed in, and cleaned up
 - [The factory](docs/factory.md): intake, the pipeline, the merge gate, revert, and the MCP server
 - [Factory Hermes](docs/hermes.md): the factory's own Hermes home and gateway

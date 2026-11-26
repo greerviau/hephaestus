@@ -1,0 +1,193 @@
+import type { Server } from "node:http";
+import type { AddressInfo } from "node:net";
+import type { Database } from "better-sqlite3";
+import { hashPassword, writePasswordHash } from "../../src/auth.js";
+import { ConfigStore } from "../../src/config/store.js";
+import { analytics } from "../../src/factory/analytics.js";
+import { FactoryMcp } from "../../src/factory/mcp.js";
+import { createDashboardServer } from "../../src/server.js";
+import { openStore } from "../../src/store.js";
+import type { Environments } from "../../src/t3/adapter.js";
+import type { WorkerView } from "../../src/workers/manager.js";
+import type { EnvironmentSource } from "../../src/web/environments.js";
+import { dashboardRoutes } from "../../src/web/dashboard.js";
+import type { Deploy } from "../../src/web/settings.js";
+import { sampleConfig } from "../config/fixtures.js";
+import { SHA, harness, pr, type Harness } from "../factory/harness.js";
+
+export const PASSWORD = "correct horse battery";
+export const NOW = Date.parse("2026-11-25T12:00:00Z");
+const DAY = 86_400_000;
+
+export function linked(expiresInDays = 30): Environments {
+  return {
+    localEnvironmentId: "local",
+    environments: [
+      {
+        environmentId: "w1",
+        label: "worker one",
+        reachable: true,
+        status: "reachable",
+        access: "full-access",
+        expiresAt: new Date(NOW + expiresInDays * DAY).toISOString(),
+        lastCallFailed: false,
+      },
+    ],
+  };
+}
+
+export interface Dashboard {
+  base: string;
+  cookie: string;
+  h: Harness;
+  store: ConfigStore;
+  mcp: FactoryMcp;
+  sessions: Database;
+  get(path: string): Promise<{ status: number; html: string }>;
+  post(path: string, fields?: Record<string, string>): Promise<Response>;
+  close(): Promise<void>;
+}
+
+export interface DashboardOptions {
+  environments?: EnvironmentSource;
+  workers?: WorkerView[];
+  deploy?: Deploy;
+  t3WaitMs?: number;
+}
+
+/** A dashboard on a factory harness. Sessions live in a database of their own, so tests can break the factory's. */
+export async function startDashboard(options: DashboardOptions = {}): Promise<Dashboard> {
+  const h = harness();
+  const store = new ConfigStore(h.db);
+  const first = store.createVersion({ document: sampleConfig(), author: "t", message: "first" });
+  store.approve(first.id);
+  store.markDeployed(first.id);
+  const mcp = new FactoryMcp({
+    db: h.db,
+    cards: h.cards,
+    intake: h.intake,
+    pipeline: h.pipeline,
+    store,
+    events: h.events,
+    tokens: () => ({}),
+  });
+  const sessions = openStore(":memory:");
+  writePasswordHash(sessions, hashPassword(PASSWORD));
+  const workers = options.workers;
+  const server: Server = createDashboardServer({
+    db: sessions,
+    instanceId: "test",
+    routes: dashboardRoutes({
+      cards: h.cards,
+      intake: h.intake,
+      pipeline: h.pipeline,
+      events: h.events,
+      mcp,
+      store,
+      analytics: (query) => analytics(h.db, { ...query, now: new Date(NOW) }),
+      ...(workers === undefined ? {} : { workers: { views: () => workers } }),
+      environments: options.environments ?? { environments: () => Promise.resolve(linked()) },
+      ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
+      now: () => NOW,
+      t3WaitMs: options.t3WaitMs ?? 1000,
+    }),
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
+  const login = await fetch(`${base}/login`, {
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ password: PASSWORD }).toString(),
+    redirect: "manual",
+  });
+  const cookie = (login.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+  return {
+    base,
+    cookie,
+    h,
+    store,
+    mcp,
+    sessions,
+    get: async (path) => {
+      const response = await fetch(`${base}${path}`, { headers: { cookie } });
+      return { status: response.status, html: await response.text() };
+    },
+    post: (path, fields = {}) =>
+      fetch(`${base}${path}`, {
+        method: "POST",
+        headers: { cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(fields).toString(),
+        redirect: "manual",
+      }),
+    close: async () => {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
+      sessions.close();
+      if (h.db.open) h.db.close();
+    },
+  };
+}
+
+/** A card escalated to the owner, waiting for approval to merge PR 5 at SHA. */
+export function escalatedCard(h: Harness): number {
+  const id = h.cards.create({ repo: "octo/app", issueNumber: 7, title: "Fix <the> parser" }).id;
+  h.cards.transition(id, "Implementing", "work started", {
+    workerEnv: "w1",
+    startedAt: new Date(NOW).toISOString(),
+  });
+  h.cards.transition(id, "Reviewing", "PR #5 at 1111111", { prNumber: 5, headSha: SHA });
+  h.cards.transition(id, "Merging", "approved");
+  h.cards.transition(id, "Escalated", "the PR touches .github/workflows/ci.yml", {
+    escalatedTo: "owner",
+    reason: "The PR touches .github/workflows/ci.yml",
+    ownerAction: "merge",
+  });
+  h.github.prs.set(5, pr(5, SHA));
+  return id;
+}
+
+/** A card implementing on w1 with a running implement thread. */
+export function runningCard(h: Harness): number {
+  const id = h.cards.create({ repo: "octo/app", issueNumber: 8, title: "Add a cache" }).id;
+  h.cards.transition(id, "Implementing", "work started", {
+    workerEnv: "w1",
+    implementer: "codex",
+    implementThread: "t-impl",
+    startedAt: new Date(NOW).toISOString(),
+  });
+  h.events.recordThread({
+    environmentId: "w1",
+    threadId: "t-impl",
+    title: "Hephaestus: implement card",
+    providerInstanceId: "hephaestus-codex",
+    model: "gpt-5.5",
+    configVersion: 1,
+    cardId: String(id),
+    kind: "implement",
+  });
+  h.events.setStatus("w1", "t-impl", "running");
+  h.events.upsertItems("w1", "t-impl", [
+    {
+      itemId: "i1",
+      position: 1,
+      type: "user_message",
+      status: "completed",
+      text: "Brief: add a <cache>",
+    },
+    { itemId: "i2", position: 2, type: "command", status: "in_progress", text: "npm test" },
+  ]);
+  return id;
+}
+
+/** An issue opened outside Hephaestus, waiting for the owner. */
+export async function externalIssue(h: Harness): Promise<number> {
+  h.github.issues.set(42, {
+    number: 42,
+    title: "Crash on <empty> input",
+    body: "",
+    author: "stranger",
+    state: "OPEN",
+  });
+  await h.intake.poll();
+  return 42;
+}

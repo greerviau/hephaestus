@@ -80,6 +80,8 @@ export interface WorkerView extends Worker {
   ready: boolean;
   /** Why the worker is not ready, as the next thing to do. */
   blocker: string | undefined;
+  /** Whether that next thing is the owner's, as opposed to something Hephaestus does on its own. */
+  ownerStep: boolean;
 }
 
 /** The version every worker should run, and the commit its tag points at. */
@@ -352,11 +354,16 @@ export class WorkerManager {
     });
     const desired = this.desired();
     let blocker: string | undefined;
+    // Steps Hephaestus takes on its own; everything else waits for the owner.
+    let automatic = false;
     if (!worker.enabled) blocker = "Not marked as a worker.";
     else if (desired === undefined) blocker = "No config version is deployed yet.";
-    else if (tasks.deploy?.status === "running") blocker = "A deploy is running.";
-    else if (this.deployThreadRunning(id)) {
+    else if (tasks.deploy?.status === "running") {
+      blocker = "A deploy is running.";
+      automatic = true;
+    } else if (this.deployThreadRunning(id)) {
       blocker = "An earlier deploy thread is still running; waiting for it to end.";
+      automatic = true;
     } else if (tasks.deploy?.status === "failed") {
       blocker = `The last deploy failed: ${taskReason(tasks.deploy)}`;
     } else if (worker.deployedVersion !== desired.version || worker.deployedSha !== desired.sha) {
@@ -364,12 +371,18 @@ export class WorkerManager {
         this.runningFactoryThreads(id) > 0
           ? `Waiting for running factory threads to finish before deploying version ${String(desired.version)}.`
           : `Deploy version ${String(desired.version)}.`;
+      automatic = true;
     } else if (this.redeployDue(worker)) {
       blocker = "Due for its periodic redeploy, which refreshes the factory skill settings.";
+      automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
     else if (claude !== "signed-in") blocker = "Sign in Factory Claude.";
     else if (codex !== "signed-in") blocker = "Sign in Factory Codex.";
-    return { ...worker, tasks, claude, codex, ready: blocker === undefined, blocker };
+    // A sign-in waiting on the owner's token or device code is theirs even while it runs.
+    const signingIn =
+      tasks["claude-sign-in"]?.status === "running" || tasks["codex-sign-in"]?.status === "running";
+    const ownerStep = worker.enabled && (signingIn || (blocker !== undefined && !automatic));
+    return { ...worker, tasks, claude, codex, ready: blocker === undefined, blocker, ownerStep };
   }
 
   /** Workers that may take a new factory thread. */

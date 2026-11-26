@@ -1,4 +1,5 @@
 import type { AddressInfo } from "node:net";
+import { request } from "node:http";
 import type { Server } from "node:http";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -9,6 +10,8 @@ import {
   createDashboardServer,
 } from "../src/server.js";
 import { openStore } from "../src/store.js";
+import { layout } from "../src/web/html.js";
+import { sendHtml } from "../src/web/http.js";
 
 const PASSWORD = "correct horse battery";
 
@@ -16,12 +19,31 @@ let db: Database;
 let server: Server;
 let base: string;
 let now: number;
+/** How often the server read the clock; a login's first read is when it reserves its attempt. */
+let clockReads: number;
 
 beforeEach(async () => {
   db = openStore(":memory:");
   writePasswordHash(db, hashPassword(PASSWORD));
   now = 1_000_000;
-  server = createDashboardServer({ db, instanceId: "test-instance", now: () => now });
+  clockReads = 0;
+  server = createDashboardServer({
+    db,
+    instanceId: "test-instance",
+    now: () => {
+      clockReads += 1;
+      return now;
+    },
+    routes: [
+      {
+        method: "GET",
+        path: /^\/$/,
+        handle: ({ response }) => {
+          sendHtml(response, 200, layout("Overview", "<h1>Overview</h1>"));
+        },
+      },
+    ],
+  });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;
 });
@@ -72,12 +94,109 @@ describe("dashboard without a session", () => {
     expect(response.status).toBe(401);
   });
 
+  it("serves the stylesheet without a session, because the login page needs it", async () => {
+    const response = await fetch(`${base}/assets/app.css`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/css; charset=utf-8");
+    expect(await response.text()).toContain("--accent");
+  });
+
+  it.each([
+    ["/favicon.ico", "image/x-icon"],
+    ["/assets/brand/favicon-32.png", "image/png"],
+    ["/assets/brand/apple-touch-icon.png", "image/png"],
+    ["/assets/brand/logo-192.png", "image/png"],
+  ])("serves the icon %s without a session", async (path, type) => {
+    const response = await fetch(`${base}${path}`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe(type);
+    expect(response.headers.get("cache-control")).toContain("max-age=");
+    expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
+  });
+
+  it("serves only the brand files", async () => {
+    const response = await fetch(`${base}/assets/brand/..%2F..%2Fpackage.json`, {
+      redirect: "manual",
+    });
+
+    expect(response.status).toBe(303);
+  });
+
+  it("links the icons and shows the logo on the login page", async () => {
+    const html = await (await fetch(`${base}/login`)).text();
+
+    expect(html).toContain('<link rel="icon" href="/favicon.ico" sizes="any">');
+    expect(html).toContain('href="/assets/brand/favicon-32.png"');
+    expect(html).toContain(
+      '<link rel="apple-touch-icon" href="/assets/brand/apple-touch-icon.png">',
+    );
+    expect(html).toContain('src="/assets/brand/logo-192.png"');
+  });
+
   it("serves the login page with the instance id", async () => {
     const response = await fetch(`${base}/login`);
 
     expect(response.status).toBe(200);
     expect(response.headers.get("x-hephaestus-instance")).toBe("test-instance");
     expect(await response.text()).toContain('name="password"');
+  });
+});
+
+describe("a store that cannot be read", () => {
+  it("keeps access closed and says why, with no controls", async () => {
+    const cookie = await sessionCookie();
+    db.close();
+    const response = await fetch(`${base}/`, { headers: { cookie }, redirect: "manual" });
+    const html = await response.text();
+    expect(response.status).toBe(503);
+    expect(html).toContain("cannot read its store");
+    expect(html).not.toContain("<form");
+    db = openStore(":memory:");
+  });
+
+  it("answers a sign-in with the store page, without counting it as a wrong password", async () => {
+    db.close();
+    for (let attempt = 0; attempt <= LOGIN_FAILURE_LIMIT; attempt += 1) {
+      const response = await login(PASSWORD);
+      expect(response.status).toBe(503);
+      expect(await response.text()).toContain("cannot read its store");
+    }
+    db = openStore(":memory:");
+  });
+
+  it("gives back only the attempt the failed sign-in reserved, not one from a later window", async () => {
+    // A sign-in reserves its attempt, then stalls before sending its password.
+    const { hostname, port } = new URL(base);
+    const stalled = request({
+      hostname,
+      port,
+      path: "/login",
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded", "content-length": "40" },
+    });
+    const answered = new Promise<number>((resolve) => {
+      stalled.on("response", (response) => {
+        response.resume();
+        resolve(response.statusCode ?? 0);
+      });
+    });
+    const before = clockReads;
+    stalled.write("password=");
+    while (clockReads === before) await new Promise((resolve) => setTimeout(resolve, 5));
+
+    // Its window passes, and a new one fills up.
+    now += LOGIN_FAILURE_WINDOW_MS;
+    for (let attempt = 0; attempt < LOGIN_FAILURE_LIMIT; attempt += 1) {
+      expect((await login("wrong horse battery")).status).toBe(401);
+    }
+
+    db.close();
+    stalled.end("x".repeat(31));
+    expect(await answered).toBe(503);
+    expect((await login(PASSWORD)).status).toBe(429);
+    db = openStore(":memory:");
   });
 });
 

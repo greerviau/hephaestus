@@ -2,7 +2,28 @@ import type { Database } from "better-sqlite3";
 import type { FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
-import type { GitHub } from "./github.js";
+import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
+
+/** Issues missing from the open lists that one poll reads on their own, split among the projects; each gets at least one. */
+const LOOKUPS_PER_POLL = 10;
+
+interface Candidate {
+  number: number;
+  state: IssueState;
+  closed: number;
+  cardId: number | null;
+  startedAt: string | null;
+  stage: string | null;
+}
+
+/** An admitted issue's card that no thread has started, which closing the issue abandons. */
+function unstarted(row: Pick<Candidate, "cardId" | "startedAt" | "stage">): boolean {
+  return (
+    row.cardId !== null &&
+    row.startedAt === null &&
+    ["Admitted", "Implementing", "Escalated"].includes(row.stage ?? "")
+  );
+}
 
 export type IssueState = "admitted" | "awaiting-owner" | "held-cap" | "rejected";
 
@@ -15,6 +36,8 @@ export interface TrackedIssue {
   filedBy: string | null;
   state: IssueState;
   cardId: number | null;
+  /** Closed on GitHub while it waited for the owner; it returns to the queue if reopened. */
+  closed: boolean;
   createdAt: string;
 }
 
@@ -50,6 +73,7 @@ interface Row {
   filed_by: string | null;
   state: IssueState;
   card_id: number | null;
+  closed: number;
   created_at: string;
 }
 
@@ -63,6 +87,7 @@ function toIssue(row: Row): TrackedIssue {
     filedBy: row.filed_by,
     state: row.state,
     cardId: row.card_id,
+    closed: row.closed === 1,
     createdAt: row.created_at,
   };
 }
@@ -105,7 +130,8 @@ export class Intake {
         ? (this.db.prepare("SELECT * FROM issues ORDER BY created_at DESC").all() as Row[])
         : (this.db
             .prepare(
-              `SELECT * FROM issues WHERE state IN (${states.map(() => "?").join(", ")}) ORDER BY created_at DESC`,
+              `SELECT * FROM issues WHERE state IN (${states.map(() => "?").join(", ")}) AND closed = 0
+               ORDER BY created_at DESC`,
             )
             .all(...states) as Row[]);
     return rows.map(toIssue);
@@ -140,75 +166,116 @@ export class Intake {
   /** Records open issues nobody has seen. Issues the cap held stay for the owner. */
   poll(): Promise<void> {
     return this.serial(async () => {
-      for (const repo of Object.keys(this.options.config()?.projects ?? {})) {
-        let open;
-        try {
-          open = await this.options.github.openIssues(repo);
-        } catch (error) {
-          console.error(`Reading the open issues of ${repo} failed`, error);
-          continue;
-        }
-        for (const issue of open) {
-          if (this.issue(repo, issue.number) !== undefined) continue;
-          this.record({
-            repo,
-            number: issue.number,
-            title: issue.title,
-            author: issue.author,
-            provenance: "external",
-            filedBy: null,
-          });
-        }
-        await this.closeUnstarted(repo, new Set(open.map((issue) => issue.number)));
-      }
+      const repos = Object.keys(this.options.config()?.projects ?? {});
+      // Projects run side by side, so a slow list or read in one delays nothing in another,
+      // and each has its own share of the reads, so none goes without.
+      const share = Math.max(1, Math.floor(LOOKUPS_PER_POLL / Math.max(1, repos.length)));
+      await Promise.all(
+        repos.map(async (repo) => {
+          try {
+            await this.pollRepo(repo, share);
+          } catch (error) {
+            console.error(`Polling the issues of ${repo} failed`, error);
+          }
+        }),
+      );
     });
   }
 
+  private async pollRepo(repo: string, reads: number): Promise<void> {
+    const open = await this.options.github.openIssues(repo);
+    for (const issue of open) {
+      if (this.issue(repo, issue.number) !== undefined) continue;
+      this.record({
+        repo,
+        number: issue.number,
+        title: issue.title,
+        author: issue.author,
+        provenance: "external",
+        filedBy: null,
+      });
+    }
+    await this.reconcile(repo, new Set(open.map((issue) => issue.number)), reads);
+  }
+
   /**
-   * Abandons the cards of admitted issues that were closed before any thread
-   * started on them, so a closed issue holds no place under the cap.
+   * Follows issues the open list leaves out. An admitted issue closed before
+   * any thread started has its card abandoned, so it holds no place under the
+   * cap. An issue waiting for the owner leaves the queue while it is closed,
+   * and comes back if reopened. A full list may leave out open issues, so
+   * missing issues are read on their own: a few per poll, in the order they
+   * joined the line, to stay well inside GitHub's rate limit.
    */
-  private async closeUnstarted(repo: string, open: Set<number>): Promise<void> {
+  private async reconcile(repo: string, open: Set<number>, reads: number): Promise<void> {
+    const mark = this.db.prepare("UPDATE issues SET closed = ? WHERE repo = ? AND number = ?");
+    const complete = open.size < OPEN_ISSUES_LIMIT;
     const rows = this.db
       .prepare(
-        `SELECT i.number, c.id AS cardId FROM issues i JOIN cards c ON c.id = i.card_id
-         WHERE i.repo = ? AND i.state = 'admitted' AND c.started_at IS NULL
-         AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
+        `SELECT i.number, i.state, i.closed, i.card_id AS cardId, c.started_at AS startedAt, c.stage
+         FROM issues i LEFT JOIN cards c ON c.id = i.card_id WHERE i.repo = ?
+         AND i.state IN ('admitted', 'awaiting-owner', 'held-cap') ORDER BY i.read_order`,
       )
-      .all(repo) as { number: number; cardId: number }[];
+      .all(repo) as Candidate[];
+    const candidates: Candidate[] = [];
     for (const row of rows) {
-      // The open list is capped, so an issue missing from it is read on its own before anything changes.
-      if (open.has(row.number) || !(await this.isClosed(repo, row.number))) continue;
-      const pending = this.db
-        .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
-        .get(String(row.cardId));
-      if (pending !== undefined) continue;
-      if (this.options.abandon !== undefined) {
-        await this.options.abandon(row.cardId, "the issue was closed before work started");
-      } else {
-        this.options.cards.transition(
-          row.cardId,
-          "Abandoned",
-          "the issue was closed before work started",
-          {
-            reason: "the issue was closed",
-          },
-        );
+      if (row.state === "admitted") {
+        if (unstarted(row) && !open.has(row.number)) candidates.push(row);
+      } else if (open.has(row.number)) {
+        if (row.closed === 1) mark.run(0, repo, row.number);
+      } else if (row.closed === 0 || !complete) {
+        // From a complete list, an issue already marked closed is settled.
+        candidates.push(row);
       }
     }
-    const held = this.issues(["held-cap", "awaiting-owner"]).filter(
-      (issue) => issue.repo === repo && !open.has(issue.number),
-    );
-    for (const issue of held) {
-      if (await this.isClosed(repo, issue.number)) this.setState(repo, issue.number, "rejected");
+    for (const candidate of candidates.slice(0, reads)) {
+      try {
+        const state = await this.lookup(repo, candidate.number);
+        if (candidate.state !== "admitted") {
+          if (state === "OPEN" && candidate.closed === 1) mark.run(0, repo, candidate.number);
+          if (state === "CLOSED" && candidate.closed === 0) mark.run(1, repo, candidate.number);
+        } else if (state === "CLOSED" && candidate.cardId !== null) {
+          await this.abandonUnstarted(candidate.cardId);
+        }
+      } catch (error) {
+        console.error(`Settling ${repo}#${String(candidate.number)} failed`, error);
+      }
     }
   }
 
-  private async isClosed(repo: string, number: number): Promise<boolean> {
+  private async abandonUnstarted(cardId: number): Promise<void> {
+    // The card may have moved while its issue was read.
+    const card = this.options.cards.get(cardId);
+    if (!unstarted({ cardId, startedAt: card.startedAt, stage: card.stage })) return;
+    const pending = this.db
+      .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
+      .get(String(cardId));
+    if (pending !== undefined) return;
+    if (this.options.abandon !== undefined) {
+      await this.options.abandon(cardId, "the issue was closed before work started");
+    } else {
+      this.options.cards.transition(
+        cardId,
+        "Abandoned",
+        "the issue was closed before work started",
+        {
+          reason: "the issue was closed",
+        },
+      );
+    }
+  }
+
+  /** The issue's state on GitHub, or undefined when it could not be read; either way it goes to the back of the line. */
+  private async lookup(repo: string, number: number): Promise<string | undefined> {
+    this.db
+      .prepare(
+        `UPDATE issues SET read_order = (SELECT COALESCE(MAX(read_order), 0) + 1 FROM issues)
+         WHERE repo = ? AND number = ?`,
+      )
+      .run(repo, number);
     try {
-      return (await this.options.github.issue(repo, number)).state === "CLOSED";
+      return (await this.options.github.issue(repo, number, INTAKE_READ_TIMEOUT_MS)).state;
     } catch {
-      return false;
+      return undefined;
     }
   }
 
@@ -222,6 +289,9 @@ export class Intake {
         // A reopened issue whose card was abandoned gets a new card.
         const card = this.options.cards.get(issue.cardId);
         if (card.stage !== "Abandoned") return card;
+      } else if (issue.state !== "awaiting-owner" && issue.state !== "held-cap") {
+        // A stale form must not undo a rejection.
+        throw new Error(`${repo}#${String(number)} is ${issue.state}, not waiting for you.`);
       }
       const current = await this.options.github.issue(repo, number);
       if (current.state !== "OPEN") throw new Error(`${repo}#${String(number)} is closed.`);
@@ -229,12 +299,20 @@ export class Intake {
     });
   }
 
-  reject(repo: string, number: number): void {
-    this.db
-      .prepare(
-        "UPDATE issues SET state = 'rejected', updated_at = ? WHERE repo = ? AND number = ? AND state != 'admitted'",
-      )
-      .run(this.now().toISOString(), repo, number);
+  /** The owner's rejection; it runs in turn with admissions, and only an issue waiting for the owner changes. */
+  reject(repo: string, number: number): Promise<void> {
+    return this.serial(() => {
+      const result = this.db
+        .prepare(
+          `UPDATE issues SET state = 'rejected', updated_at = ? WHERE repo = ? AND number = ?
+           AND state IN ('awaiting-owner', 'held-cap')`,
+        )
+        .run(this.now().toISOString(), repo, number);
+      if (result.changes === 0) {
+        throw new Error(`${repo}#${String(number)} is not waiting for you.`);
+      }
+      return Promise.resolve();
+    });
   }
 
   /** Factory-filed issues admitted and awaiting work, whose card has no thread yet; the cap counts these. */
@@ -289,12 +367,12 @@ export class Intake {
     return this.options.cards.get(card.id);
   }
 
-  private record(issue: Omit<TrackedIssue, "state" | "cardId" | "createdAt">): void {
+  private record(issue: Omit<TrackedIssue, "state" | "cardId" | "closed" | "createdAt">): void {
     const at = this.now().toISOString();
     this.db
       .prepare(
-        `INSERT INTO issues (repo, number, title, author, provenance, filed_by, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'awaiting-owner', ?, ?)
+        `INSERT INTO issues (repo, number, title, author, provenance, filed_by, state, created_at, updated_at, read_order)
+         VALUES (?, ?, ?, ?, ?, ?, 'awaiting-owner', ?, ?, (SELECT COALESCE(MAX(read_order), 0) + 1 FROM issues))
          ON CONFLICT (repo, number) DO NOTHING`,
       )
       .run(

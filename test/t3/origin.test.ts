@@ -63,6 +63,28 @@ describe("cachedEnvironments", () => {
     now = 31_000;
     expect((await source.environments()).localEnvironmentId).toBe("2");
   });
+
+  it("keeps a failure briefly, so a page that stopped waiting sees it on the next load", async () => {
+    let now = 0;
+    let calls = 0;
+    const source = cachedEnvironments(
+      {
+        environments: () => {
+          calls += 1;
+          return Promise.reject(new Error("ECONNREFUSED"));
+        },
+      },
+      30_000,
+      () => now,
+    );
+    await expect(source.environments()).rejects.toThrow("ECONNREFUSED");
+    now = 5_000;
+    await expect(source.environments()).rejects.toThrow("ECONNREFUSED");
+    expect(calls).toBe(1);
+    now = 11_000;
+    await expect(source.environments()).rejects.toThrow();
+    expect(calls).toBe(2);
+  });
 });
 
 describe("findExecutable", () => {

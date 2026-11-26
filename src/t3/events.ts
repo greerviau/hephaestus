@@ -110,6 +110,15 @@ export class ThreadEvents {
     return row === undefined ? undefined : toThread(row);
   }
 
+  /** Every thread a card has had, oldest first. */
+  forCard(cardId: number): StoredThread[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM factory_threads WHERE card_id = ? ORDER BY created_at, thread_id")
+        .all(String(cardId)) as ThreadRow[]
+    ).map(toThread);
+  }
+
   /** Threads that have not ended, oldest first. */
   following(): StoredThread[] {
     const ended = [...ENDED_STATUSES];

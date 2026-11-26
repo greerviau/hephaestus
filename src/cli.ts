@@ -29,7 +29,9 @@ import { T3Connection } from "./t3/connection.js";
 import { ThreadEvents } from "./t3/events.js";
 import { ThreadFollower } from "./t3/follower.js";
 import { cachedEnvironments, findExecutable, resolveT3Origin } from "./t3/origin.js";
-import { environmentRoutes, linkExpiryWarnings } from "./web/environments.js";
+import { environmentRoutes } from "./web/environments.js";
+import { dashboardRoutes } from "./web/dashboard.js";
+import { analytics } from "./factory/analytics.js";
 import { SecretsFile } from "./config/secrets.js";
 import { settingsRoutes } from "./web/settings.js";
 import { getMeta, setMeta } from "./meta.js";
@@ -476,6 +478,18 @@ async function main(argv: string[]): Promise<number> {
         db,
         instanceId: config.instanceId,
         routes: [
+          ...dashboardRoutes({
+            cards: engine.cards,
+            intake: engine.intake,
+            pipeline: engine.pipeline,
+            events,
+            mcp: engine.mcp,
+            store,
+            analytics: (query) => analytics(db, query),
+            workers,
+            environments,
+            deploy: (id) => workers.deployVersion(id),
+          }),
           ...settingsRoutes(store, (id) => workers.deployVersion(id)),
           ...environmentRoutes(environments, Date.now, {
             manager: workers,
@@ -485,7 +499,6 @@ async function main(argv: string[]): Promise<number> {
             },
           }),
         ],
-        overview: () => linkExpiryWarnings(environments),
       });
       server.listen(config.port, config.host, () => {
         console.log(`Dashboard listening on ${config.host}:${String(config.port)}`);

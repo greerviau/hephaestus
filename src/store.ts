@@ -200,6 +200,21 @@ const MIGRATIONS = [
      thread_id TEXT NOT NULL,
      note TEXT NOT NULL DEFAULT ''
    );`,
+  `ALTER TABLE notifications ADD COLUMN kind TEXT NOT NULL DEFAULT 'info';`,
+  `ALTER TABLE merges ADD COLUMN foreign_merge INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE issues ADD COLUMN closed INTEGER NOT NULL DEFAULT 0;`,
+  // The backfills are safe to run on a database that already ran an earlier form of them.
+  `UPDATE notifications SET kind = 'escalation' WHERE text LIKE 'Card % needs you: %';
+   ALTER TABLE issues ADD COLUMN checked_at TEXT;
+   ALTER TABLE cards ADD COLUMN version INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE cards ADD COLUMN reverting INTEGER NOT NULL DEFAULT 0;
+   UPDATE cards SET reverting = 1
+   WHERE stage NOT IN ('Done', 'Abandoned')
+   AND (SELECT MAX(id) FROM card_events WHERE card_id = cards.id AND kind = 'stage:Reverting')
+     > COALESCE((SELECT MAX(id) FROM card_events WHERE card_id = cards.id AND kind = 'stage:Implementing'), 0);`,
+  // Issue reads are ordered by a counter, which a clock change cannot reorder.
+  `ALTER TABLE issues DROP COLUMN checked_at;
+   ALTER TABLE issues ADD COLUMN read_order INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

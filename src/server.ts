@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Database } from "better-sqlite3";
 import { SESSION_TTL_MS, Sessions, readPasswordHash, verifyPassword } from "./auth.js";
-import { escapeHtml, layout, page } from "./web/html.js";
+import { STYLESHEET_PATH, banner, escapeHtml, layout, page } from "./web/html.js";
 import { HTML, readBody, redirect, send, sendHtml, sendJson, type Route } from "./web/http.js";
+import { STYLESHEET } from "./web/style.js";
+import { LOGO_PATH, brandFile } from "./web/brand.js";
 
 export const SESSION_COOKIE = "hephaestus_session";
 export const INSTANCE_HEADER = "x-hephaestus-instance";
@@ -19,8 +21,6 @@ export interface DashboardOptions {
   instanceId: string;
   /** Pages and API routes added by feature modules. All of them require a session. */
   routes?: Route[];
-  /** Extra HTML for the Overview page, such as warnings. */
-  overview?: () => Promise<string>;
   now?: () => number;
 }
 
@@ -38,7 +38,6 @@ export function createDashboardServer({
   db,
   instanceId,
   routes = [],
-  overview = () => Promise.resolve(""),
   now = Date.now,
 }: DashboardOptions): Server {
   const sessions = new Sessions(db, now);
@@ -64,6 +63,21 @@ export function createDashboardServer({
       send(response, 403, "text/plain; charset=utf-8", "Cross-origin request refused\n");
       return;
     }
+    // The stylesheet holds nothing private, and the login page needs it before a session exists.
+    if (path === STYLESHEET_PATH && (method === "GET" || method === "HEAD")) {
+      send(response, 200, "text/css; charset=utf-8", STYLESHEET);
+      return;
+    }
+    const brand = method === "GET" || method === "HEAD" ? brandFile(path) : undefined;
+    if (brand !== undefined) {
+      response.writeHead(200, {
+        "content-type": brand.contentType,
+        "cache-control": "public, max-age=86400",
+        "x-content-type-options": "nosniff",
+      });
+      response.end(method === "HEAD" ? undefined : brand.body);
+      return;
+    }
     if (path === "/login" && method === "GET") {
       send(response, 200, HTML, loginPage());
       return;
@@ -74,7 +88,17 @@ export function createDashboardServer({
     }
 
     const token = sessionToken(request);
-    if (token === undefined || !sessions.isValid(token)) {
+    let valid: boolean;
+    try {
+      valid = token !== undefined && sessions.isValid(token);
+    } catch (error) {
+      // The store holds the sessions too. Access stays closed, and the page says why.
+      console.error("Reading the session store failed", error);
+      if (path.startsWith("/api/")) sendJson(response, 503, { error: "store unavailable" });
+      else send(response, 503, HTML, storeDownPage());
+      return;
+    }
+    if (token === undefined || !valid) {
       if (path.startsWith("/api/")) sendJson(response, 401, { error: "unauthorized" });
       else redirect(response, "/login");
       return;
@@ -93,17 +117,6 @@ export function createDashboardServer({
       sendJson(response, 200, { authenticated: true });
       return;
     }
-    if (path === "/" && method === "GET") {
-      sendHtml(
-        response,
-        200,
-        layout(
-          "Overview",
-          `<h1>Overview</h1>\n${await overview()}\n<p>No factory projects yet.</p>`,
-        ),
-      );
-      return;
-    }
     for (const route of routes) {
       if (route.method !== method) continue;
       const match = route.path.exec(path);
@@ -112,7 +125,7 @@ export function createDashboardServer({
       return;
     }
     if (path.startsWith("/api/")) sendJson(response, 404, { error: "not found" });
-    else sendHtml(response, 404, layout("Not found", "<p>Not found.</p>"));
+    else sendHtml(response, 404, layout("Not found", notFound()));
   }
 
   async function login(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -127,7 +140,7 @@ export function createDashboardServer({
       return;
     }
     loginsInFlight += 1;
-    reserveAttempt(client);
+    const reserved = reserveAttempt(client);
     let valid = false;
     try {
       const body = await readBody(request, MAX_LOGIN_FORM_BYTES);
@@ -136,7 +149,16 @@ export function createDashboardServer({
         return;
       }
       const password = new URLSearchParams(body).get("password") ?? "";
-      const stored = readPasswordHash(db);
+      let stored;
+      try {
+        stored = readPasswordHash(db);
+      } catch (error) {
+        // An outage is not a wrong password, so the reserved attempt is given back.
+        console.error("Reading the password from the store failed", error);
+        releaseAttempt(client, reserved);
+        send(response, 503, HTML, storeDownPage());
+        return;
+      }
       valid = stored !== undefined && (await verifyPassword(password, stored));
     } finally {
       loginsInFlight -= 1;
@@ -165,14 +187,23 @@ export function createDashboardServer({
     return entry.count >= LOGIN_FAILURE_LIMIT;
   }
 
+  /** Gives back a reserved attempt, unless its window has since been replaced by a new one. */
+  function releaseAttempt(client: string, reserved: { count: number; since: number }): void {
+    const entry = failures.get(client);
+    if (entry !== reserved) return;
+    entry.count -= 1;
+    if (entry.count <= 0) failures.delete(client);
+  }
+
   /** Counts an attempt against the client's limit before its password is checked. */
-  function reserveAttempt(client: string): void {
+  function reserveAttempt(client: string): { count: number; since: number } {
     for (const [key, entry] of failures) {
       if (now() - entry.since >= LOGIN_FAILURE_WINDOW_MS) failures.delete(key);
     }
     const entry = failures.get(client) ?? { count: 0, since: now() };
     entry.count += 1;
     failures.set(client, entry);
+    return entry;
   }
 }
 
@@ -196,15 +227,36 @@ function sessionToken(request: IncomingMessage): string | undefined {
   return undefined;
 }
 
+/** Shown when the store cannot be read: no session can be checked, so no control is offered. */
+function storeDownPage(): string {
+  return page(
+    "Unavailable",
+    `<main class="login-wrap">
+<section class="card login">
+  <img class="login-logo" src="${LOGO_PATH}" alt="" width="64" height="64">
+  <h1>Hephaestus</h1>
+  <div class="banner err" role="alert"><strong>Hephaestus cannot read its store.</strong><p>Nothing can be shown or changed until it can. The service log has the error. Reload to try again.</p></div>
+</section>
+</main>`,
+  );
+}
+
 function loginPage(error?: string): string {
   return page(
     "Sign in",
-    `<form class="login" method="post" action="/login">
+    `<main class="login-wrap">
+<form class="card login" method="post" action="/login">
+  <img class="login-logo" src="${LOGO_PATH}" alt="" width="64" height="64">
   <h1>Hephaestus</h1>
-  ${error === undefined ? "" : `<p class="error">${escapeHtml(error)}</p>`}
-  <label for="password">Dashboard password</label>
-  <input id="password" name="password" type="password" autocomplete="current-password" required autofocus>
-  <button type="submit">Sign in</button>
-</form>`,
+  ${error === undefined ? "" : `<p class="err-text" role="alert">${escapeHtml(error)}</p>`}
+  <div class="field"><label for="password">Dashboard password</label>
+  <input id="password" name="password" type="password" autocomplete="current-password" required autofocus></div>
+  <button type="submit" class="btn-primary">Sign in</button>
+</form>
+</main>`,
   );
+}
+
+function notFound(): string {
+  return `<div class="page-head"><div><h1>Not found</h1></div></div>${banner("info", "Nothing here", "This page does not exist. Use the tabs above.")}`;
 }

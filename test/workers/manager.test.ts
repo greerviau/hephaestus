@@ -508,6 +508,19 @@ describe("WorkerManager", () => {
     expect(manager.task(third.id)?.status).toBe("succeeded");
   });
 
+  it("says whether the worker's next step is the owner's", async () => {
+    expect(viewOf("env-2").ownerStep).toBe(false);
+    expect(viewOf("env-1").ownerStep).toBe(true);
+    await manager.deployVersion(1);
+    expect(viewOf("env-1")).toMatchObject({ blocker: "A deploy is running.", ownerStep: false });
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    finishThread("t2", "Not logged in");
+    finishThread("t3", "FACTORY-READY");
+    await manager.tick();
+    expect(viewOf("env-1")).toMatchObject({ blocker: "Sign in Factory Claude.", ownerStep: true });
+  });
+
   it("names the next step for a worker that has not been set up", () => {
     expect(viewOf("env-2").blocker).toBe("Not marked as a worker.");
     expect(viewOf("env-1").blocker).toBe("No config version is deployed yet.");

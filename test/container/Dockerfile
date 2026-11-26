@@ -14,6 +14,7 @@ RUN npm ci
 COPY tsconfig.json tsconfig.build.json ./
 COPY src ./src
 COPY templates ./templates
+COPY assets ./assets
 COPY test/container/source-hash.sh test/container/scenario.sh /usr/local/bin/
 RUN source-hash.sh /opt/hephaestus > /opt/hephaestus/SOURCE_SHA256 \
   && npm run build && npm prune --omit=dev

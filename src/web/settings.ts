@@ -1,7 +1,19 @@
 import type { Change } from "../config/diff.js";
 import { ConfigValidationError, MAX_CONFIG_BYTES } from "../config/document.js";
 import { VersionNotFoundError, type ConfigStore, type ConfigVersion } from "../config/store.js";
-import { escapeHtml, layout } from "./html.js";
+import { ownerReason } from "./environments.js";
+import {
+  banner,
+  card,
+  empty,
+  escapeHtml,
+  layout,
+  pageHead,
+  pill,
+  postButton,
+  table,
+  when,
+} from "./html.js";
 import { readBody, redirect, sendHtml, sendJson, type Route, type RouteContext } from "./http.js";
 
 /**
@@ -42,7 +54,7 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
       handle: async ({ response, params }) => {
         const id = Number(params[0]);
         if (deploy === undefined || find(id) === undefined) {
-          sendHtml(response, 404, layout("Not found", "<p>No such config version.</p>"));
+          sendHtml(response, 404, settingsPage("Not found", empty("No such config version.")));
           return;
         }
         try {
@@ -55,9 +67,9 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
           sendHtml(
             response,
             409,
-            layout(
+            settingsPage(
               "Not deployed",
-              `<p class="error">${escapeHtml(error instanceof Error ? error.message : String(error))}</p><p><a href="/settings/versions/${String(id)}">Back</a></p>`,
+              `${banner("err", "Not deployed", ownerReason(error))}<p><a href="/settings/versions/${String(id)}">Back to version ${String(id)}</a></p>`,
             ),
           );
         }
@@ -97,16 +109,13 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
     const current = store.current();
     const rows = store
       .list()
-      .map(
-        (version) => `<tr>
-  <td><a href="/settings/versions/${String(version.id)}">${String(version.id)}</a></td>
-  <td>${escapeHtml(version.state)}</td>
-  <td>${escapeHtml(version.author)}</td>
-  <td>${escapeHtml(version.createdAt)}</td>
-  <td>${escapeHtml(version.message)}</td>
-</tr>`,
-      )
-      .join("\n");
+      .map((version) => [
+        `<a href="/settings/versions/${String(version.id)}">v${String(version.id)}</a>`,
+        statePill(version.state),
+        escapeHtml(version.author),
+        when(version.createdAt, Date.now()),
+        escapeHtml(version.message),
+      ]);
     const text = problem?.text ?? editorText(current?.document ?? {});
     // A refused edit keeps the version it was built from, so retrying cannot change its base.
     const parentId = problem?.parentId ?? (current === undefined ? "" : String(current.id));
@@ -114,31 +123,41 @@ export function settingsRoutes(store: ConfigStore, deploy?: Deploy): Route[] {
     const errors =
       problem === undefined
         ? ""
-        : `<ul class="error">${problem.errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul>`;
+        : `<div class="banner err" role="alert"><strong class="status s-crit">The draft was not saved</strong><ul>${problem.errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`;
     sendHtml(
       response,
       problem === undefined ? 200 : 400,
-      layout(
+      settingsPage(
         "Settings",
-        `<h1>Settings</h1>
-<h2>Config versions</h2>
-<table>
-<thead><tr><th>Version</th><th>State</th><th>Author</th><th>Created</th><th>Message</th></tr></thead>
-<tbody>
-${rows}
-</tbody>
-</table>
-<h2>Edit the config</h2>
-<p>Saving creates a draft version built from version ${parentId === "" ? "none" : escapeHtml(parentId)}. Nothing changes until the draft is approved and deployed.</p>
+        `<div class="grid">${card({
+          title: "Config versions",
+          meta: '<span class="meta">Newest first</span>',
+          body:
+            rows.length === 0
+              ? empty("No config version yet.")
+              : table(
+                  [
+                    { label: "Version" },
+                    { label: "State" },
+                    { label: "Author" },
+                    { label: "Created" },
+                    { label: "Message", className: "title-cell" },
+                  ],
+                  rows,
+                ),
+        })}${card({
+          title: "Edit the config",
+          body: `<p class="lede">Saving creates a draft version built from version ${parentId === "" ? "none" : escapeHtml(parentId)}. Nothing changes until the draft is approved and deployed.</p>
 ${errors}
-<form method="post" action="/settings/versions">
+<form method="post" action="/settings/versions" class="form-grid wide">
   <input type="hidden" name="parentId" value="${escapeHtml(parentId)}">
-  <label for="message">What changed</label>
-  <input id="message" name="message" value="${escapeHtml(message)}" required>
-  <label for="document">Config</label>
-  <textarea id="document" name="document" spellcheck="false">${escapeHtml(text)}</textarea>
-  <button type="submit">Save as a draft</button>
+  <div class="field"><label for="message">What changed</label>
+  <input type="text" id="message" name="message" value="${escapeHtml(message)}" required></div>
+  <div class="field"><label for="document">Config</label>
+  <textarea id="document" class="config" name="document" spellcheck="false">${escapeHtml(text)}</textarea></div>
+  <div class="btn-row"><button type="submit" class="btn-primary">Save as a draft</button></div>
 </form>`,
+        })}</div>`,
       ),
     );
   }
@@ -146,18 +165,26 @@ ${errors}
   function show({ response, params, url }: RouteContext): void {
     const version = find(Number(params[0]));
     if (version === undefined) {
-      sendHtml(response, 404, layout("Not found", "<p>No such config version.</p>"));
+      sendHtml(response, 404, settingsPage("Not found", empty("No such config version.")));
       return;
     }
     const id = String(version.id);
     const conflicts = Number(url.searchParams.get("conflicts") ?? "0");
     const actions: string[] = [];
     if (version.state === "draft") {
-      actions.push(button(id, "approve", "Approve"), button(id, "reject", "Reject"));
+      actions.push(
+        button(id, "approve", deploy === undefined ? "Approve" : "Approve and deploy", "primary"),
+        button(id, "reject", "Reject"),
+      );
     }
     if (deploy !== undefined && (version.state === "approved" || version.state === "deployed")) {
       actions.push(
-        button(id, "deploy", version.state === "deployed" ? "Deploy again to workers" : "Deploy"),
+        button(
+          id,
+          "deploy",
+          version.state === "deployed" ? "Deploy again to workers" : "Deploy",
+          version.state === "approved" ? "primary" : "secondary",
+        ),
       );
     }
     if (
@@ -166,38 +193,51 @@ ${errors}
     ) {
       actions.push(button(id, "revert", "Revert"));
     }
+    const banners = [
+      url.searchParams.get("deploy") === null
+        ? ""
+        : banner(
+            "err",
+            "Approved, but not deployed",
+            "Deploying the version failed. Check that the config repo is named on the Workers page, then use Deploy. The service log has the error.",
+          ),
+      url.searchParams.get("hermes") === "failed"
+        ? banner(
+            "err",
+            "The factory Hermes root was not updated",
+            "The version is deployed, but applying it to the factory Hermes root failed. The service log has the error.",
+          )
+        : "",
+      conflicts > 0
+        ? banner(
+            "info",
+            "Some changes were left as they are",
+            `${String(conflicts)} changes were left as they are, because a later version changed them again.`,
+          )
+        : "",
+    ].join("");
+    const built =
+      version.parentId === null
+        ? ""
+        : `, built from <a href="/settings/versions/${String(version.parentId)}">version ${String(version.parentId)}</a>`;
     sendHtml(
       response,
       200,
       layout(
         `Version ${id}`,
-        `<h1>Config version ${id}</h1>
-<p>${escapeHtml(version.state)}, by ${escapeHtml(version.author)}, ${escapeHtml(version.createdAt)}${
-          version.parentId === null
-            ? ""
-            : `, built from <a href="/settings/versions/${String(version.parentId)}">version ${String(version.parentId)}</a>`
-        }</p>
-<p>${escapeHtml(version.message)}</p>
-${
-  url.searchParams.get("deploy") === null
-    ? ""
-    : `<p class="error">Approved, but not deployed: ${escapeHtml(url.searchParams.get("deploy") ?? "")}</p>`
-}
-${
-  url.searchParams.get("hermes") === "failed"
-    ? '<p class="error">The version is deployed, but applying it to the factory Hermes root failed. The service log has the error.</p>'
-    : ""
-}
-${
-  conflicts > 0
-    ? `<p class="error">${String(conflicts)} changes were left as they are, because a later version changed them again.</p>`
-    : ""
-}
-<div class="actions">${actions.join("")}</div>
-<h2>Changes</h2>
-${diffTable(store.diff(version.id))}
-<h2>Config</h2>
-<pre>${escapeHtml(JSON.stringify(version.document, null, 2))}</pre>`,
+        `${pageHead({
+          title: `Config version ${id}`,
+          crumbs: `<a href="/settings">Settings</a><span aria-hidden="true">/</span><span>v${id}</span>`,
+          lede: `${statePill(version.state)} by ${escapeHtml(version.author)}, ${when(version.createdAt, Date.now())}${built}. ${escapeHtml(version.message)}`,
+          ...(actions.length === 0 ? {} : { actions: actions.join("") }),
+        })}${banners}<div class="grid">${card({
+          title: "Changes",
+          body: diffTable(store.diff(version.id)),
+        })}${card({
+          title: "Config",
+          body: `<details class="more"><summary>Show the whole config</summary><pre class="block">${escapeHtml(JSON.stringify(version.document, null, 2))}</pre></details>`,
+        })}</div>`,
+        { section: "/settings" },
       ),
     );
   }
@@ -206,7 +246,11 @@ ${diffTable(store.diff(version.id))}
     const { request, response } = context;
     const body = await readBody(request, MAX_EDIT_BYTES);
     if (body === undefined) {
-      sendHtml(response, 413, layout("Too large", "<p>The config is too large to save.</p>"));
+      sendHtml(
+        response,
+        413,
+        settingsPage("Too large", banner("err", "Too large", "The config is too large to save.")),
+      );
       return;
     }
     const form = new URLSearchParams(body);
@@ -255,7 +299,7 @@ ${diffTable(store.diff(version.id))}
     const id = Number(params[0]);
     const action = params[1];
     if (find(id) === undefined) {
-      sendHtml(response, 404, layout("Not found", "<p>No such config version.</p>"));
+      sendHtml(response, 404, settingsPage("Not found", empty("No such config version.")));
       return;
     }
     try {
@@ -270,10 +314,8 @@ ${diffTable(store.diff(version.id))}
               `/settings/versions/${String(id)}${hermesError === undefined ? "" : "?hermes=failed"}`,
             );
           } catch (error) {
-            redirect(
-              response,
-              `/settings/versions/${String(id)}?deploy=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`,
-            );
+            console.error(`Deploying version ${String(id)} failed`, error);
+            redirect(response, `/settings/versions/${String(id)}?deploy=failed`);
           }
           return;
         }
@@ -290,7 +332,10 @@ ${diffTable(store.diff(version.id))}
       sendHtml(
         response,
         409,
-        layout("Not allowed", `<p class="error">${escapeHtml(String(error))}</p>`),
+        settingsPage(
+          "Not allowed",
+          `${banner("err", "Not allowed", ownerReason(error))}<p><a href="/settings/versions/${String(id)}">Back to version ${String(id)}</a></p>`,
+        ),
       );
       return;
     }
@@ -309,30 +354,52 @@ function summary(version: ConfigVersion): Omit<ConfigVersion, "document"> {
   };
 }
 
-function button(id: string, action: string, label: string): string {
-  return `<form method="post" action="/settings/versions/${id}/${action}"><button type="submit">${label}</button></form>`;
+function settingsPage(title: string, body: string): string {
+  return layout(
+    title,
+    `${pageHead({ title: title === "Settings" ? "Settings" : title, lede: "The factory config as numbered versions. Edits create drafts; approving one deploys it." })}${body}`,
+    { section: "/settings" },
+  );
+}
+
+const STATE_PILLS: Record<ConfigVersion["state"], string> = {
+  draft: pill("you", "draft"),
+  approved: pill("wait", "approved"),
+  deployed: pill("done", "deployed"),
+  superseded: pill("off", "superseded"),
+  rejected: pill("bad", "rejected"),
+};
+
+function statePill(state: ConfigVersion["state"]): string {
+  return STATE_PILLS[state];
+}
+
+function button(
+  id: string,
+  action: string,
+  label: string,
+  variant: "primary" | "secondary" = "secondary",
+): string {
+  return postButton(`/settings/versions/${id}/${action}`, label, { variant, small: false });
 }
 
 function cell(value: unknown): string {
   return value === undefined
-    ? "<em>absent</em>"
+    ? '<em class="s-muted">absent</em>'
     : `<pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre>`;
 }
 
-function diffTable(changes: Change[]): string {
-  if (changes.length === 0) return "<p>No changes.</p>";
-  const rows = changes
-    .map(
-      (change) =>
-        `<tr><td><code>${escapeHtml(change.path.join("."))}</code></td><td>${cell(change.before)}</td><td>${cell(change.after)}</td></tr>`,
-    )
-    .join("\n");
-  return `<table>
-<thead><tr><th>Path</th><th>Before</th><th>After</th></tr></thead>
-<tbody>
-${rows}
-</tbody>
-</table>`;
+/** A config version's changes, one row per changed path. */
+export function diffTable(changes: Change[]): string {
+  if (changes.length === 0) return empty("No changes.");
+  return table(
+    [{ label: "Path" }, { label: "Before" }, { label: "After" }],
+    changes.map((change) => [
+      `<code>${escapeHtml(change.path.join("."))}</code>`,
+      cell(change.before),
+      cell(change.after),
+    ]),
+  );
 }
 
 /** Pretty JSON for the editor, or compact JSON when pretty JSON could exceed the form limit. */
