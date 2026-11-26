@@ -647,6 +647,23 @@ export class Pipeline {
     const thread = card.implementThread;
     const env = card.workerEnv;
     const message = card.pendingMessage;
+    // A message queued before GitHub reported a merge Hephaestus has no record of is settled
+    // instead of sent, so no work resumes on top of it. This comes before the launch checks,
+    // so a merge is validated even while the factory is paused, and nothing is read between
+    // those checks and the send.
+    let settled;
+    try {
+      settled = await this.settleUnrecordedMerge(card);
+    } catch (error) {
+      console.error(`Reading whether card ${String(card.id)}'s PR merged failed`, error);
+      this.wait(this.cards.get(card.id), "reading whether the PR has merged");
+      return;
+    }
+    if (settled !== undefined) {
+      // Only a card that moved on drops the message; one still unsure keeps it for the next pass.
+      if (settled.stage !== card.stage) this.cards.update(card.id, { pendingMessage: null });
+      return;
+    }
     await this.serialLaunch(async () => {
       const current = this.cards.get(card.id);
       if (current.pendingMessage !== message) return;
@@ -658,12 +675,6 @@ export class Pipeline {
           : this.blockedBecause(env, thread);
       if (blocked !== undefined) {
         this.wait(current, blocked);
-        return;
-      }
-      // A restart queued before GitHub reported a merge Hephaestus has no record of is settled
-      // instead of sent, so no work resumes on top of it.
-      if ((await this.settleUnrecordedMerge(current)) !== undefined) {
-        this.cards.update(card.id, { pendingMessage: null });
         return;
       }
       // The same message always carries the same request id, so a retry after a lost reply is one send.

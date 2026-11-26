@@ -32,6 +32,19 @@ async function toReview(h: Harness, id: number): Promise<void> {
   await h.pipeline.tick();
 }
 
+/** A card the lead restarted while the factory was paused, so its new brief waits to be sent. */
+async function queuedRestart(h: Harness): Promise<number> {
+  const id = admitted(h);
+  await h.pipeline.startWork(id, "brief");
+  h.cards.update(id, { prNumber: 5, headSha: SHA });
+  h.github.prs.set(5, pr(5, SHA));
+  await h.pipeline.escalateToOwner(id, "check the PR");
+  await h.pipeline.sendToLead(id, "go on");
+  h.pipeline.setPaused(true);
+  await h.pipeline.startWork(id, "new brief");
+  return id;
+}
+
 describe("Pipeline", () => {
   it("takes a card from Admitted to Done with review on the other provider and no human step", async () => {
     const h = harness();
@@ -619,6 +632,48 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(sends);
     expect(h.cards.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
+  });
+
+  it("validates a queued restart's merge while paused, and keeps the message while unsure", async () => {
+    const h = harness();
+    const id = await queuedRestart(h);
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    const marker = h.github.mergedWith.bind(h.github);
+    h.github.mergedWith = () => Promise.resolve(undefined);
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+    h.github.mergedWith = marker;
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
+  });
+
+  it("says why a queued message waits when the PR cannot be read, and sends nothing", async () => {
+    const h = harness();
+    const id = await queuedRestart(h);
+    h.pipeline.setPaused(false);
+    h.github.mergeState = () => Promise.reject(new Error("HTTP 503"));
+    const sends = h.t3.sends.length;
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(sends);
+    expect(h.cards.get(id).waiting).toBe("reading whether the PR has merged");
+  });
+
+  it("holds a queued message when a pause lands during the merge read", async () => {
+    const h = harness();
+    const id = await queuedRestart(h);
+    h.pipeline.setPaused(false);
+    const state = h.github.mergeState.bind(h.github);
+    h.github.mergeState = (repo, number) => {
+      h.pipeline.setPaused(true);
+      return state(repo, number);
+    };
+    const sends = h.t3.sends.length;
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(sends);
+    expect(h.cards.get(id).pendingMessage).not.toBeNull();
   });
 
   it("restarts a card whose open PR's checks cannot be read", async () => {
