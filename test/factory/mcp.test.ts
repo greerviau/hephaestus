@@ -7,6 +7,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
+import { chatCacheDirs } from "../../src/hermes/cache.js";
 import { FactoryMcp, ROLE_TOOLS } from "../../src/factory/mcp.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { harness, type Harness } from "./harness.js";
@@ -37,7 +38,7 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
     store,
     events: h.events,
     tokens: () => TOKENS,
-    attachmentRoot: (role) => join(caches ?? tmpdir(), role),
+    attachmentRoots: (role) => chatCacheDirs(join(caches ?? tmpdir(), role)),
   });
   server = mcp.listen(0);
   await new Promise<void>((resolve) => server?.once("listening", resolve));
@@ -148,8 +149,9 @@ describe("FactoryMcp", () => {
     caches = dir;
     try {
       const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
-      await mkdir(join(dir, "planner"));
-      const path = join(dir, "planner", "banner.png");
+      // An install that predates the cache folder keeps its images in the legacy one.
+      await mkdir(join(dir, "planner", "image_cache"), { recursive: true });
+      const path = join(dir, "planner", "image_cache", "banner.png");
       await writeFile(path, bytes);
       const outside = join(dir, "secret.txt");
       await writeFile(outside, "secret");
@@ -164,7 +166,7 @@ describe("FactoryMcp", () => {
           repo: "octo/app",
           title: "x",
           body: "",
-          attachments: [join(dir, "planner", "nope.png")],
+          attachments: [join(dir, "planner", "image_cache", "nope.png")],
         },
       });
       expect(missing.isError).toBe(true);

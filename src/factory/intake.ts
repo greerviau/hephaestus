@@ -156,15 +156,15 @@ export class Intake {
     title: string,
     body: string,
     attachments: readonly string[] = [],
-    /** The only folder attachments may come from: the calling role's chat cache. */
-    attachmentRoot?: string,
+    /** The only folders attachments may come from: the calling role's chat media caches. */
+    attachmentRoots: readonly string[] = [],
   ): Promise<TrackedIssue> {
     return this.serial(async () => {
       // The config's spelling, so the same repo under another casing shares its cap and record.
       repo = projectKey(this.options.config()?.projects, repo) ?? repo;
       this.policy(repo);
       if (attachments.length > 0) {
-        const files = await readAttachments(attachments, attachmentRoot);
+        const files = await readAttachments(attachments, attachmentRoots);
         const commits = await this.options.github.storeAttachments(repo, files);
         const stored: StoredAttachment[] = files.map((attachment, index) => ({
           attachment,

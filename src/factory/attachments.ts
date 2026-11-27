@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
-import { basename, isAbsolute, relative, resolve, sep } from "node:path";
+import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
+import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 /** The branch in the target repo that holds every attachment; nothing else is committed to it. */
 export const ATTACHMENT_BRANCH = "hephaestus/attachments";
@@ -14,6 +14,14 @@ const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg", "gif", "webp", "svg"]);
 
 /** A file the request carried that cannot be attached; the message names it. */
 export class AttachmentError extends Error {}
+
+/** Git's identity for a file's bytes: the blob id GitHub shows, so stored content can be compared without downloading it. */
+export function blobSha(data: Buffer): string {
+  return createHash("sha1")
+    .update(`blob ${String(data.length)}\0`)
+    .update(data)
+    .digest("hex");
+}
 
 export interface Attachment {
   /** The file's name as stored: the original with characters that need escaping in a URL replaced. */
@@ -44,29 +52,54 @@ function within(root: string, path: string): boolean {
   return rel === "" || (rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel));
 }
 
+/** The path is open, but it is not a regular file. */
+export class NotRegularError extends Error {}
+
+/**
+ * Opens a file for reading without following a link at its end and without
+ * waiting for a writer, which a pipe would make the open do forever, and
+ * closes it again unless it is a regular file. The check is on the open
+ * descriptor, so it holds however the path changed since it was looked at.
+ */
+export async function openRegularFile(path: string): Promise<FileHandle> {
+  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    if (!(await handle.stat()).isFile()) throw new NotRegularError(`${path} is not a regular file`);
+  } catch (error) {
+    await handle.close();
+    throw error;
+  }
+  return handle;
+}
+
 /**
  * Reads and checks every attachment before anything is written to GitHub.
- * Each must be an absolute path to a regular file inside `root`, the calling
- * role's Hermes cache, where the chat gateway puts the files a requester
- * sends; no other file on the host can be attached. A symbolic link is
- * refused, whether it is the file or a folder on the way to it, so a link
- * cannot lead out of the cache. The file is also within the size limit. The
- * first bad one fails the whole call, by name.
+ * Each must be an absolute path to a regular file inside one of `roots`, the
+ * calling role's Hermes media cache folders, where the chat gateway puts the
+ * files a requester sends; no other file on the host can be attached. No
+ * symbolic link is followed: the path is walked one name at a time from the
+ * cache folder, and a link as the file or as any folder on the way is refused,
+ * even when it points inside the cache. The file is opened without blocking,
+ * so a pipe or device cannot stall the call, and it must be a regular file
+ * within the size limit. The first bad one fails the whole call, by name.
  */
 export async function readAttachments(
   files: readonly string[],
-  root: string | undefined,
+  roots: readonly string[],
 ): Promise<Attachment[]> {
   if (files.length > MAX_ATTACHMENTS) {
     throw new AttachmentError(
       `Too many attachments: ${String(files.length)}. A call takes at most ${String(MAX_ATTACHMENTS)}.`,
     );
   }
-  let realRoot: string | undefined;
-  try {
-    if (root !== undefined) realRoot = await realpath(root);
-  } catch {
-    // The cache does not exist yet, so nothing can be in it.
+  // A folder that does not exist holds nothing. The root itself is the operator's, so it may be a link.
+  const folders: { named: string; real: string }[] = [];
+  for (const root of roots) {
+    try {
+      folders.push({ named: resolve(root), real: await realpath(root) });
+    } catch {
+      // Not there.
+    }
   }
   const result: Attachment[] = [];
   for (const file of files) {
@@ -74,30 +107,55 @@ export async function readAttachments(
       new AttachmentError(`Attachment ${file} ${why}. No issue was filed.`);
     if (/^https?:\/\//i.test(file)) throw fail("is a URL; only local file paths are supported");
     if (!isAbsolute(file)) throw fail("is not an absolute path");
-    const outside = fail("is not in the chat attachment cache, so it cannot be attached");
     // By name first, so a path elsewhere on the host is refused without being looked at.
     const path = resolve(file);
-    if (root === undefined || realRoot === undefined) throw outside;
-    if (!within(resolve(root), path) && !within(realRoot, path)) throw outside;
-    try {
-      if (!within(realRoot, await realpath(path))) throw outside;
-    } catch (error) {
-      if (error === outside) throw error;
-      const code = (error as { code?: string }).code;
-      throw fail(code === "ENOENT" || code === "ENOTDIR" ? "does not exist" : "cannot be read");
+    let folder: { real: string; rel: string } | undefined;
+    for (const candidate of folders) {
+      for (const base of [candidate.named, candidate.real]) {
+        if (folder === undefined && within(base, path)) {
+          folder = { real: candidate.real, rel: relative(base, path) };
+        }
+      }
+    }
+    if (folder === undefined)
+      throw fail("is not in the chat attachment cache, so it cannot be attached");
+    if (folder.rel === "") throw fail("is not a regular file");
+    const names = folder.rel.split(sep);
+    let current = folder.real;
+    let seen;
+    for (const [index, name] of names.entries()) {
+      current = join(current, name);
+      try {
+        seen = await lstat(current);
+      } catch (error) {
+        const code = (error as { code?: string }).code;
+        throw fail(code === "ENOENT" || code === "ENOTDIR" ? "does not exist" : "cannot be read");
+      }
+      if (seen.isSymbolicLink()) throw fail("is a symbolic link, or is reached through one");
+      const last = index === names.length - 1;
+      if (last ? !seen.isFile() : !seen.isDirectory()) {
+        throw fail(last ? "is not a regular file" : "does not exist");
+      }
     }
     let data: Buffer;
     let handle;
     try {
-      // O_NOFOLLOW refuses a link as the file itself, and the open and the read share one file.
-      handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+      handle = await openRegularFile(current);
     } catch (error) {
+      if (error instanceof NotRegularError) throw fail("is not a regular file");
       const code = (error as { code?: string }).code;
       throw fail(code === "ELOOP" ? "is a symbolic link" : "cannot be read");
     }
     try {
       const info = await handle.stat();
-      if (!info.isFile()) throw fail("is not a regular file");
+      // The file opened is the one checked, and where the open landed is inside the cache.
+      if (seen === undefined || info.ino !== seen.ino || info.dev !== seen.dev) {
+        throw fail("changed while it was read");
+      }
+      const landed = await realpath(`/proc/self/fd/${String(handle.fd)}`).catch(() => undefined);
+      if (landed !== undefined && !within(folder.real, landed)) {
+        throw fail("is not in the chat attachment cache, so it cannot be attached");
+      }
       if (info.size > MAX_ATTACHMENT_BYTES) {
         throw fail(
           `is ${String(info.size)} bytes, over the limit of ${String(MAX_ATTACHMENT_BYTES)} bytes`,

@@ -57,6 +57,7 @@ import { Intake } from "./factory/intake.js";
 import { FactoryMcp } from "./factory/mcp.js";
 import { Pipeline } from "./factory/pipeline.js";
 import { FactoryBoard } from "./hermes/board.js";
+import { chatCacheDirs } from "./hermes/cache.js";
 import { mcpTokenSecret, syncFactoryHermes } from "./hermes/setup.js";
 
 const USAGE = `Usage:
@@ -253,7 +254,7 @@ function factoryEngine(
     tokens: () =>
       Object.fromEntries(ROLE_NAMES.map((role) => [role, secrets.get(mcpTokenSecret(role))])),
     // Hermes caches the files a chat sends under the profile's home.
-    attachmentRoot: (role) => join(paths.hermes, "profiles", role, "cache"),
+    attachmentRoots: (role) => chatCacheDirs(join(paths.hermes, "profiles", role)),
   });
   return { intake, pipeline, cards, mcp, github };
 }

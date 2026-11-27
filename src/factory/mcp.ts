@@ -22,8 +22,8 @@ export interface FactoryMcpOptions {
   events: ThreadEvents;
   /** The bearer token of each factory profile. */
   tokens: () => Partial<Record<RoleName, string>>;
-  /** Where a role's chat gateway caches the files a requester sends; the only place attachments may come from. */
-  attachmentRoot?: (role: RoleName) => string;
+  /** Where a role's chat gateway caches the files a requester sends; the only places attachments may come from. */
+  attachmentRoots?: (role: RoleName) => readonly string[];
   now?: () => Date;
 }
 
@@ -315,7 +315,7 @@ export class FactoryMcp {
           title,
           body,
           attachments,
-          this.options.attachmentRoot?.(role),
+          this.options.attachmentRoots?.(role),
         );
         return {
           issue: issue.number,

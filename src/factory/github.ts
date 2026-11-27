@@ -1,5 +1,5 @@
 import { commandRunner, type CommandRun } from "../workers/config-repo.js";
-import { ATTACHMENT_BRANCH, type Attachment } from "./attachments.js";
+import { ATTACHMENT_BRANCH, blobSha, type Attachment } from "./attachments.js";
 
 export type CheckState = "success" | "pending" | "failure" | "none";
 
@@ -218,24 +218,33 @@ export class GitHub {
    * Commits each attachment to the attachments branch, creating the branch
    * from the default branch when it is missing, and returns the commit that
    * holds each file, in order. A path is named by its content hash, so a file
-   * already on the branch is found and not committed again.
+   * already on the branch is found and not committed again, but only after
+   * the commit it would be linked at is read back and holds exactly those
+   * bytes: a file deleted or replaced since is committed again.
    */
   async storeAttachments(repo: string, files: readonly Attachment[]): Promise<string[]> {
     await this.ensureAttachmentBranch(repo);
     const commits: string[] = [];
     // Commits to one branch must go one at a time.
     for (const file of files) {
-      const existing = (
-        await this.gh([
-          "api",
-          `repos/${repo}/commits?sha=${ATTACHMENT_BRANCH}&path=${file.path}&per_page=1`,
-          "--jq",
-          ".[0].sha // empty",
-        ])
-      ).trim();
-      if (existing !== "") {
-        commits.push(existing);
-        continue;
+      const wanted = blobSha(file.data);
+      const onBranch = await this.blobAt(repo, file.path, ATTACHMENT_BRANCH);
+      if (onBranch === wanted) {
+        const last = (
+          await this.gh([
+            "api",
+            `repos/${repo}/commits?sha=${ATTACHMENT_BRANCH}&path=${file.path}&per_page=1`,
+            "--jq",
+            ".[0].sha // empty",
+          ])
+        ).trim();
+        if (last !== "" && (await this.blobAt(repo, file.path, last)) === wanted) {
+          commits.push(last);
+          continue;
+        }
+        throw new Error(
+          `${file.path} is on ${ATTACHMENT_BRANCH}, but no commit that holds it could be found.`,
+        );
       }
       const sha = (
         await this.gh(
@@ -254,6 +263,8 @@ export class GitHub {
             message: `Attach ${file.name}`,
             content: file.data.toString("base64"),
             branch: ATTACHMENT_BRANCH,
+            // A different file at this path is replaced, which GitHub allows only with its current id.
+            ...(onBranch === undefined ? {} : { sha: onBranch }),
           }),
         )
       ).trim();
@@ -261,6 +272,19 @@ export class GitHub {
       commits.push(sha);
     }
     return commits;
+  }
+
+  /** The git blob id of a file at a ref, or undefined when the file is not there. */
+  private async blobAt(repo: string, path: string, ref: string): Promise<string | undefined> {
+    try {
+      const id = (
+        await this.gh(["api", `repos/${repo}/contents/${path}?ref=${ref}`, "--jq", ".sha"])
+      ).trim();
+      return id === "" ? undefined : id;
+    } catch (error) {
+      if (/HTTP 404|Not Found/i.test(String(error))) return undefined;
+      throw error;
+    }
   }
 
   private async ensureAttachmentBranch(repo: string): Promise<void> {

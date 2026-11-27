@@ -10,9 +10,12 @@ import {
   MAX_ATTACHMENT_BYTES,
   attachmentInstructions,
   attachmentRefs,
+  NotRegularError,
+  openRegularFile,
   readAttachments,
   type Attachment,
 } from "../../src/factory/attachments.js";
+import { chatCacheDirs } from "../../src/hermes/cache.js";
 import { NotAFactoryProjectError } from "../../src/factory/intake.js";
 import { harness, type Harness } from "./harness.js";
 
@@ -44,7 +47,7 @@ async function file(name: string, data: Buffer = PNG, folder = cache): Promise<s
 }
 
 function fileIssue(h: Harness, files: string[], title = "t", body = "b") {
-  return h.intake.fileIssue("planner", "octo/app", title, body, files, cache);
+  return h.intake.fileIssue("planner", "octo/app", title, body, files, [cache]);
 }
 
 describe("file_issue attachments", () => {
@@ -92,7 +95,7 @@ describe("file_issue attachments", () => {
   it("changes nothing for a call without attachments", async () => {
     const h = harness();
     const issue = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body");
-    const empty = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body", [], cache);
+    const empty = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body", [], [cache]);
     expect(h.github.issues.get(issue.number)?.body).toBe("Plain body");
     expect(h.github.issues.get(empty.number)?.body).toBe("Plain body");
     expect(h.github.writes).toEqual(["issue", "issue"]);
@@ -150,8 +153,8 @@ describe("file_issue attachments", () => {
     const paths = await Promise.all(
       Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) => file(`f${String(i)}.txt`)),
     );
-    await expect(readAttachments(paths, cache)).rejects.toThrow("Too many attachments");
-    expect(await readAttachments(paths.slice(0, MAX_ATTACHMENTS), cache)).toHaveLength(
+    await expect(readAttachments(paths, [cache])).rejects.toThrow("Too many attachments");
+    expect(await readAttachments(paths.slice(0, MAX_ATTACHMENTS), [cache])).toHaveLength(
       MAX_ATTACHMENTS,
     );
   });
@@ -163,15 +166,15 @@ describe("file_issue attachments", () => {
     await expect(fileIssue(h, [source])).rejects.toThrow(`could not write to ${ATTACHMENT_BRANCH}`);
     expect(h.github.issues.size).toBe(0);
     await expect(
-      h.intake.fileIssue("planner", "octo/other", "t", "b", [source], cache),
+      h.intake.fileIssue("planner", "octo/other", "t", "b", [source], [cache]),
     ).rejects.toThrow(NotAFactoryProjectError);
     expect(h.github.writes).toEqual([]);
   });
 
   it("names a file safely for the URL", async () => {
-    const [stored] = await readAttachments([await file("my banner (1).png")], cache);
+    const [stored] = await readAttachments([await file("my banner (1).png")], [cache]);
     expect(stored?.name).toBe("my_banner__1_.png");
-    const [dots] = await readAttachments([await file("...")], cache);
+    const [dots] = await readAttachments([await file("...")], [cache]);
     expect(dots?.name).toBe("attachment");
   });
 });
@@ -201,7 +204,7 @@ describe("which files can be attached", () => {
     const outside = await file("id_rsa", secret, elsewhere);
     const link = join(cache, "banner.png");
     await symlink(outside, link);
-    await expect(fileIssue(h, [link])).rejects.toThrow(`Attachment ${link} is not in the chat`);
+    await expect(fileIssue(h, [link])).rejects.toThrow(`Attachment ${link} is a symbolic link`);
     expect(h.github.writes).toEqual([]);
   });
 
@@ -219,8 +222,82 @@ describe("which files can be attached", () => {
     await file("id_rsa", secret, elsewhere);
     await symlink(elsewhere, join(cache, "folder"));
     const through = join(cache, "folder", "id_rsa");
-    await expect(fileIssue(h, [through])).rejects.toThrow("is not in the chat attachment cache");
+    await expect(fileIssue(h, [through])).rejects.toThrow(
+      `Attachment ${through} is a symbolic link`,
+    );
     expect(h.github.writes).toEqual([]);
+  });
+
+  it("refuses a file reached through a linked folder whose target stays inside the cache", async () => {
+    const h = harness();
+    await mkdir(join(cache, "real"));
+    await file("a.png", PNG, join(cache, "real"));
+    await symlink(join(cache, "real"), join(cache, "alias"));
+    const through = join(cache, "alias", "a.png");
+    await expect(fileIssue(h, [through])).rejects.toThrow(
+      `Attachment ${through} is a symbolic link`,
+    );
+    expect(h.github.writes).toEqual([]);
+    // The same file by its own path is fine.
+    await fileIssue(h, [join(cache, "real", "a.png")]);
+    expect(h.github.writes).toEqual(["store", "issue"]);
+  });
+
+  it("refuses a named pipe at once instead of waiting for a writer", async () => {
+    const h = harness();
+    const pipe = join(cache, "pipe.png");
+    execFileSync("mkfifo", [pipe]);
+    // A read that waited for a writer would never return, and would hold up every later filing.
+    await expect(fileIssue(h, [pipe])).rejects.toThrow(`Attachment ${pipe} is not a regular file`);
+    // A pipe put in place after the path was checked reaches the open, which must not wait either.
+    await expect(openRegularFile(pipe)).rejects.toBeInstanceOf(NotRegularError);
+    const plain = await openRegularFile(await file("plain.png"));
+    expect((await plain.readFile()).equals(PNG)).toBe(true);
+    await plain.close();
+    expect(h.github.writes).toEqual([]);
+    const after = await fileIssue(h, [await file("ok.png")]);
+    expect(after.state).toBe("admitted");
+  });
+
+  it("takes files from the media folders of a Hermes profile, current and legacy", async () => {
+    const h = harness();
+    const home = join(dir, "profile");
+    const layout: [string, string][] = [
+      ["cache/images", "new.png"],
+      ["image_cache", "legacy.png"],
+      ["document_cache", "legacy.pdf"],
+      ["cache/documents", "new.pdf"],
+    ];
+    const paths: string[] = [];
+    for (const [folder, name] of layout) {
+      await mkdir(join(home, folder), { recursive: true });
+      paths.push(await file(name, Buffer.from(name), join(home, folder)));
+    }
+    const issue = await h.intake.fileIssue(
+      "planner",
+      "octo/app",
+      "t",
+      "b",
+      paths,
+      chatCacheDirs(home),
+    );
+    const body = h.github.issues.get(issue.number)?.body ?? "";
+    for (const [, name] of layout) expect(body).toContain(`[${name}](`);
+    // The rest of the profile's home is not a media cache.
+    await writeFile(join(home, "config.yaml"), "model: x\n");
+    await writeFile(join(home, ".env"), "KEY=secret\n");
+    for (const name of ["config.yaml", ".env"]) {
+      await expect(
+        h.intake.fileIssue(
+          "planner",
+          "octo/app",
+          "t",
+          "b",
+          [join(home, name)],
+          chatCacheDirs(home),
+        ),
+      ).rejects.toThrow("is not in the chat attachment cache");
+    }
   });
 
   it("accepts a file in a folder inside the cache, and a cache reached through a link", async () => {
@@ -230,18 +307,18 @@ describe("which files can be attached", () => {
     await fileIssue(h, [nested]);
     const viaLink = join(dir, "cache-link");
     await symlink(cache, viaLink);
-    const linked = await h.intake.fileIssue("planner", "octo/app", "t", "b", [nested], viaLink);
+    const linked = await h.intake.fileIssue("planner", "octo/app", "t", "b", [nested], [viaLink]);
     expect(linked.state).toBe("admitted");
   });
 
   it("refuses every attachment when the role has no cache", async () => {
     const h = harness();
     const source = await file("banner.png");
+    await expect(h.intake.fileIssue("planner", "octo/app", "t", "b", [source], [])).rejects.toThrow(
+      "is not in the chat attachment cache",
+    );
     await expect(
-      h.intake.fileIssue("planner", "octo/app", "t", "b", [source], undefined),
-    ).rejects.toThrow("is not in the chat attachment cache");
-    await expect(
-      h.intake.fileIssue("planner", "octo/app", "t", "b", [source], join(dir, "no-such-cache")),
+      h.intake.fileIssue("planner", "octo/app", "t", "b", [source], [join(dir, "no-such-cache")]),
     ).rejects.toThrow("is not in the chat attachment cache");
     expect(h.github.writes).toEqual([]);
   });
