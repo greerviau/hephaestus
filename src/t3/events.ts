@@ -39,6 +39,12 @@ export interface FactoryThread {
   kind?: string;
 }
 
+export interface PendingLaunch extends Omit<FactoryThread, "threadId"> {
+  clientRequestId: string;
+  kind: string;
+  updatedAt: string;
+}
+
 export interface StoredThread extends FactoryThread {
   kind: string;
   status: string;
@@ -296,6 +302,31 @@ export class ThreadEvents {
         )
         .run(outcome.error, at, clientRequestId);
     }
+  }
+
+  /** Launches whose reply never came, oldest first. */
+  pendingLaunches(): PendingLaunch[] {
+    return this.db
+      .prepare(
+        `SELECT client_request_id AS clientRequestId, environment_id AS environmentId, title,
+           provider_instance_id AS providerInstanceId, model, config_version AS configVersion,
+           task_id AS taskId, kind, updated_at AS updatedAt
+         FROM factory_launches WHERE status = 'pending' ORDER BY created_at, client_request_id`,
+      )
+      .all() as PendingLaunch[];
+  }
+
+  /**
+   * Marks a pending launch failed only if nothing touched it since `updatedAt`, so a replay
+   * that started meanwhile keeps its own outcome.
+   */
+  failPendingLaunch(clientRequestId: string, updatedAt: string, error: string): void {
+    this.db
+      .prepare(
+        `UPDATE factory_launches SET status = 'failed', error = ?, updated_at = ?
+         WHERE client_request_id = ? AND status = 'pending' AND updated_at = ?`,
+      )
+      .run(error, this.now().toISOString(), clientRequestId, updatedAt);
   }
 
   launch(

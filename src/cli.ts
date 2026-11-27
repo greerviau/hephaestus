@@ -575,6 +575,12 @@ async function main(argv: string[]): Promise<number> {
       const events = new ThreadEvents(db);
       const following = new AbortController();
       const follower = new ThreadFollower(t3, events).run(following.signal);
+      // A launch whose reply a crash or restart cut off is adopted or failed now. A replay that
+      // starts meanwhile is safe: it looks for the thread itself, and a failure is recorded only
+      // on a launch nothing has touched since it was read.
+      void new FactoryThreads(t3, events).reconcile().catch((error: unknown) => {
+        console.error("Reconciling unanswered launches failed", error);
+      });
       const workers = workerManager(db, paths, config, store, t3, events);
       const engine = factoryEngine(db, paths, config, store, t3, events, workers);
       // A build that ships new role instructions brings them to the factory Hermes root at once,

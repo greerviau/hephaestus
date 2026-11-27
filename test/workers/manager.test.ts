@@ -22,6 +22,18 @@ class FakeT3 {
   launches: LaunchOptions[] = [];
   refuse = false;
   hang = false;
+  /** The threads this fake started with exactly `title` on the environment, newest first. */
+  threadsTitled(environmentId: string, title: string): Promise<string[]> {
+    return Promise.resolve(
+      this.launches
+        .flatMap((launch, index) =>
+          launch.environmentId === environmentId && launch.title === title
+            ? [`t${String(index + 1)}`]
+            : [],
+        )
+        .reverse(),
+    );
+  }
   /** When T3 wakes each snoozed thread, by thread id. */
   snoozes: Record<string, string> = {};
   threadState(

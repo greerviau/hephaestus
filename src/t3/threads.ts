@@ -1,6 +1,6 @@
 import type { LaunchOptions, T3Adapter } from "./adapter.js";
 import { T3ToolError } from "./connection.js";
-import type { ThreadEvents } from "./events.js";
+import type { FactoryThread, ThreadEvents } from "./events.js";
 
 export interface ThreadRecord {
   configVersion: number;
@@ -23,7 +23,10 @@ export class FactoryThreads {
   /**
    * Launches a thread and returns its id. A launch T3 refused is marked
    * failed. A launch whose reply was lost stays pending, since T3 may have
-   * started it (see issue #21).
+   * started it. T3 keys the request id to the MCP session, and a sign-in
+   * change opens a new one, so a replay of a pending launch first looks for
+   * the thread it may have started and adopts it. When T3 cannot list
+   * threads, the replay throws without launching and stays pending.
    */
   async launch(options: LaunchOptions, record: ThreadRecord): Promise<string> {
     const thread = {
@@ -35,6 +38,13 @@ export class FactoryThreads {
       taskId: record.taskId,
       kind: record.kind ?? "factory",
     };
+    if (this.events.launch(options.clientRequestId)?.status === "pending") {
+      const found = await this.started(thread);
+      if (found !== undefined) {
+        this.adopt(options.clientRequestId, { ...thread, threadId: found });
+        return found;
+      }
+    }
     this.events.recordLaunch(options.clientRequestId, thread);
     let threadId: string;
     try {
@@ -48,6 +58,49 @@ export class FactoryThreads {
     this.events.recordThread({ ...thread, threadId });
     this.events.finishLaunch(options.clientRequestId, { threadId });
     return threadId;
+  }
+
+  /**
+   * Settles every launch left pending by an earlier run of the service: adopted when T3 has
+   * its thread, failed when it does not. A launch T3 cannot be asked about stays pending, and
+   * its next replay looks again. Run it at startup, before any launch of this run is in flight.
+   */
+  async reconcile(): Promise<void> {
+    for (const pending of this.events.pendingLaunches()) {
+      let found: string | undefined;
+      try {
+        found = await this.started(pending);
+      } catch (error) {
+        console.error(
+          `Could not ask T3 about an unanswered launch on ${pending.environmentId}`,
+          error,
+        );
+        continue;
+      }
+      if (found === undefined) {
+        this.events.failPendingLaunch(pending.clientRequestId, pending.updatedAt, "not_started");
+      } else {
+        this.adopt(pending.clientRequestId, { ...pending, threadId: found });
+      }
+    }
+  }
+
+  /**
+   * The thread T3 started for a launch, if any: the newest one with exactly the launch's
+   * title that no other launch has claimed.
+   */
+  private async started(
+    thread: Pick<FactoryThread, "environmentId" | "title">,
+  ): Promise<string | undefined> {
+    const titled = await this.t3.threadsTitled(thread.environmentId, thread.title);
+    return titled.find(
+      (threadId) => this.events.thread(thread.environmentId, threadId) === undefined,
+    );
+  }
+
+  private adopt(clientRequestId: string, thread: FactoryThread): void {
+    this.events.recordThread(thread);
+    this.events.finishLaunch(clientRequestId, { threadId: thread.threadId });
   }
 
   /**
