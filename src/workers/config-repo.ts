@@ -13,16 +13,22 @@ export type CommandRun = (
   args: string[],
   cwd?: string,
   timeoutMs?: number,
+  /** Written to the command's stdin, for content too large or too private for the command line. */
+  input?: string,
 ) => Promise<string>;
 
-export const commandRunner: CommandRun = async (file, args, cwd, timeoutMs) => {
+export const commandRunner: CommandRun = async (file, args, cwd, timeoutMs, input) => {
   try {
-    const { stdout } = await run(file, args, {
+    const running = run(file, args, {
       cwd,
       timeout: timeoutMs ?? 0,
       env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
       maxBuffer: 64 * 1024 * 1024,
     });
+    // A command that exits before reading its input closes the pipe; the exit status says what failed.
+    running.child.stdin?.on("error", () => undefined);
+    running.child.stdin?.end(input);
+    const { stdout } = await running;
     return stdout;
   } catch (error) {
     const stderr = (error as { stderr?: string }).stderr ?? "";

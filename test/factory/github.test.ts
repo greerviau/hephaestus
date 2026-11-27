@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AlreadyMergedError,
@@ -7,6 +10,7 @@ import {
   INTAKE_READ_TIMEOUT_MS,
   foldChecks,
 } from "../../src/factory/github.js";
+import { blobSha } from "../../src/factory/attachments.js";
 import type { CommandRun } from "../../src/workers/config-repo.js";
 
 describe("foldChecks", () => {
@@ -31,6 +35,229 @@ describe("foldChecks", () => {
         { __typename: "CheckRun", name: "build", status: "COMPLETED", conclusion: "TIMED_OUT" },
       ]),
     ).toMatchObject({ state: "failure", failed: ["status:deploy", "check:build"] });
+  });
+});
+
+/**
+ * A repo's attachments branch as GitHub's contents API shows it: every commit
+ * is a snapshot of the files, and a path's history is the commits that
+ * changed it.
+ */
+class FakeBranch {
+  commits: { sha: string; files: Map<string, Buffer> }[] = [{ sha: "base", files: new Map() }];
+  puts: { path: string; body: Record<string, string> }[] = [];
+  branchExists = true;
+  refs: string[][] = [];
+
+  get head(): Map<string, Buffer> {
+    return this.commits[this.commits.length - 1]?.files ?? new Map();
+  }
+
+  commit(change: (files: Map<string, Buffer>) => void): string {
+    const files = new Map(this.head);
+    change(files);
+    const sha = `commit${String(this.commits.length)}`;
+    this.commits.push({ sha, files });
+    return sha;
+  }
+
+  exec: CommandRun = (_file, args, _cwd, _timeout, input) => {
+    const joined = args.join(" ");
+    const api = args[0] === "api" ? args.filter((arg) => arg.startsWith("repos/")) : [];
+    const url = api[0] ?? "";
+    if (args[0] === "repo") return Promise.resolve('{"defaultBranchRef":{"name":"main"}}');
+    if (url.includes("git/ref/heads/hephaestus/attachments")) {
+      return this.branchExists
+        ? Promise.resolve("{}")
+        : Promise.reject(new Error("gh failed: Not Found (HTTP 404)"));
+    }
+    if (url.includes("git/ref/heads/main")) return Promise.resolve("base\n");
+    if (url.endsWith("/git/refs")) {
+      this.refs.push(args);
+      this.branchExists = true;
+      return Promise.resolve("");
+    }
+    const contents = /\/contents\/([^?]+)(?:\?ref=(.+))?$/.exec(url);
+    if (contents !== null && !joined.includes("PUT")) {
+      const ref = contents[2] ?? "";
+      const snapshot =
+        ref === "hephaestus/attachments"
+          ? this.head
+          : this.commits.find((commit) => commit.sha === ref)?.files;
+      const data = snapshot?.get(contents[1] ?? "");
+      return data === undefined
+        ? Promise.reject(new Error("gh failed: Not Found (HTTP 404)"))
+        : Promise.resolve(`${blobSha(data)}\n`);
+    }
+    if (url.includes("/commits?")) {
+      const path = /[?&]path=([^&]+)/.exec(url)?.[1] ?? "";
+      // The newest commit that changed the path, a deletion included.
+      for (let i = this.commits.length - 1; i > 0; i--) {
+        const before = this.commits[i - 1]?.files.get(path);
+        const after = this.commits[i]?.files.get(path);
+        const same =
+          before === undefined || after === undefined ? before === after : before.equals(after);
+        if (!same) {
+          return Promise.resolve(`${this.commits[i]?.sha ?? ""}\n`);
+        }
+      }
+      return Promise.resolve("\n");
+    }
+    if (joined.includes("PUT") && contents !== null) {
+      const body = JSON.parse(input ?? "{}") as Record<string, string>;
+      const path = contents[1] ?? "";
+      this.puts.push({ path, body });
+      const present = this.head.get(path);
+      // GitHub replaces a file only when told the id of the one it replaces.
+      if (present !== undefined && body.sha !== blobSha(present)) {
+        return Promise.reject(new Error("gh failed: path already exists (HTTP 422)"));
+      }
+      return Promise.resolve(
+        `${this.commit((files) => files.set(path, Buffer.from(body.content ?? "", "base64")))}\n`,
+      );
+    }
+    return Promise.reject(new Error(`unexpected call: ${joined}`));
+  };
+}
+
+describe("GitHub attachments through the real command runner", () => {
+  it("delivers the exact upload payload to the gh process on stdin", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hephaestus-gh-"));
+    try {
+      // A stand-in for gh that answers the calls storeAttachments makes and keeps what it was sent to write.
+      const gh = join(dir, "gh");
+      writeFileSync(
+        gh,
+        `#!${process.execPath}
+const fs = require("fs");
+const args = process.argv.slice(2);
+if (args.includes("PUT")) {
+  fs.writeFileSync(${JSON.stringify(join(dir, "received.json"))}, fs.readFileSync(0));
+  console.log("commit1");
+} else if (args.some((arg) => arg.includes("/contents/"))) {
+  console.error("gh: Not Found (HTTP 404)");
+  process.exit(1);
+} else {
+  console.log("{}");
+}
+`,
+        { mode: 0o755 },
+      );
+      const bytes = Buffer.alloc(2 * 1024 * 1024);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 17 + 3) % 256;
+      const file = {
+        name: "b.png",
+        path: "attachments/0123456789abcdef/b.png",
+        data: bytes,
+        sha256: "x",
+      };
+      expect(await new GitHub(gh).storeAttachments("octo/app", [file])).toEqual(["commit1"]);
+      const received = readFileSync(join(dir, "received.json"));
+      expect(received.toString()).toBe(
+        JSON.stringify({
+          message: "Attach b.png",
+          content: bytes.toString("base64"),
+          branch: "hephaestus/attachments",
+        }),
+      );
+      const sent = JSON.parse(received.toString()) as { content: string };
+      expect(Buffer.from(sent.content, "base64").equals(bytes)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("GitHub attachments", () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe]);
+  const file = {
+    name: "b.png",
+    path: "attachments/0123456789abcdef/b.png",
+    data: png,
+    sha256: "x",
+  };
+  const store = (branch: FakeBranch): Promise<string[]> =>
+    new GitHub("gh", branch.exec).storeAttachments("octo/app", [file]);
+
+  it("creates the branch from the default branch and commits the exact bytes through stdin", async () => {
+    const branch = new FakeBranch();
+    branch.branchExists = false;
+    const [commit] = await store(branch);
+    expect(branch.refs[0]).toEqual(
+      expect.arrayContaining(["ref=refs/heads/hephaestus/attachments", "sha=base"]),
+    );
+    expect(branch.head.get(file.path)?.equals(png)).toBe(true);
+    expect(commit).toBe("commit1");
+    const sent = branch.puts[0]?.body ?? {};
+    expect(sent.branch).toBe("hephaestus/attachments");
+    expect(sent.sha).toBeUndefined();
+  });
+
+  it("keeps the bytes off the command line", async () => {
+    const seen: string[][] = [];
+    const branch = new FakeBranch();
+    await new GitHub("gh", (...call) => {
+      seen.push(call[1]);
+      return branch.exec(...call);
+    }).storeAttachments("octo/app", [file]);
+    const put = seen.find((args) => args.includes("PUT"));
+    expect(put?.join(" ")).not.toContain(png.toString("base64"));
+    expect(put).toEqual(expect.arrayContaining(["--input", "-"]));
+  });
+
+  it("reuses a file that is on the branch with those bytes, at the commit that holds it", async () => {
+    const branch = new FakeBranch();
+    const first = branch.commit((files) => files.set(file.path, png));
+    branch.commit((files) => files.set("attachments/other/x.txt", Buffer.from("x")));
+    expect(await store(branch)).toEqual([first]);
+    expect(branch.puts).toEqual([]);
+  });
+
+  it("commits again a file that was deleted from the branch", async () => {
+    const branch = new FakeBranch();
+    branch.commit((files) => files.set(file.path, png));
+    const deleted = branch.commit((files) => files.delete(file.path));
+    // The newest commit that touched the path is the deletion; linking it would link nothing.
+    const [commit] = await store(branch);
+    expect(commit).not.toBe(deleted);
+    expect(branch.puts).toHaveLength(1);
+    expect(
+      branch.commits
+        .find((c) => c.sha === commit)
+        ?.files.get(file.path)
+        ?.equals(png),
+    ).toBe(true);
+  });
+
+  it("commits again a file that was replaced by other bytes, naming the one it replaces", async () => {
+    const branch = new FakeBranch();
+    branch.commit((files) => files.set(file.path, png));
+    const other = Buffer.from("something else");
+    branch.commit((files) => files.set(file.path, other));
+    const [commit] = await store(branch);
+    expect(branch.puts[0]?.body.sha).toBe(blobSha(other));
+    expect(
+      branch.commits
+        .find((c) => c.sha === commit)
+        ?.files.get(file.path)
+        ?.equals(png),
+    ).toBe(true);
+    expect(branch.head.get(file.path)?.equals(png)).toBe(true);
+  });
+
+  it("does not take another failure for a missing branch or a missing file", async () => {
+    const exec: CommandRun = () =>
+      Promise.reject(new Error("gh failed: Bad credentials (HTTP 401)"));
+    await expect(new GitHub("gh", exec).storeAttachments("octo/app", [file])).rejects.toThrow(
+      "Bad credentials",
+    );
+    const down: CommandRun = (...call) =>
+      call[1].join(" ").includes("contents")
+        ? Promise.reject(new Error("gh failed: Server Error (HTTP 500)"))
+        : new FakeBranch().exec(...call);
+    await expect(new GitHub("gh", down).storeAttachments("octo/app", [file])).rejects.toThrow(
+      "Server Error",
+    );
   });
 });
 

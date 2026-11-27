@@ -1,4 +1,5 @@
 import { commandRunner, type CommandRun } from "../workers/config-repo.js";
+import { ATTACHMENT_BRANCH, blobSha, type Attachment } from "./attachments.js";
 
 export type CheckState = "success" | "pending" | "failure" | "none";
 
@@ -198,8 +199,8 @@ export class GitHub {
    * one may still have happened on GitHub, which the caller could not tell
    * from a failure.
    */
-  private gh(args: string[], timeoutMs?: number): Promise<string> {
-    return this.exec(this.ghPath, args, undefined, timeoutMs);
+  private gh(args: string[], timeoutMs?: number, input?: string): Promise<string> {
+    return this.exec(this.ghPath, args, undefined, timeoutMs, input);
   }
 
   private async json<T>(args: string[], timeoutMs?: number): Promise<T> {
@@ -211,6 +212,107 @@ export class GitHub {
     const number = /\/issues\/(\d+)/.exec(url)?.[1];
     if (number === undefined) throw new Error(`gh issue create printed no issue URL: ${url}`);
     return Number(number);
+  }
+
+  /**
+   * Commits each attachment to the attachments branch, creating the branch
+   * from the default branch when it is missing, and returns the commit that
+   * holds each file, in order. A path is named by its content hash, so a file
+   * already on the branch is found and not committed again, but only after
+   * the commit it would be linked at is read back and holds exactly those
+   * bytes: a file deleted or replaced since is committed again.
+   */
+  async storeAttachments(repo: string, files: readonly Attachment[]): Promise<string[]> {
+    await this.ensureAttachmentBranch(repo);
+    const commits: string[] = [];
+    // Commits to one branch must go one at a time.
+    for (const file of files) {
+      const wanted = blobSha(file.data);
+      const onBranch = await this.blobAt(repo, file.path, ATTACHMENT_BRANCH);
+      if (onBranch === wanted) {
+        const last = (
+          await this.gh([
+            "api",
+            `repos/${repo}/commits?sha=${ATTACHMENT_BRANCH}&path=${file.path}&per_page=1`,
+            "--jq",
+            ".[0].sha // empty",
+          ])
+        ).trim();
+        if (last !== "" && (await this.blobAt(repo, file.path, last)) === wanted) {
+          commits.push(last);
+          continue;
+        }
+        throw new Error(
+          `${file.path} is on ${ATTACHMENT_BRANCH}, but no commit that holds it could be found.`,
+        );
+      }
+      const sha = (
+        await this.gh(
+          [
+            "api",
+            "-X",
+            "PUT",
+            `repos/${repo}/contents/${file.path}`,
+            "--input",
+            "-",
+            "--jq",
+            ".commit.sha",
+          ],
+          undefined,
+          JSON.stringify({
+            message: `Attach ${file.name}`,
+            content: file.data.toString("base64"),
+            branch: ATTACHMENT_BRANCH,
+            // A different file at this path is replaced, which GitHub allows only with its current id.
+            ...(onBranch === undefined ? {} : { sha: onBranch }),
+          }),
+        )
+      ).trim();
+      if (sha === "") throw new Error(`GitHub returned no commit for ${file.path}.`);
+      commits.push(sha);
+    }
+    return commits;
+  }
+
+  /** The git blob id of a file at a ref, or undefined when the file is not there. */
+  private async blobAt(repo: string, path: string, ref: string): Promise<string | undefined> {
+    try {
+      const id = (
+        await this.gh(["api", `repos/${repo}/contents/${path}?ref=${ref}`, "--jq", ".sha"])
+      ).trim();
+      return id === "" ? undefined : id;
+    } catch (error) {
+      if (/HTTP 404|Not Found/i.test(String(error))) return undefined;
+      throw error;
+    }
+  }
+
+  private async ensureAttachmentBranch(repo: string): Promise<void> {
+    try {
+      await this.gh(["api", `repos/${repo}/git/ref/heads/${ATTACHMENT_BRANCH}`]);
+      return;
+    } catch (error) {
+      if (!/HTTP 404|Not Found/i.test(String(error))) throw error;
+    }
+    const base = await this.defaultBranch(repo);
+    const sha = (
+      await this.gh(["api", `repos/${repo}/git/ref/heads/${base}`, "--jq", ".object.sha"])
+    ).trim();
+    try {
+      await this.gh([
+        "api",
+        "-X",
+        "POST",
+        `repos/${repo}/git/refs`,
+        "-f",
+        `ref=refs/heads/${ATTACHMENT_BRANCH}`,
+        "-f",
+        `sha=${sha}`,
+      ]);
+    } catch (error) {
+      // Another call created it first.
+      if (!/already exists/i.test(String(error))) throw error;
+    }
   }
 
   async openIssues(repo: string): Promise<Issue[]> {

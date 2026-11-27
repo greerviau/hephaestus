@@ -76,6 +76,31 @@ Use \`"status": "blocked"\` with a \`"reason"\` when you could not finish. A rev
   });
 });
 
+describe("commandRunner", () => {
+  it("writes the input to the command's stdin, byte for byte, however large", async () => {
+    // Bytes that are not valid text, and more than a pipe holds, so a short or lossy write shows.
+    const bytes = Buffer.alloc(3 * 1024 * 1024);
+    for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 31 + 7) % 256;
+    const payload = JSON.stringify({ message: "Attach b.png", content: bytes.toString("base64") });
+    const echoed = await commandRunner("cat", ["-"], undefined, undefined, payload);
+    expect(echoed).toBe(payload);
+    expect(
+      Buffer.from((JSON.parse(echoed) as { content: string }).content, "base64").equals(bytes),
+    ).toBe(true);
+  });
+
+  it("leaves stdin empty when there is no input, and still reports a command's failure", async () => {
+    expect(await commandRunner("cat", ["-"])).toBe("");
+    await expect(
+      commandRunner("sh", ["-c", "cat >/dev/null; echo no >&2; exit 3"], undefined, undefined, "x"),
+    ).rejects.toThrow(/failed: no/);
+    // A command that exits without reading its input must not turn into a write error.
+    await expect(
+      commandRunner("true", [], undefined, undefined, "x".repeat(1 << 20)),
+    ).resolves.toBe("");
+  });
+});
+
 describe("ConfigRepo", () => {
   it("commits, tags, and pushes each version, and returns the same commit for a version published twice", async () => {
     const remote = join(dir, "remote.git");

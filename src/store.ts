@@ -252,6 +252,17 @@ const MIGRATIONS = [
      reverted_at TEXT,
      revert_version_id INTEGER
    );`,
+  // What the upload of each file attached to a factory-filed issue returned, for the engineer's instructions.
+  `CREATE TABLE issue_attachments (
+     repo TEXT NOT NULL COLLATE NOCASE,
+     number INTEGER NOT NULL,
+     path TEXT NOT NULL,
+     name TEXT NOT NULL,
+     commit_sha TEXT NOT NULL,
+     sha256 TEXT NOT NULL,
+     bytes INTEGER NOT NULL,
+     PRIMARY KEY (repo, number, path)
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

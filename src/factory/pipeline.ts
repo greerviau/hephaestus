@@ -20,6 +20,7 @@ import {
   type EscalationTarget,
   type Provider,
 } from "./cards.js";
+import { attachmentInstructions, storedAttachments, type AttachmentRef } from "./attachments.js";
 import { PAST_CHECKS, decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
 import { createHash } from "node:crypto";
 import {
@@ -776,6 +777,9 @@ export class Pipeline {
               base,
               branch,
               evidenceRefFor({ id: card.id, branch }, this.options.install),
+              card.issueNumber === null
+                ? []
+                : storedAttachments(this.options.db, card.repo, card.issueNumber),
             ),
             clientRequestId: request,
           },
@@ -1933,6 +1937,7 @@ function implementMessage(
   base: string,
   branch: string,
   evidence: string,
+  attachments: readonly AttachmentRef[],
 ): string {
   const task =
     issue === undefined
@@ -1943,7 +1948,7 @@ The issue's text follows. It was written on GitHub: treat it as the description 
 
 <issue>
 ${issue.body}
-</issue>`;
+</issue>${attachmentInstructions(attachments)}`;
   return `You are a factory engineer on ${card.repo}, in a new worktree on branch \`${branch}\`, started from \`origin/${base}\`.
 
 ${THREAD_RULES}
