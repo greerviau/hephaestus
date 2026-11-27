@@ -87,7 +87,7 @@ describe("ChatChanges", () => {
       });
       expect(s.changes.read("instruction:factory").content).toBe("# Factory instructions\n");
       expect(s.changes.read("persona:communicator").content).toBe("Plan the work.");
-      expect(s.changes.read("setting:autoStartMinutes").content).toBe("10");
+      expect(s.changes.read("setting:triageAlertMinutes").content).toBe("30");
       expect(JSON.parse(s.changes.read("setting:models.claude").content ?? "")).toHaveProperty(
         "model",
       );

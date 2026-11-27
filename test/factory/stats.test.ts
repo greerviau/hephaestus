@@ -48,6 +48,7 @@ describe("factoryStats", () => {
     const { db, tasks, at } = setup();
     const a = tasks.create({ repo: "octo/app", issueNumber: 1, title: "a" }).id;
     tasks.update(a, { startedAt: "2026-11-20T10:00:00.000Z", rounds: 2 });
+    tasks.transition(a, "Queued", "the lead queued the work");
     tasks.transition(a, "Implementing", "work started");
     at("2026-11-20T14:00:00Z");
     tasks.transition(a, "Done", "merged outside Hephaestus");
@@ -57,6 +58,7 @@ describe("factoryStats", () => {
     tasks.transition(b, "Escalated", "to the owner: the change touches a protected path");
     const c = tasks.create({ repo: "octo/lib", issueNumber: 3, title: "c" }).id;
     tasks.update(c, { startedAt: "2026-11-22T10:00:00.000Z", rounds: 0 });
+    tasks.transition(c, "Queued", "the lead queued the work");
     tasks.transition(c, "Implementing", "work started");
     at("2026-11-23T10:00:00Z");
     tasks.transition(c, "Done", "merged outside Hephaestus");
@@ -65,6 +67,7 @@ describe("factoryStats", () => {
     at("2026-10-01T10:00:00Z");
     const old = tasks.create({ repo: "octo/app", issueNumber: 4, title: "old" }).id;
     tasks.update(old, { startedAt: "2026-10-01T09:00:00.000Z" });
+    tasks.transition(old, "Queued", "the lead queued the work");
     tasks.transition(old, "Implementing", "work started");
     tasks.transition(old, "Done", "merged outside Hephaestus");
 

@@ -57,12 +57,12 @@ export class MergeSettledError extends Error {
 /** What the pipeline mirrors onto the Hermes board; absent when Hermes is not set up. */
 export interface PipelineBoard {
   setStage(id: string, stage: Stage, threadId?: string): Promise<void>;
-  /** Gives an escalated task back to the lead. */
+  /** Gives an escalated or deferred task back to the lead. */
   handBack(id: string, note: string): Promise<void>;
   /** Why the task is parked where the lead's queue never reaches it; nothing when it is not. */
   outsideBlock(id: string): Promise<string | undefined>;
-  /** Takes the task off the lead's queue for `stage`, unless it is parked; then says why it is. */
-  claim(id: string, stage: Stage): Promise<string | undefined>;
+  /** Takes a deferred task off the lead's ready list until it is handed back. */
+  park(id: string, note: string): Promise<void>;
 }
 
 export interface PipelineOptions {
@@ -322,35 +322,6 @@ export class Pipeline {
   }
 
   /**
-   * The worker an admitted task starts on, or why it waits. Each worker takes at most
-   * tasksPerWorker tasks in progress, and a task whose start was asked for earlier goes first.
-   */
-  private taskSlot(task: Task): Worker | string {
-    const limit = this.options.config()?.document.factory.limits.tasksPerWorker;
-    if (limit === undefined) return "No config version is deployed.";
-    if (this.readyHomes().length === 0) return "No worker is ready.";
-    const ahead = this.tasks.list(["Admitted"]).filter(
-      (other) =>
-        other.id !== task.id &&
-        other.queuedAt !== null &&
-        // A task whose project was removed cannot start, so it holds no place.
-        this.isFactoryProject(other.repo) &&
-        (task.queuedAt === null ||
-          other.queuedAt < task.queuedAt ||
-          (other.queuedAt === task.queuedAt && other.id < task.id)),
-    ).length;
-    const free = this.readyHomes().reduce(
-      (sum, worker) => sum + Math.max(0, limit - this.tasksInProgress(worker.environmentId)),
-      0,
-    );
-    if (free > ahead) return this.freeWorker();
-    const reached = limitReached(limit);
-    return ahead === 0
-      ? `${reached}.`
-      : `${reached}; ${ahead === 1 ? "1 task that has" : `${String(ahead)} tasks that have`} waited longer ${ahead === 1 ? "starts" : "start"} first.`;
-  }
-
-  /**
    * The ready worker a task takes a task slot on: one with a free slot, preferring one whose
    * thread limit has room too, then the fewest tasks in progress, then the fewest threads.
    */
@@ -396,11 +367,22 @@ export class Pipeline {
    */
   private tasksInProgress(environmentId: string): number {
     return this.tasks
-      .list(["Implementing", "Reviewing", "Merging", "Validating", "Reverting", "Escalated"])
+      .list([
+        "Queued",
+        "Implementing",
+        "Reviewing",
+        "Merging",
+        "Validating",
+        "Reverting",
+        "Escalated",
+      ])
       .filter(
         (task) =>
           (task.stage !== "Escalated" || task.escalatedTo === "lead") &&
-          (task.workerEnv ?? this.pendingLaunchFor(task.id)) === environmentId &&
+          // A queued task counts only once its launch is sent, on the worker that got it.
+          (task.stage === "Queued"
+            ? this.pendingLaunchFor(task.id)
+            : (task.workerEnv ?? this.pendingLaunchFor(task.id))) === environmentId &&
           this.works(task),
       ).length;
   }
@@ -496,33 +478,143 @@ export class Pipeline {
     if (settled !== undefined) throw settled;
   }
 
-  /** The lead's start_work: records the brief and starts the implement thread when caps allow. */
-  startWork(taskId: number, brief: string): Promise<Task> {
-    return this.withTask(taskId, () => this.startWorkNow(taskId, brief));
+  /**
+   * The lead's queue_work: puts an admitted task, or a task escalated to the
+   * lead that never launched a thread, in the queue with its brief, before
+   * `before` or at the end. A queued task moves and takes the new brief. A
+   * pass then starts what the limits allow.
+   */
+  async queue(taskId: number, brief: string, before?: number): Promise<Task> {
+    await this.withTask(taskId, async () => {
+      const task = this.tasks.get(taskId);
+      if (task.stage !== "Admitted" && task.stage !== "Queued" && !neverLaunched(task)) {
+        throw new Error(
+          `Task ${String(taskId)} is ${task.stage}${task.escalatedTo === "owner" ? " with the owner" : ""}; queue_work needs an admitted or queued task.`,
+        );
+      }
+      this.refuseWhileStarting(task, "moved or given a new brief");
+      await this.enqueue(task, before, brief);
+    });
+    // A whole pass, so tasks already in progress take their slots before the queue does.
+    await this.tick();
+    return this.tasks.get(taskId);
+  }
+
+  private async enqueue(task: Task, before: number | undefined, brief: string): Promise<void> {
+    const detail =
+      task.stage === "Escalated" ? "the lead restarted the work" : "the lead queued the work";
+    const queued = this.tasks.enqueue(task.id, before, detail, {
+      brief,
+      waiting: null,
+      escalatedTo: null,
+      reason: null,
+      ownerAction: null,
+      workerEnv: null,
+    });
+    // Off the lead's queue on the board at once, so the lead is not given the task again.
+    if (task.stage !== "Queued") await this.mirror(queued, "Queued");
+  }
+
+  /** Refuses a change to a queued task whose launch T3 may already have answered with a thread. */
+  private refuseWhileStarting(task: Task, change: string): void {
+    if (
+      task.stage === "Queued" &&
+      (this.pendingLaunch(implementRequest(task)) !== undefined ||
+        this.recordedImplementThread(task.id) !== undefined)
+    ) {
+      throw new Error(`Task ${String(task.id)} is starting, so it can no longer be ${change}.`);
+    }
+  }
+
+  /**
+   * The implement thread recorded for a task, as a thread or as a launch T3
+   * answered. A queued task has never had one, so one recorded for it is the
+   * thread its own launch started before the task learned of it.
+   */
+  private recordedImplementThread(
+    taskId: number,
+  ): { environmentId: string; threadId: string } | undefined {
+    return this.options.db
+      .prepare(
+        `SELECT environmentId, threadId FROM (
+           SELECT environment_id AS environmentId, thread_id AS threadId, created_at AS at
+           FROM factory_threads WHERE task_id = ? AND kind = 'implement'
+           UNION ALL
+           SELECT environment_id, thread_id, created_at FROM factory_launches
+           WHERE task_id = ? AND kind = 'implement' AND status = 'launched' AND thread_id IS NOT NULL
+         ) ORDER BY at DESC LIMIT 1`,
+      )
+      .get(String(taskId), String(taskId)) as
+      { environmentId: string; threadId: string } | undefined;
+  }
+
+  /**
+   * The lead's defer_work: keeps an admitted or queued task out of the queue
+   * until `after` is Done or Abandoned, or with no `after`, until any task is.
+   * Its board task leaves the lead's ready list until then.
+   */
+  defer(taskId: number, reason: string, after?: number): Promise<Task> {
+    return this.withTask(taskId, async () => {
+      const task = this.tasks.get(taskId);
+      if (task.stage !== "Admitted" && task.stage !== "Queued") {
+        throw new Error(
+          `Task ${String(taskId)} is ${task.stage}; defer_work needs an admitted or queued task.`,
+        );
+      }
+      // T3 may already have its thread, which a deferral would leave running unwatched.
+      this.refuseWhileStarting(task, "deferred");
+      if (after !== undefined) {
+        if (after === taskId) throw new Error("A task cannot be deferred until itself finishes.");
+        const target = this.tasks.find(after);
+        if (target === undefined) throw new Error(`There is no task ${String(after)}.`);
+        if (target.stage === "Done" || target.stage === "Abandoned") {
+          throw new Error(`Task ${String(after)} is already finished.`);
+        }
+      }
+      const note =
+        after === undefined
+          ? `Deferred until a task finishes: ${reason}`
+          : `Deferred until task ${String(after)} is finished: ${reason}`;
+      // Taken before the board call, so a task that finishes meanwhile still ends the deferral.
+      const deferMark = this.tasks.lastEventId();
+      // Parked first: a deferral the board did not take would leave the task with the lead.
+      const board = this.options.board?.();
+      if (board !== undefined && task.hermesTaskId !== null) {
+        await board.park(task.hermesTaskId, note);
+      }
+      const fields = {
+        deferReason: reason,
+        deferAfter: after ?? null,
+        deferMark,
+        queueOrder: null,
+        waiting: null,
+        workerEnv: null,
+      };
+      if (task.stage === "Queued") {
+        this.tasks.transition(taskId, "Admitted", "the lead deferred the work", fields);
+      } else {
+        this.tasks.update(taskId, fields);
+      }
+      this.tasks.event(taskId, "deferred", note);
+      return this.tasks.get(taskId);
+    });
+  }
+
+  /** The lead's start_work: restarts a task escalated to the lead with a new brief. */
+  async startWork(taskId: number, brief: string): Promise<Task> {
+    const task = await this.withTask(taskId, () => this.startWorkNow(taskId, brief));
+    if (task.stage === "Queued") await this.tick();
+    return this.tasks.get(taskId);
   }
 
   private async startWorkNow(taskId: number, brief: string): Promise<Task> {
     const task = this.tasks.get(taskId);
-    if (task.stage === "Admitted") {
-      const slot = this.paused() ? "The factory is paused." : this.taskSlot(task);
-      if (typeof slot === "string") {
-        // The task stays admitted with its brief, and a later pass starts it when a slot frees
-        // or the factory resumes. A pass that changes nothing writes nothing.
-        const queued: Partial<Task> = {
-          ...(task.brief === brief ? {} : { brief }),
-          ...(task.queuedAt === null ? { queuedAt: this.now().toISOString() } : {}),
-        };
-        this.wait(Object.keys(queued).length > 0 ? this.tasks.update(taskId, queued) : task, slot);
-        return this.tasks.get(taskId);
-      }
-      // The worker is chosen now, so a second task started in the same pass sees this one in progress.
-      this.tasks.transition(taskId, "Implementing", "work started", {
-        brief,
-        waiting: null,
-        queuedAt: null,
-        workerEnv: slot.environmentId,
-      });
-    } else if (task.stage === "Escalated" && task.escalatedTo === "lead") {
+    if (neverLaunched(task)) {
+      // Work that never started waits its turn in the queue like any other.
+      await this.enqueue(task, undefined, brief);
+      return this.tasks.get(taskId);
+    }
+    if (task.stage === "Escalated" && task.escalatedTo === "lead") {
       await this.refuseOnUnrecordedMerge(task);
       // A fresh brief replaces the escalation; an open PR stays, and the implementer continues it.
       this.tasks.transition(taskId, "Implementing", "the lead restarted the work", {
@@ -547,7 +639,7 @@ export class Pipeline {
       }
     } else {
       throw new Error(
-        `Task ${String(taskId)} is ${task.stage}${task.escalatedTo === "owner" ? " with the owner" : ""}; start_work needs an admitted task or one escalated to the lead.`,
+        `Task ${String(taskId)} is ${task.stage}${task.escalatedTo === "owner" ? " with the owner" : ""}; start_work needs a task escalated to the lead. Put an admitted task in the queue with queue_work.`,
       );
     }
     // Off the lead's queue at once, though the thread may wait for a free slot: a lead that ran on
@@ -664,27 +756,6 @@ export class Pipeline {
   }
 
   /**
-   * Takes an admitted task off the lead's queue on the board before an auto-start, and says whether
-   * the start may go ahead: not when the lead or Hermes parked the task, even while it was
-   * being taken, nor when the board cannot be read.
-   */
-  private async claimForAutoStart(task: Task): Promise<boolean> {
-    const board = this.options.board?.();
-    if (board === undefined || task.hermesTaskId === null) return true;
-    let reason: string | undefined;
-    try {
-      reason = await board.claim(task.hermesTaskId, "Implementing");
-    } catch (error) {
-      console.error(`Taking task ${String(task.id)} on the Hermes board failed`, error);
-      this.wait(task, "The Hermes board could not be read, so the task is not started yet.");
-      return false;
-    }
-    if (reason === undefined) return true;
-    await this.hold(task, reason);
-    return false;
-  }
-
-  /**
    * Reads the board, at most once a minute, for tasks waiting on the lead that are parked. Each
    * task is read with `show`, which changes nothing; `list` would first promote tasks.
    */
@@ -734,7 +805,7 @@ export class Pipeline {
   tick(): Promise<void> {
     this.running ??= (async () => {
       try {
-        // First, so an auto-start below never starts a task the lead parked.
+        // First, so a task the lead parked on the board goes to the owner before anything else.
         await this.escalateParkedCards();
         for (const { id } of this.tasks.list(ACTIVE).reverse()) {
           await this.withTask(id, async () => {
@@ -749,6 +820,8 @@ export class Pipeline {
             }
           });
         }
+        // Tasks already in progress took their slots above; the queue gets what is left.
+        await this.startQueued();
         await this.flagForeignMerges();
         // Settling runs beside the pass, so a T3 call that never returns cannot hold up the tasks.
         void this.settleThreads();
@@ -761,25 +834,10 @@ export class Pipeline {
 
   private async advance(task: Task): Promise<void> {
     switch (task.stage) {
-      case "Admitted": {
-        if (this.paused()) return;
-        // The lead started the task while the factory was paused.
-        if (task.brief !== null) {
-          await this.startWorkNow(task.id, task.brief);
-          return;
-        }
-        const minutes = this.options.config()?.document.factory.autoStartMinutes ?? 0;
-        const age = this.now().getTime() - Date.parse(task.createdAt);
-        if (minutes > 0 && age >= minutes * 60_000) {
-          // The once-a-minute read of the board can be stale, so the claim reads the task afresh.
-          if (!(await this.claimForAutoStart(task))) return;
-          await this.startWorkNow(
-            task.id,
-            `The lead had not started this task ${String(minutes)} minutes after it was admitted, so Hephaestus started it. Work from the issue.`,
-          );
-        }
+      case "Admitted":
+        if (task.deferReason !== null) await this.endDeferral(task);
+        else this.alertTriage(task);
         return;
-      }
       case "Implementing":
         if (task.limitUntil !== null && task.implementThread !== null) {
           await this.afterLimit(task, task.implementThread);
@@ -982,18 +1040,26 @@ export class Pipeline {
     };
   }
 
-  private async launchImplement(task: Task): Promise<void> {
+  /**
+   * Launches the task's implement thread. For a queued task, `ahead` holds the
+   * tasks ahead of it when its start began; a task the lead moves ahead of it
+   * meanwhile stops the launch, so that task starts first.
+   */
+  private async launchImplement(task: Task, ahead?: ReadonlySet<number>): Promise<void> {
     const implementer: Provider = task.implementer ?? "claude";
     // A launch replayed after a lost reply keeps the branch it was first given; a revert retry
     // starts with no branch and gets a new name.
     const branch =
       task.branch ??
       `factory/${taskRef(this.options.install, task.id)}${task.revertPr === null ? "" : `-retry-${String(task.revertPr)}`}`;
-    const request = `hephaestus-implement-${String(task.id)}-${task.revertPr === null ? "0" : String(task.revertPr)}`;
+    const request = implementRequest(task);
     const started = await this.launch(
       task,
       request,
-      (current) => current.stage === "Implementing" && current.implementThread === null,
+      (current) =>
+        (current.stage === "Implementing" ||
+          (current.stage === "Queued" && !movedAhead(this.tasks.queue(), current.id, ahead))) &&
+        current.implementThread === null,
       async (worker) => {
         // Project ids belong to one worker, so the id comes from the worker chosen now.
         const projectId = await this.project(worker.environmentId, worker.home, task.repo);
@@ -1036,14 +1102,21 @@ export class Pipeline {
         )
         .get(started.worker.environmentId, task.repo) as { id: string } | undefined
     )?.id;
-    const updated = this.tasks.update(task.id, {
+    const fields = {
       workerEnv: started.worker.environmentId,
       projectId: projectId ?? null,
       implementer,
       implementThread: started.threadId,
       waiting: null,
       startedAt: task.startedAt ?? this.now().toISOString(),
-    });
+    };
+    const updated =
+      this.tasks.get(task.id).stage === "Queued"
+        ? this.tasks.transition(task.id, "Implementing", "work started", {
+            ...fields,
+            queueOrder: null,
+          })
+        : this.tasks.update(task.id, fields);
     this.tasks.event(task.id, "thread:implement", started.threadId);
     await this.mirror(updated, "Implementing", started.threadId);
   }
@@ -2182,6 +2255,148 @@ export class Pipeline {
     }
   }
 
+  /**
+   * Launches queued tasks in the lead's order while the limits allow. Once a
+   * limit, a pause, a missing worker, or a failed start holds one back, it
+   * holds back every task after it too, so a later task never starts ahead
+   * of an earlier one. The queue is read again before each task, so a move
+   * the lead makes during the pass counts. A task whose launch is already
+   * pending is replayed wherever it stands, since it holds its slot anyway.
+   */
+  private async startQueued(): Promise<void> {
+    let blocked: string | undefined;
+    const tried = new Set<number>();
+    for (;;) {
+      const next = this.tasks.queue().find((task) => !tried.has(task.id));
+      if (next === undefined) return;
+      tried.add(next.id);
+      await this.withTask(next.id, async () => {
+        const task = this.tasks.get(next.id);
+        if (task.stage !== "Queued") return;
+        if (blocked !== undefined && this.pendingLaunch(implementRequest(task)) === undefined) {
+          this.wait(task, blocked);
+          return;
+        }
+        try {
+          blocked = (await this.launchQueued(task)) ?? blocked;
+        } catch (error) {
+          console.error(`Starting queued task ${String(task.id)} failed`, error);
+          this.tasks.event(task.id, "error", "A step failed; the service log has the error.");
+          blocked ??= `Task ${String(task.id)} is ahead of it in the queue and could not start.`;
+        }
+      });
+    }
+  }
+
+  /** Launches one queued task; returns why it could not start when that holds back the rest. */
+  private async launchQueued(task: Task): Promise<string | undefined> {
+    const recorded = this.recordedImplementThread(task.id);
+    if (recorded !== undefined) {
+      await this.adoptThread(task, recorded);
+      return undefined;
+    }
+    const queue = this.tasks.queue();
+    const place = queue.findIndex((queued) => queued.id === task.id);
+    const ahead = new Set(queue.slice(0, place).map((queued) => queued.id));
+    let fresh = task;
+    // A replayed launch goes back to the worker that may have the thread, whatever the limits say.
+    if (this.pendingLaunch(implementRequest(task)) === undefined) {
+      if (!this.works(task)) {
+        this.wait(task, `${task.repo} is no longer a factory project.`);
+        return undefined;
+      }
+      // Paused first, then a free task slot on a worker, then that worker's thread slots.
+      const worker = this.paused() ? "The factory is paused." : this.freeWorker();
+      const reason =
+        typeof worker === "string" ? worker : this.blockedBecause(worker.environmentId);
+      if (reason !== undefined) {
+        this.wait(task, reason);
+        return reason;
+      }
+      // The launch picks the worker afresh, and a reason left from an earlier pass must not
+      // hold back the tasks after this one.
+      if (task.workerEnv !== null || task.waiting !== null) {
+        fresh = this.tasks.update(task.id, { workerEnv: null, waiting: null });
+      }
+    }
+    await this.launchImplement(fresh, ahead);
+    const after = this.tasks.get(task.id);
+    return after.stage === "Queued" ? (after.waiting ?? undefined) : undefined;
+  }
+
+  /** Moves a queued task onto the implement thread its launch started, without launching again. */
+  private async adoptThread(
+    task: Task,
+    thread: { environmentId: string; threadId: string },
+  ): Promise<void> {
+    const projectId = (
+      this.options.db
+        .prepare(
+          "SELECT project_id AS id FROM worker_projects WHERE environment_id = ? AND repo = ?",
+        )
+        .get(thread.environmentId, task.repo) as { id: string } | undefined
+    )?.id;
+    const updated = this.tasks.transition(task.id, "Implementing", "work started", {
+      workerEnv: thread.environmentId,
+      projectId: projectId ?? null,
+      implementer: task.implementer ?? "claude",
+      implementThread: thread.threadId,
+      waiting: null,
+      queueOrder: null,
+      startedAt: task.startedAt ?? this.now().toISOString(),
+    });
+    this.tasks.event(task.id, "thread:implement", thread.threadId);
+    await this.mirror(updated, "Implementing", thread.threadId);
+  }
+
+  /** Gives a deferred task back to the lead once the task it waits for, or any task, has finished. */
+  private async endDeferral(task: Task): Promise<void> {
+    let note: string;
+    if (task.deferAfter !== null) {
+      const target = this.tasks.find(task.deferAfter);
+      if (target !== undefined && target.stage !== "Done" && target.stage !== "Abandoned") return;
+      note = `Task ${String(task.deferAfter)} is finished`;
+    } else {
+      if (!this.tasks.finishedSince(task.deferMark ?? 0, task.id)) return;
+      note = "A task finished";
+    }
+    note = `${note}, so this task is no longer deferred. It was deferred because: ${task.deferReason ?? ""}`;
+    const board = this.options.board?.();
+    if (board !== undefined && task.hermesTaskId !== null) {
+      try {
+        await board.handBack(task.hermesTaskId, note);
+      } catch (error) {
+        // The task stays deferred, so the next pass tries the hand-back again.
+        console.error(`Handing task ${String(task.id)} back to the lead failed`, error);
+        return;
+      }
+    }
+    this.tasks.update(task.id, {
+      deferReason: null,
+      deferAfter: null,
+      deferMark: null,
+      triageSince: this.now().toISOString(),
+      triageAlerted: false,
+    });
+    this.tasks.event(task.id, "undeferred", note);
+  }
+
+  /** Tells the owner, once, about an admitted task that has waited too long to be queued or deferred. */
+  private alertTriage(task: Task): void {
+    const minutes = this.options.config()?.document.factory.triageAlertMinutes ?? 0;
+    if (minutes <= 0 || task.triageAlerted) return;
+    const since = Date.parse(task.triageSince ?? task.createdAt);
+    if (this.now().getTime() - since < minutes * 60_000) return;
+    // Together, so an alert that could not be recorded is tried again on the next pass.
+    this.options.db.transaction(() => {
+      this.tasks.update(task.id, { triageAlerted: true });
+      this.tasks.notify(
+        `Task ${String(task.id)} in ${task.repo} has waited ${String(minutes)} minutes to be queued or deferred.`,
+        task.id,
+      );
+    })();
+  }
+
   private async mirrorHandBack(task: Task, note: string): Promise<void> {
     const board = this.options.board?.();
     if (board === undefined || task.hermesTaskId === null) return;
@@ -2195,11 +2410,40 @@ export class Pipeline {
 
 /** A task the lead has to act on: admitted and not yet started, or escalated to the lead. */
 function withLead(task: Task): boolean {
-  // An admitted task with a brief was started, and waits only for the factory to resume or a slot.
+  // A deferred task is parked by Hephaestus itself until its deferral ends.
   return (
-    (task.stage === "Admitted" && task.brief === null) ||
+    (task.stage === "Admitted" && task.deferReason === null) ||
     (task.stage === "Escalated" && task.escalatedTo === "lead")
   );
+}
+
+/** The launch request of a task's implement thread, the same on every retry of one launch. */
+function implementRequest(task: Task): string {
+  return `hephaestus-implement-${String(task.id)}-${task.revertPr === null ? "0" : String(task.revertPr)}`;
+}
+
+/** A task escalated to the lead before any implement thread launched for it. */
+function neverLaunched(task: Task): boolean {
+  return (
+    task.stage === "Escalated" &&
+    task.escalatedTo === "lead" &&
+    task.implementThread === null &&
+    task.startedAt === null
+  );
+}
+
+/** Whether a task not among `ahead` now stands before `id` in the queue. */
+function movedAhead(
+  queue: readonly Task[],
+  id: number,
+  ahead: ReadonlySet<number> | undefined,
+): boolean {
+  if (ahead === undefined) return false;
+  for (const task of queue) {
+    if (task.id === id) return false;
+    if (!ahead.has(task.id)) return true;
+  }
+  return false;
 }
 
 /** In every squash commit Hephaestus makes, so a merge whose reply was lost can be recognized. */

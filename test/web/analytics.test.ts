@@ -15,6 +15,7 @@ function shipped(h: Harness, repo: string, issue: number): void {
   h.setClock(NOW - 2 * 86_400_000);
   const id = h.tasks.create({ repo, issueNumber: issue, title: `Work ${String(issue)}` }).id;
   h.tasks.update(id, { startedAt: new Date(NOW - 2 * 86_400_000).toISOString() });
+  h.tasks.transition(id, "Queued", "the lead queued the work");
   h.tasks.transition(id, "Implementing", "work started");
   h.tasks.transition(id, "Reviewing", "PR #5 at abc");
   h.tasks.transition(id, "Merging", "approved");

@@ -18,6 +18,28 @@ describe("Intake", () => {
     });
   });
 
+  it("tells the lead on the board task to queue or defer the task", async () => {
+    const h = harness();
+    const bodies: string[] = [];
+    const intake = new Intake({
+      db: h.db,
+      tasks: h.tasks,
+      github: h.github,
+      config: () => h.config,
+      board: () => ({
+        createTask: (task) => {
+          bodies.push(task.body);
+          return Promise.resolve("t_1");
+        },
+      }),
+    });
+    const issue = await intake.fileIssue("communicator", "octo/app", "Add a flag", "Body");
+    const id = String(issue.taskId);
+    expect(bodies).toEqual([
+      `Hephaestus task ${id} for https://github.com/octo/app/issues/${String(issue.number)}. Queue it with queue_work and task_id ${id}, or defer it with defer_work.`,
+    ]);
+  });
+
   it("does not admit an issue opened outside Hephaestus until the owner approves it", async () => {
     const h = harness();
     h.github.issues.set(7, {
@@ -75,6 +97,9 @@ describe("Intake", () => {
 
     // The held issue waits for the owner, even after room opens.
     const first = h.tasks.list().at(-1);
+    // A queued task has not started, so it still counts.
+    h.tasks.transition(first?.id ?? 0, "Queued", "queued");
+    expect(h.intake.awaitingWork("octo/app")).toBe(2);
     h.tasks.update(first?.id ?? 0, { startedAt: "2026-11-25T12:00:00Z" });
     h.tasks.transition(first?.id ?? 0, "Implementing", "started");
     await h.intake.poll();

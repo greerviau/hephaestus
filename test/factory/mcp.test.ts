@@ -378,20 +378,39 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
-  it("starts work for the lead and reports a refused call as an error", async () => {
+  it("queues and defers work for the lead and reports a refused call as an error", async () => {
     const { h, url, mcp } = await start();
     h.github.issues.set(5, { number: 5, title: "t", body: "b", author: "o", state: "OPEN" });
     const task = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "t" });
+    const later = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "later" });
+    h.pipeline.setPaused(true);
     const c = await client(url, TOKENS.lead);
-    const started = json(
-      await c.callTool({ name: "start_work", arguments: { task_id: task.id, brief: "Do it" } }),
+    const queued = json(
+      await c.callTool({ name: "queue_work", arguments: { task_id: task.id, brief: "Do it" } }),
     );
-    expect(started).toMatchObject({ stage: "Implementing" });
-    const again = await c.callTool({
+    expect(queued).toMatchObject({ stage: "Queued", queue_position: 1 });
+    const before = json(
+      await c.callTool({
+        name: "queue_work",
+        arguments: { task_id: later.id, brief: "First", before_task_id: task.id },
+      }),
+    );
+    expect(before).toMatchObject({ stage: "Queued", queue_position: 1 });
+    const deferred = json(
+      await c.callTool({
+        name: "defer_work",
+        arguments: { task_id: later.id, reason: "after the first", after_task_id: task.id },
+      }),
+    );
+    expect(deferred).toMatchObject({
+      stage: "Admitted",
+      deferred: { reason: "after the first", until_task_id: task.id },
+    });
+    const restart = await c.callTool({
       name: "start_work",
       arguments: { task_id: task.id, brief: "Again" },
     });
-    expect(again.isError).toBe(true);
+    expect(restart.isError).toBe(true);
     expect(mcp.calls()[0]).toMatchObject({ role: "lead", tool: "start_work", ok: false });
     const escalated = json(
       await c.callTool({ name: "escalate", arguments: { task_id: task.id, reason: "owner call" } }),
@@ -638,6 +657,7 @@ describe("FactoryMcp", () => {
       startedAt: new Date(Date.now() - 3_600_000).toISOString(),
       rounds: 1,
     });
+    h.tasks.transition(done.id, "Queued", "the lead queued the work");
     h.tasks.transition(done.id, "Implementing", "work started");
     h.tasks.transition(done.id, "Done", "merged outside Hephaestus");
     const stuck = h.tasks.create({ repo: "octo/lib", issueNumber: 6, title: "Fix a bug" });
@@ -716,9 +736,11 @@ describe("get_factory_chart", () => {
     const merged = h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "a" });
     h.tasks.update(merged.id, { prNumber: 11 });
     h.tasks.recordMerge("octo/app", 11, "sha", merged.id, false);
+    h.tasks.transition(merged.id, "Queued", "the lead queued the work");
     h.tasks.transition(merged.id, "Implementing", "work started");
     h.tasks.transition(merged.id, "Done", "merged");
     const bare = h.tasks.create({ repo: "octo/app", issueNumber: 2, title: "b" });
+    h.tasks.transition(bare.id, "Queued", "the lead queued the work");
     h.tasks.transition(bare.id, "Implementing", "work started");
     h.tasks.transition(bare.id, "Done", "merged outside Hephaestus");
 

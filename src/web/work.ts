@@ -87,7 +87,6 @@ const DOT = ' <span aria-hidden="true">&middot;</span> ';
 const WITH_LEAD = "With the lead";
 /** The board's lanes, in the order work moves through them: the task page's steps, then the two holds. */
 const LANES = [
-  "Admitted",
   "Implementing",
   "Reviewing",
   "Testing",
@@ -129,6 +128,9 @@ const EVENT_TITLES: Record<string, string> = {
   "escalated:owner": "Escalated to you",
   held: "Put on hold on the Hermes board",
   admitted: "Admitted",
+  deferred: "Deferred by the lead",
+  undeferred: "Back with the lead",
+  "queue:moved": "Moved in the queue",
   error: "Error",
   waiting: "Waiting",
   "thread:implement": "Implement thread started",
@@ -191,11 +193,37 @@ function needsOwner(item: Task): boolean {
   return item.stage === "Escalated" && item.escalatedTo === "owner";
 }
 
+/** Admitted or queued: no thread has started for it yet. */
+function waitingToStart(item: Task): boolean {
+  return item.stage === "Admitted" || item.stage === "Queued";
+}
+
+/** 1st, 2nd, 3rd, 4th, ..., 11th, 12th, 13th, 21st. */
+function ordinal(n: number): string {
+  const tens = n % 100;
+  const suffix = tens >= 11 && tens <= 13 ? "th" : ({ 1: "st", 2: "nd", 3: "rd" }[n % 10] ?? "th");
+  return `${String(n)}${suffix}`;
+}
+
+/** Why a deferred task waits, as the lead gave it. */
+function deferText(item: Task): string {
+  const until =
+    item.deferAfter === null
+      ? "Until a task finishes"
+      : `Until task ${String(item.deferAfter)} is finished`;
+  return `${until}: ${item.deferReason ?? ""}`;
+}
+
+/** Each queued task's place in the queue, 1 first. */
+function queuePlaces(factory: FactoryPages): Map<number, number> {
+  return new Map(factory.tasks.queue().map((item, index) => [item.id, index + 1]));
+}
+
 function times(count: number): string {
   return `${String(count)} ${count === 1 ? "time" : "times"}`;
 }
 
-type TabName = "needs" | "active" | "finished" | "all";
+type TabName = "needs" | "queue" | "active" | "finished" | "all";
 
 function tabHref(tab: TabName): string {
   return tab === "active" ? "/work" : `/work?tab=${tab}`;
@@ -204,6 +232,35 @@ function tabHref(tab: TabName): string {
 /** The task list as rows in columns, each row a link to its task. */
 function taskRows(items: Task[], lines: Map<number, string>, now: number, none: string): string {
   if (items.length === 0) return empty(none);
+  return gridRows(items, (item) => item.waiting ?? lines.get(item.id) ?? "", now);
+}
+
+/**
+ * The tasks waiting to start: the queue in the lead's order, then the
+ * admitted tasks the lead has not queued or deferred, then the deferred ones.
+ */
+function queueSections(items: Task[], places: Map<number, number>, now: number): string {
+  const queued = items
+    .filter((item) => item.stage === "Queued")
+    .sort((a, b) => (places.get(a.id) ?? 0) - (places.get(b.id) ?? 0));
+  const admitted = items.filter((item) => item.stage === "Admitted").sort((a, b) => a.id - b.id);
+  const untriaged = admitted.filter((item) => item.deferReason === null);
+  const deferred = admitted.filter((item) => item.deferReason !== null);
+  if (queued.length + admitted.length === 0) return empty("No task is waiting to start.");
+  const part = (title: string, list: Task[], why: (item: Task) => string): string =>
+    list.length === 0 ? "" : section({ title, count: list.length, body: gridRows(list, why, now) });
+  return (
+    part("Queued", queued, (item) => {
+      const place = places.get(item.id);
+      const where = place === undefined ? "" : `${ordinal(place)} in the queue`;
+      return [where, item.waiting ?? ""].filter((text) => text !== "").join(". ");
+    }) +
+    part("Waiting for the lead", untriaged, () => "Not queued or deferred yet") +
+    part("Deferred", deferred, deferText)
+  );
+}
+
+function gridRows(items: Task[], why: (item: Task) => string, now: number): string {
   return gridRowList(
     [
       { label: "Task" },
@@ -212,13 +269,13 @@ function taskRows(items: Task[], lines: Map<number, string>, now: number, none: 
       { label: "Updated", right: true, className: "muted" },
     ],
     items.map((item) => {
-      const why = item.waiting ?? lines.get(item.id) ?? "";
+      const reason = why(item);
       return {
         href: `/work/${String(item.id)}`,
         cells: [
           rowTitle(
             taskLabel(item),
-            `${escapeHtml(item.repo)}${why === "" ? "" : `${DOT}${escapeHtml(why)}`}`,
+            `${escapeHtml(item.repo)}${reason === "" ? "" : `${DOT}${escapeHtml(reason)}`}`,
           ),
           stagePill(item),
           item.prNumber === null ? "-" : `#${String(item.prNumber)}`,
@@ -259,6 +316,7 @@ function board(items: Task[], lines: Map<number, string>): string {
 /** The steps the task page shows. Testing and Merging are both the internal Merging stage. */
 const STEPS = [
   "Admitted",
+  "Queued",
   "Implementing",
   "Reviewing",
   "Testing",
@@ -302,17 +360,19 @@ function stepIndex(item: Task, held: Stage, events: TaskEvent[]): number {
   switch (held) {
     case "Admitted":
       return 0;
-    case "Implementing":
+    case "Queued":
       return 1;
-    case "Reviewing":
+    case "Implementing":
       return 2;
+    case "Reviewing":
+      return 3;
     case "Merging":
-      return pastChecks(item, events) ? 4 : 3;
+      return pastChecks(item, events) ? 5 : 4;
     case "Done":
-      return 6;
+      return 7;
     default:
       // Validating, and Reverting, which undoes a merge that failed validation.
-      return 5;
+      return 6;
   }
 }
 
@@ -321,7 +381,11 @@ function tracker(item: Task, held: Stage, events: TaskEvent[]): { html: string; 
   const current = stepIndex(item, held, events);
   const finished = item.stage === "Done";
   const stopped = item.stage === "Abandoned";
-  const holding = item.stage === "Escalated" || item.stage === "Reverting" || item.waiting !== null;
+  const holding =
+    item.stage === "Escalated" ||
+    item.stage === "Reverting" ||
+    item.waiting !== null ||
+    (item.stage === "Admitted" && item.deferReason !== null);
   const steps = STEPS.map((name, index) => {
     const done = finished && index === current;
     const state = done
@@ -334,7 +398,7 @@ function tracker(item: Task, held: Stage, events: TaskEvent[]): { html: string; 
     const link =
       index === 0
         ? ""
-        : index === 2 && item.rounds > 0
+        : index === 3 && item.rounds > 0
           ? `<span class="link loop" title="Sent back to Implementing ${times(item.rounds)}"><i></i>${icon("loop")}${String(item.rounds)}x<span class="sr-only"> sent back</span><i></i></span>`
           : '<span class="link"><i></i></span>';
     const mark =
@@ -389,7 +453,9 @@ function trackNote(item: Task, step: string, events: TaskEvent[], now: number): 
           : " The next one goes to the lead.";
     return `<strong>Attempt ${String(item.rounds + 1)}.</strong> Sent back to Implementing ${times(item.rounds)}.${next}`;
   }
-  return step === "Admitted" ? "Not started." : "First attempt, not sent back.";
+  return step === "Admitted" || step === "Queued"
+    ? "Not started."
+    : "First attempt, not sent back.";
 }
 
 /**
@@ -490,7 +556,7 @@ function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string
 }
 
 /** The callout under the tracker: what the task waits on, and the owner's actions when it waits on them. */
-function taskCallout(item: Task, back: string): string {
+function taskCallout(item: Task, back: string, place: number | undefined): string {
   const id = String(item.id);
   const reason = withShortShas(item.reason ?? "");
   if (needsOwner(item)) {
@@ -504,6 +570,17 @@ function taskCallout(item: Task, back: string): string {
   }
   if (item.stage === "Escalated") return callout("info", "With the lead", reason);
   if (item.stage === "Abandoned") return callout("info", "Abandoned", reason);
+  if (item.stage === "Admitted" && item.deferReason !== null) {
+    return callout("info", "Deferred", escapeHtml(deferText(item)));
+  }
+  if (item.stage === "Queued") {
+    const where = place === undefined ? "In the queue." : `${ordinal(place)} in the queue.`;
+    return callout(
+      "info",
+      "Queued",
+      `${where}${item.waiting === null ? "" : ` ${withShortShas(item.waiting)}`}`,
+    );
+  }
   if (item.waiting !== null) return callout("info", "Waiting", withShortShas(item.waiting));
   return "";
 }
@@ -801,7 +878,10 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const project = shell?.project;
         const requested = url.searchParams.get("tab");
         const tab: TabName =
-          requested === "needs" || requested === "finished" || requested === "all"
+          requested === "needs" ||
+          requested === "queue" ||
+          requested === "finished" ||
+          requested === "all"
             ? requested
             : "active";
         const boardView = tab === "active" && url.searchParams.get("view") === "board";
@@ -813,7 +893,10 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const issues = read("issues", () => factory.intake.issues().filter(inProject));
         const all = tasks.ok ? tasks.value : [];
         const mine = all.filter(needsOwner);
-        const active = all.filter((item) => !isFinished(item) && !needsOwner(item));
+        const upcoming = all.filter(waitingToStart);
+        const active = all.filter(
+          (item) => !isFinished(item) && !needsOwner(item) && !waitingToStart(item),
+        );
         const finished = all.filter(isFinished);
         const waiting = (issues.ok ? issues.value : []).filter(
           (issue) =>
@@ -870,6 +953,14 @@ export function workRoutes(factory: FactoryPages): Route[] {
                 ));
         } else if (!tasks.ok) {
           body = empty("Tasks could not be read.");
+        } else if (tab === "queue") {
+          const places = read("the queue", () => queuePlaces(factory));
+          failed ||= !places.ok;
+          body = queueSections(
+            upcoming,
+            places.ok ? places.value : new Map<number, number>(),
+            now(),
+          );
         } else if (tab === "active") {
           const running = read("running threads", () => factory.pipeline.runningThreads());
           const blocked = read("the thread caps", () => factory.pipeline.blockedBecause(undefined));
@@ -939,6 +1030,12 @@ export function workRoutes(factory: FactoryPages): Route[] {
                 label: "Needs you",
                 count: mine.length + waiting.length,
                 current: tab === "needs",
+              },
+              {
+                href: tabHref("queue"),
+                label: "Queue",
+                count: upcoming.length,
+                current: tab === "queue",
               },
               {
                 href: tabHref("active"),
@@ -1155,6 +1252,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
         );
         const labels = workerLabels(factory);
         const back = `/work/${String(id)}`;
+        const places =
+          item.stage === "Queued" ? read("the queue", () => queuePlaces(factory)) : undefined;
+        const place = places?.ok === true ? places.value.get(id) : undefined;
         const held = heldStage(item, events.ok ? events.value : undefined);
         const track =
           held === undefined ? undefined : tracker(item, held, events.ok ? events.value : []);
@@ -1196,7 +1296,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
               track === undefined
                 ? ""
                 : `${track.html}<p class="track-note">${trackNote(item, track.step, events.ok ? events.value : [], now())}</p>`
-            }${taskCallout(item, back)}<div class="cols">${section({
+            }${taskCallout(item, back, place)}<div class="cols">${section({
               title: "Details",
               body: details(item, labels, now()),
             })}${section({

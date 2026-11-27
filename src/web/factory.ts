@@ -81,6 +81,7 @@ export interface FactoryPages {
 /** Stages in the order work moves through them. */
 export const ACTIVE_STAGES: readonly Stage[] = [
   "Admitted",
+  "Queued",
   "Implementing",
   "Reviewing",
   "Merging",
@@ -90,6 +91,7 @@ export const ACTIVE_STAGES: readonly Stage[] = [
 /** Task stages the owner can abandon from, as the stage diagram allows. */
 const ABANDONABLE: readonly Stage[] = [
   "Admitted",
+  "Queued",
   "Implementing",
   "Reviewing",
   "Merging",
@@ -165,7 +167,9 @@ export function stagePill(task: Task): string {
     case "Reverting":
       return statusText("bad", "Reverting");
     case "Admitted":
-      return statusText("wait", "Admitted");
+      return statusText("wait", task.deferReason === null ? "Admitted" : "Deferred");
+    case "Queued":
+      return statusText("wait", "Queued");
     default:
       return statusText(task.waiting === null ? "run" : "wait", taskStage(task));
   }
@@ -357,7 +361,7 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
   "issue-filed": {
     kind: "info",
     title: "Issue filed and admitted",
-    text: "It has a task. The lead starts it, or Hephaestus does after the auto-start delay.",
+    text: "It has a task. The lead queues it or defers it, and it starts when its turn in the queue comes.",
   },
   "issue-held": {
     kind: "info",

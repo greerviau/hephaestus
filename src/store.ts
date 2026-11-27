@@ -336,6 +336,32 @@ const MIGRATIONS: Migration[] = [
    UPDATE tasks SET queued_at = updated_at WHERE stage = 'Admitted' AND brief IS NOT NULL;`,
   // "Planner" became "Communicator". The files move when the factory Hermes root is next synced.
   renamePlannerInStore,
+  // The lead's queue of work waiting to start, in the lead's order, and its deferrals. A task
+  // whose start was asked for before the queue existed waited as Admitted with a brief, or in
+  // Implementing with no thread; both move to the queue, oldest request first. A task with any
+  // launch recorded keeps its stage, since T3 may have its thread.
+  `ALTER TABLE tasks ADD COLUMN queue_order INTEGER;
+   ALTER TABLE tasks ADD COLUMN defer_reason TEXT;
+   ALTER TABLE tasks ADD COLUMN defer_after INTEGER;
+   ALTER TABLE tasks ADD COLUMN defer_mark INTEGER;
+   ALTER TABLE tasks ADD COLUMN triage_since TEXT;
+   ALTER TABLE tasks ADD COLUMN triage_alerted INTEGER NOT NULL DEFAULT 0;
+   CREATE TEMP TABLE queued_on_upgrade AS
+     SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(queued_at, updated_at), id) AS place
+     FROM tasks
+     WHERE ((stage = 'Implementing' AND implement_thread IS NULL AND started_at IS NULL)
+            OR (stage = 'Admitted' AND brief IS NOT NULL))
+       AND NOT EXISTS (SELECT 1 FROM factory_launches l
+                       WHERE l.task_id = CAST(tasks.id AS TEXT) AND l.status IN ('pending', 'launched'));
+   UPDATE tasks SET stage = 'Queued', worker_env = NULL, waiting = NULL, version = version + 1,
+     queue_order = (SELECT place FROM queued_on_upgrade q WHERE q.id = tasks.id)
+   WHERE id IN (SELECT id FROM queued_on_upgrade);
+   INSERT INTO task_events (task_id, at, kind, detail)
+     SELECT id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'stage:Queued',
+            'moved to the queue: it had not started a thread'
+     FROM queued_on_upgrade;
+   DROP TABLE queued_on_upgrade;
+   ALTER TABLE tasks DROP COLUMN queued_at;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

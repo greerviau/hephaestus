@@ -42,7 +42,7 @@ const FACTORY_FIELDS = {
   "limits.threadsPerWorker": "2",
   "limits.threads": "4",
   "limits.startsPerDay": "40",
-  autoStartMinutes: "10",
+  triageAlertMinutes: "30",
 };
 
 const MODEL_FIELDS = {
@@ -137,7 +137,7 @@ describe("Factory tab", () => {
 
     expect(html).toContain('action="/config/factory"');
     expect(html).toContain('name="limits.threads" min="0" step="1" value="4"');
-    expect(html).toContain('name="autoStartMinutes" min="0" step="1" value="10"');
+    expect(html).toContain('name="triageAlertMinutes" min="0" step="1" value="30"');
     expect(html).toContain('name="cron.improver.nightly" value="0 3 * * *"');
     expect(html).toContain('<label for="f-threads">Threads in all</label>');
     expect(html).toContain("Deploy now");
@@ -158,7 +158,7 @@ describe("Factory tab", () => {
       "limits.threadsPerWorker": "1",
       "limits.threads": "2",
       "limits.startsPerDay": "10",
-      autoStartMinutes: "0",
+      triageAlertMinutes: "0",
       "cron.improver.nightly": "every 12h",
       deploy: "on",
     });
@@ -175,7 +175,7 @@ describe("Factory tab", () => {
       threads: 2,
       startsPerDay: 10,
     });
-    expect(saved?.document.factory.autoStartMinutes).toBe(0);
+    expect(saved?.document.factory.triageAlertMinutes).toBe(0);
     expect(saved?.document.factory.models.codex).toEqual(withCron.factory.models.codex);
     expect(saved?.document.roles.improver.cron?.[0]?.schedule).toBe("every 12h");
   });

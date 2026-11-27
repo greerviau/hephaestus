@@ -187,7 +187,10 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         }
 
         const isWaiting = (item: Task): boolean =>
-          item.waiting !== null || item.stage === "Admitted" || item.stage === "Escalated";
+          item.waiting !== null ||
+          item.stage === "Admitted" ||
+          item.stage === "Queued" ||
+          item.stage === "Escalated";
         const running = inProgress.filter((item) => !isWaiting(item)).length;
         const waiting = inProgress.length - running;
 

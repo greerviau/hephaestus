@@ -1,16 +1,17 @@
 ---
 name: write-brief
-description: Use when starting or restarting a factory task with start_work, to write the brief the engineer works from.
+description: Use when queuing a factory task with queue_work or restarting one with start_work, to write the brief the engineer works from.
 ---
 
 # write-brief
 
 The engineer reads the issue and your brief, and nothing else. A good brief saves a review round; a vague one costs one.
 
-## Before you start a task
+## Before you queue a task
 
-- Read the issue and its acceptance criteria. When the criteria cannot be checked, or the issue leaves a decision only the owner can make, escalate instead of starting.
-- Read `list_tasks`. Do not start a task that depends on one that is escalated or stuck, and do not start two tasks that change the same code side by side.
+- Read the issue and its acceptance criteria. When the criteria cannot be checked, or the issue leaves a decision only the owner can make, escalate instead of queuing.
+- Read `list_tasks`. Defer a task that depends on one that is escalated, stuck, or not finished, naming that task, and do not queue two tasks that change the same code side by side.
+- Decide where the task goes in the queue. Put it before queued tasks it should start ahead of, such as a fix other tasks wait on, and at the end otherwise.
 
 ## The brief
 

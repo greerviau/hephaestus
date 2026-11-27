@@ -32,7 +32,7 @@ function admitted(h: Harness): number {
 
 /** Starts the task and takes it to Reviewing with PR 5 at SHA. */
 async function toReview(h: Harness, id: number): Promise<void> {
-  await h.pipeline.startWork(id, "Add the flag to the CLI.");
+  await h.pipeline.queue(id, "Add the flag to the CLI.");
   h.github.prs.set(5, pr(5, SHA));
   h.finish("t1", implementResult(5, SHA));
   await h.pipeline.tick();
@@ -56,7 +56,7 @@ function setupThread(h: Harness, threadId: string): void {
 /** A task the lead restarted while the factory was paused, so its new brief waits to be sent. */
 async function queuedRestart(h: Harness): Promise<number> {
   const id = admitted(h);
-  await h.pipeline.startWork(id, "brief");
+  await h.pipeline.queue(id, "brief");
   h.tasks.update(id, { prNumber: 5, headSha: SHA });
   h.github.prs.set(5, pr(5, SHA));
   await h.pipeline.escalateToOwner(id, "check the PR");
@@ -72,7 +72,7 @@ describe("Pipeline", () => {
     const id = admitted(h);
     h.tasks.update(id, { branch: "factory/task-1" });
 
-    await h.pipeline.startWork(id, "Add the flag to the CLI.");
+    await h.pipeline.queue(id, "Add the flag to the CLI.");
 
     expect(h.t3.launches[0]?.workspace).toMatchObject({ branch: "factory/task-1" });
     expect(h.t3.launches[0]?.message).toContain("refs/hephaestus/evidence/task-1");
@@ -83,7 +83,7 @@ describe("Pipeline", () => {
     const h = harness();
     const id = admitted(h);
 
-    await h.pipeline.startWork(id, "Add the flag to the CLI.");
+    await h.pipeline.queue(id, "Add the flag to the CLI.");
     const implement = h.t3.launches[0];
     expect(implement).toMatchObject({
       environmentId: "w1",
@@ -166,7 +166,7 @@ describe("Pipeline", () => {
     ] as const) {
       const h = harness();
       const id = admitted(h);
-      await h.pipeline.startWork(id, "brief");
+      await h.pipeline.queue(id, "brief");
       h.finish("t1", text, status);
       await h.pipeline.tick();
       expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
@@ -177,7 +177,7 @@ describe("Pipeline", () => {
   it("waits on a usage limit instead of escalating, and follows the thread when T3 resumes it", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.t3.states.set("t1", {
       status: "failed",
       latestRunId: "r1",
@@ -245,7 +245,7 @@ describe("Pipeline", () => {
   it("takes a limit reported as a completed reply for a usage limit too", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.t3.states.set("t1", { status: "completed", latestRunId: "r1", snoozedUntil: null });
     h.finish("t1", "5-hour limit reached - resets 3pm");
     await h.pipeline.tick();
@@ -259,7 +259,7 @@ describe("Pipeline", () => {
   it("escalates a short reply about another service's rate limit", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.finish("t1", "Blocked: the GitHub API rate limit is hit, retry later.");
     await h.pipeline.tick();
     expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
@@ -271,13 +271,13 @@ describe("Pipeline", () => {
     });
     h.ready.push({ environmentId: "w2", label: "w2", home: "/home/w" });
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     expect(h.t3.launches[0]?.environmentId).toBe("w1");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
     expect(h.tasks.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
-    await h.pipeline.startWork(second, "brief");
+    await h.pipeline.queue(second, "brief");
     expect(h.t3.launches[1]?.environmentId).toBe("w2");
   });
 
@@ -286,7 +286,7 @@ describe("Pipeline", () => {
       config.factory.limits.threads = 1;
     });
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
     // Another task with the lead, which never got a thread.
@@ -300,7 +300,7 @@ describe("Pipeline", () => {
   it("does not continue a thread on a usage limit while the factory is paused", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.limit("t1");
     await h.pipeline.tick();
     h.pipeline.setPaused(true);
@@ -320,7 +320,7 @@ describe("Pipeline", () => {
   it("reads T3 again a minute after a failed read about a usage limit, and escalates a thread T3 lost", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.limit("t1");
     await h.pipeline.tick();
     h.t3.stateFailures = 1;
@@ -344,11 +344,10 @@ describe("Pipeline", () => {
   it("sends a task the lead parked on the Hermes board to the owner, with the lead's reason on the task", async () => {
     const h = harness((config) => {
       config.factory.limits.threads = 1;
-      config.factory.autoStartMinutes = 10;
     });
     const escalated = admitted(h);
     h.tasks.update(escalated, { hermesTaskId: "t_escalated" });
-    await h.pipeline.startWork(escalated, "brief");
+    await h.pipeline.queue(escalated, "brief");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
     expect(h.tasks.get(escalated)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
@@ -361,7 +360,6 @@ describe("Pipeline", () => {
     h.setClock(Date.parse("2026-11-25T12:30:00Z"));
     await h.pipeline.tick();
 
-    // The auto-start does not override the hold.
     expect(h.t3.launches).toHaveLength(1);
     for (const id of [escalated, waiting]) {
       expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
@@ -382,7 +380,7 @@ describe("Pipeline", () => {
     for (const text of chat) expect(text).not.toMatch(/planner|lead|improver/i);
     // Neither holds a thread slot while it waits for the owner.
     const third = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Third" }).id;
-    await h.pipeline.startWork(third, "brief");
+    await h.pipeline.queue(third, "brief");
     expect(h.tasks.get(third)).toMatchObject({ stage: "Implementing", waiting: null });
 
     // Sent back, the task is unblocked and stays with the lead. Each read runs the Hermes CLI,
@@ -396,32 +394,6 @@ describe("Pipeline", () => {
     expect(h.tasks.get(escalated)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
   });
 
-  it("reads the board before an auto-start, and starts nothing while it cannot", async () => {
-    const h = harness((config) => {
-      config.factory.autoStartMinutes = 10;
-    });
-    const id = admitted(h);
-    h.tasks.update(id, { hermesTaskId: "t_1" });
-    h.setClock(Date.parse("2026-11-25T12:09:40Z"));
-    await h.pipeline.tick();
-    expect(h.hermes.reads).toBe(1);
-
-    // Under a minute after the last read, Hermes cannot read the task.
-    h.hermes.readFails = true;
-    h.setClock(Date.parse("2026-11-25T12:10:00Z"));
-    await h.pipeline.tick();
-    expect(h.t3.launches).toHaveLength(0);
-    expect(h.tasks.get(id)).toMatchObject({ stage: "Admitted" });
-    expect(h.tasks.get(id).waiting).toMatch(/Hermes board could not be read/);
-
-    h.hermes.readFails = false;
-    h.hermes.parked.set("t_1", "Waiting on task 5 to merge.");
-    h.setClock(Date.parse("2026-11-25T12:10:20Z"));
-    await h.pipeline.tick();
-    expect(h.t3.launches).toHaveLength(0);
-    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
-  });
-
   it("takes a started task off the lead's queue on the board before any thread runs", async () => {
     // The worker has a free task slot but no free thread, so a started task waits for a thread.
     const h = harness((config) => {
@@ -429,16 +401,16 @@ describe("Pipeline", () => {
       config.factory.limits.tasksPerWorker = 3;
     });
     const running = admitted(h);
-    await h.pipeline.startWork(running, "brief");
+    await h.pipeline.queue(running, "brief");
     expect(h.t3.launches).toHaveLength(1);
     const id = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Next" }).id;
     h.tasks.update(id, { hermesTaskId: "t_1" });
 
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
 
-    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", implementThread: null });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Queued", implementThread: null });
     expect(h.t3.launches).toHaveLength(1);
-    expect(h.board).toEqual(["t_1 Implementing"]);
+    expect(h.board).toEqual(["t_1 Queued"]);
 
     // A task held before its first thread, then sent back, is restarted with no thread to resume.
     const held = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Held" }).id;
@@ -446,10 +418,10 @@ describe("Pipeline", () => {
     h.hermes.parked.set("t_2", "Waiting on task 1.");
     await h.pipeline.tick();
     await h.pipeline.sendToLead(held, "go on");
-    await h.pipeline.startWork(held, "brief");
+    await h.pipeline.queue(held, "brief");
 
     expect(h.t3.launches).toHaveLength(1);
-    expect(h.board.at(-1)).toBe("t_2 Implementing");
+    expect(h.board.at(-1)).toBe("t_2 Queued");
   });
 
   it("keeps a task with the owner when the board cannot take it back for the lead", async () => {
@@ -473,7 +445,7 @@ describe("Pipeline", () => {
     const h = harness();
     const id = admitted(h);
     h.tasks.update(id, { hermesTaskId: "t_lead" });
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
     expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
@@ -492,17 +464,17 @@ describe("Pipeline", () => {
       config.factory.limits.tasksPerWorker = 3;
     });
     const limited = admitted(h);
-    await h.pipeline.startWork(limited, "brief");
+    await h.pipeline.queue(limited, "brief");
     h.limit("t1");
     await h.pipeline.tick();
     const failed = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Second" }).id;
-    await h.pipeline.startWork(failed, "brief");
+    await h.pipeline.queue(failed, "brief");
     h.finish("t2", "", "failed");
     await h.pipeline.tick();
     expect(h.tasks.get(failed)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
 
     const third = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Third" }).id;
-    await h.pipeline.startWork(third, "brief");
+    await h.pipeline.queue(third, "brief");
 
     expect(h.tasks.get(third).waiting).toBe(
       "The limit of 2 running factory threads is reached, counting 1 task with the lead and 1 waiting for a usage limit to reset.",
@@ -514,11 +486,11 @@ describe("Pipeline", () => {
       config.factory.limits.threads = 1;
     });
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     h.limit("t1");
     await h.pipeline.tick();
     const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
-    await h.pipeline.startWork(second, "brief");
+    await h.pipeline.queue(second, "brief");
     expect(h.t3.launches).toHaveLength(1);
     expect(h.tasks.get(second).waiting).toBe(
       "The limit of 1 running factory threads is reached, counting 1 task waiting for a usage limit to reset.",
@@ -541,30 +513,6 @@ describe("Pipeline", () => {
     await h.pipeline.escalateToOwner(first, "needs a decision");
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(2);
-  });
-
-  it("keeps an admitted task admitted while paused, and starts it with the lead's brief on resume", async () => {
-    const h = harness((config) => {
-      config.factory.autoStartMinutes = 10;
-    });
-    const id = admitted(h);
-    h.pipeline.setPaused(true);
-    h.setClock(Date.parse("2026-11-25T12:11:00Z"));
-    await h.pipeline.tick();
-    expect(h.tasks.get(id).stage).toBe("Admitted");
-
-    await h.pipeline.startWork(id, "Use the v2 parser.");
-    expect(h.tasks.get(id)).toMatchObject({
-      stage: "Admitted",
-      waiting: "The factory is paused.",
-      brief: "Use the v2 parser.",
-    });
-    expect(h.t3.launches).toHaveLength(0);
-
-    h.pipeline.setPaused(false);
-    await h.pipeline.tick();
-    expect(h.tasks.get(id).stage).toBe("Implementing");
-    expect(h.t3.launches[0]?.message).toContain("Use the v2 parser.");
   });
 
   it("does not take a review of an older head commit", async () => {
@@ -605,7 +553,7 @@ describe("Pipeline", () => {
       config.projects["octo/app"] = { policy: { preset: "yolo", overrides: {} } };
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
@@ -633,7 +581,7 @@ describe("Pipeline", () => {
     });
     const first = admitted(h);
     h.pipeline.setPaused(true);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     expect(h.t3.launches).toHaveLength(0);
     expect(h.tasks.get(first).waiting).toBe("The factory is paused.");
 
@@ -642,7 +590,7 @@ describe("Pipeline", () => {
     expect(h.t3.launches).toHaveLength(1);
 
     const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
-    await h.pipeline.startWork(second, "brief");
+    await h.pipeline.queue(second, "brief");
     expect(h.t3.launches).toHaveLength(1);
     expect(h.tasks.get(second).waiting).toMatch(/worker's limit of 1/);
   });
@@ -652,13 +600,13 @@ describe("Pipeline", () => {
       config.factory.limits.startsPerDay = 0;
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     expect(h.tasks.get(id).waiting).toMatch(/per day/);
 
     const other = harness();
     other.ready.length = 0;
     const task = admitted(other);
-    await other.pipeline.startWork(task, "brief");
+    await other.pipeline.queue(task, "brief");
     expect(other.tasks.get(task).waiting).toBe("No worker is ready.");
   });
 
@@ -706,7 +654,7 @@ describe("Pipeline", () => {
       };
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
@@ -734,7 +682,7 @@ describe("Pipeline", () => {
         config.projects["octo/app"] = { policy: { preset: "yolo", overrides: {} } };
       });
       const id = admitted(h);
-      await h.pipeline.startWork(id, "brief");
+      await h.pipeline.queue(id, "brief");
       h.github.prs.set(5, pr(5, SHA));
       h.finish("t1", implementResult(5, SHA));
       await h.pipeline.tick();
@@ -767,7 +715,7 @@ describe("Pipeline", () => {
       config.projects["octo/app"] = { policy: { preset: "yolo", overrides: {} } };
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
@@ -816,7 +764,7 @@ describe("Pipeline", () => {
       };
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
@@ -890,7 +838,7 @@ describe("Pipeline", () => {
       };
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
@@ -940,7 +888,7 @@ describe("Pipeline", () => {
     });
     const task = other.tasks.create({ repo: "Octo/App", issueNumber: 5, title: "Old casing" }).id;
     other.github.issues.set(5, { number: 5, title: "x", body: "", author: "x", state: "OPEN" });
-    await other.pipeline.startWork(task, "brief");
+    await other.pipeline.queue(task, "brief");
     expect(other.t3.launches).toHaveLength(1);
   });
 
@@ -1012,7 +960,7 @@ describe("Pipeline", () => {
   it("does not take a PR from another branch, and never reverts a merge it did not make", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.github.prs.set(6, pr(6, SHA, { headBranch: "someone/else" }));
     h.finish("t1", implementResult(6, SHA));
     await h.pipeline.tick();
@@ -1092,7 +1040,7 @@ describe("Pipeline", () => {
       taskId: String(id),
       kind: "implement",
     });
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     expect(h.t3.launches).toHaveLength(1);
     expect(h.t3.launches[0]?.clientRequestId).toBe(`hephaestus-implement-${String(id)}-0`);
   });
@@ -1237,7 +1185,7 @@ describe("Pipeline", () => {
   it("validates its own merge that a restarted implementer reports, and says when it cannot tell", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     // Hephaestus merged PR 5 on an earlier attempt, and the reply was lost.
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.github.ownMerges.add(MERGE);
@@ -1262,6 +1210,7 @@ describe("Pipeline", () => {
     const ids = [5, 6, 7].map((number) => {
       const id = h.tasks.create({ repo: "octo/app", issueNumber: number, title: "Work" }).id;
       const sha = String(number).repeat(40);
+      h.tasks.transition(id, "Queued", "the lead queued the work");
       h.tasks.transition(id, "Implementing", "work started", { prNumber: number, headSha: sha });
       h.tasks.transition(id, "Escalated", "to the owner: check the PR", {
         escalatedTo: "owner",
@@ -1292,7 +1241,7 @@ describe("Pipeline", () => {
   it("marks the implementer's result handled when its own merge is found, whichever read sees the marker", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     // A restarted task still carries the PR of its earlier attempt, which the scan reads.
     h.tasks.update(id, { prNumber: 5, headSha: SHA });
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
@@ -1315,7 +1264,7 @@ describe("Pipeline", () => {
   it("records the PR and head of an outside merge a restarted implementer reports", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     // The task still names the PR of an earlier attempt; the implementer reports a new one,
     // which someone merged by hand.
     h.tasks.update(id, { prNumber: 4, headSha: SHA2 });
@@ -1356,7 +1305,7 @@ describe("Pipeline", () => {
   it("settles a restart queued before GitHub reported the merge, instead of sending it", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.tasks.update(id, { prNumber: 5, headSha: SHA });
     h.github.prs.set(5, pr(5, SHA));
     await h.pipeline.escalateToOwner(id, "check the PR");
@@ -1402,6 +1351,8 @@ describe("Pipeline", () => {
       reads += 1;
       return state(repo, number);
     };
+    // Past the interval of the scan that ran when the task was queued.
+    h.setClock(Date.parse("2026-11-25T12:06:00Z"));
     await h.pipeline.tick();
     await h.pipeline.tick();
     await h.pipeline.tick();
@@ -1426,7 +1377,7 @@ describe("Pipeline", () => {
     };
     h.github.issues.set(6, { number: 6, title: "Other", body: "", author: "x", state: "OPEN" });
     const other = h.tasks.create({ repo: "octo/app", issueNumber: 6, title: "Other" }).id;
-    const otherStart = h.pipeline.startWork(other, "brief");
+    const otherStart = h.pipeline.queue(other, "brief");
     await new Promise((resolve) => setTimeout(resolve, 10));
 
     const sends = h.t3.sends.length;
@@ -1474,6 +1425,8 @@ describe("Pipeline", () => {
     const id = await queuedRestart(h);
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.github.pullRequest = () => Promise.reject(new Error("HTTP 503 from the checks API"));
+    // Past the interval of the scan that ran when the task was queued.
+    h.setClock(Date.parse("2026-11-25T12:06:00Z"));
     await h.pipeline.tick();
     expect(h.tasks.get(id)).toMatchObject({ stage: "Done", foreignMerge: true });
   });
@@ -1498,7 +1451,7 @@ describe("Pipeline", () => {
   it("restarts a task whose open PR's checks cannot be read", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.tasks.update(id, { prNumber: 5, headSha: SHA });
     h.github.prs.set(5, pr(5, SHA));
     await h.pipeline.escalateToOwner(id, "check the PR");
@@ -1511,7 +1464,7 @@ describe("Pipeline", () => {
   it("settles an unrecorded merge when the lead restarts the task, whoever merged it", async () => {
     const h = harness();
     const ours = admitted(h);
-    await h.pipeline.startWork(ours, "brief");
+    await h.pipeline.queue(ours, "brief");
     h.tasks.update(ours, { prNumber: 5, headSha: SHA });
     // The hand-back's read saw the PR still open; by start_work, GitHub reports the merge.
     await h.pipeline.escalateToOwner(ours, "check the PR");
@@ -1525,7 +1478,7 @@ describe("Pipeline", () => {
     // Merged by hand: the owner is told the task is done, not to approve it.
     const other = harness();
     const theirs = admitted(other);
-    await other.pipeline.startWork(theirs, "brief");
+    await other.pipeline.queue(theirs, "brief");
     other.tasks.update(theirs, { prNumber: 5, headSha: SHA });
     await other.pipeline.escalateToOwner(theirs, "checks fail");
     other.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
@@ -1557,7 +1510,7 @@ describe("Pipeline", () => {
 
     const other = harness();
     const task = admitted(other);
-    await other.pipeline.startWork(task, "brief");
+    await other.pipeline.queue(task, "brief");
     other.finish("t1", "no result block");
     await other.pipeline.tick();
     expect(other.tasks.get(task).stage).toBe("Escalated");
@@ -1583,7 +1536,7 @@ describe("Pipeline", () => {
     h.t3.settle = () => new Promise<void>(() => undefined);
     const id = admitted(h);
     await h.pipeline.tick();
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     // A second pass runs although the first settle never returned.
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(1);
@@ -1620,6 +1573,7 @@ describe("Pipeline", () => {
     setupThread(h, "old-1");
     setupThread(h, "old-2");
     const id = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Work" }).id;
+    h.tasks.transition(id, "Queued", "the lead queued the work");
     h.tasks.transition(id, "Implementing", "work started");
     const settle = h.t3.settle.bind(h.t3);
     h.t3.settle = (environmentId, threadId) => {
@@ -1690,7 +1644,7 @@ describe("Pipeline", () => {
   it("does not abandon a task that started work", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     expect((await h.pipeline.abandonUnstarted(id, "the issue was closed")).stage).toBe(
       "Implementing",
     );
@@ -1734,7 +1688,7 @@ describe("Pipeline", () => {
     const h = harness();
     const id = admitted(h);
     delete h.config.projects["octo/app"];
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     expect(h.t3.launches).toHaveLength(0);
     expect(h.tasks.get(id).waiting).toMatch(/no longer a factory project/);
   });
@@ -1745,7 +1699,7 @@ describe("Pipeline", () => {
       config.factory.limits.threads = 1;
     });
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.finish("t1", "", "waiting");
     await h.pipeline.tick();
     expect(h.tasks.get(id).stage).toBe("Escalated");
@@ -1767,23 +1721,10 @@ describe("Pipeline", () => {
     );
   });
 
-  it("starts an admitted task itself when the lead has not, after the configured delay", async () => {
-    const h = harness((config) => {
-      config.factory.autoStartMinutes = 10;
-    });
-    const id = admitted(h);
-    await h.pipeline.tick();
-    expect(h.t3.launches).toHaveLength(0);
-    h.setClock(Date.parse("2026-11-25T12:11:00Z"));
-    await h.pipeline.tick();
-    expect(h.tasks.get(id).stage).toBe("Implementing");
-    expect(h.t3.launches).toHaveLength(1);
-  });
-
   it("lets the lead restart an escalated task in its implement thread", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.finish("t1", "stuck", "completed");
     await h.pipeline.tick();
     expect(h.tasks.get(id).stage).toBe("Escalated");
@@ -1825,8 +1766,8 @@ describe("Pipeline usage-limit waits", () => {
     });
     const older = admitted(h);
     const limited = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
-    await h.pipeline.startWork(limited, "brief");
-    await h.pipeline.startWork(older, "brief");
+    await h.pipeline.queue(limited, "brief");
+    await h.pipeline.queue(older, "brief");
     expect(h.t3.launches).toHaveLength(1);
     // The follower records the thread as failed before the next pass reads its result.
     h.limit("t1");
@@ -1839,7 +1780,7 @@ describe("Pipeline usage-limit waits", () => {
   it("follows a thread T3 resumed and finished after the read about its usage limit failed", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.t3.stateFailures = 1;
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
@@ -1855,7 +1796,7 @@ describe("Pipeline usage-limit waits", () => {
   it("follows a thread T3 had already resumed when the pipeline first read it", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.t3.states.set("t1", { status: "running", latestRunId: "r2", snoozedUntil: null });
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
@@ -1869,20 +1810,32 @@ describe("Pipeline usage-limit waits", () => {
   it("does not continue a thread T3 resumed while the continue waited in the launch queue", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
-    // Another task's launch holds the launch queue while it reads its issue.
+    // Another task's restart holds the launch queue while it reads whether its PR merged.
+    const other = h.tasks.create({ repo: "octo/app", issueNumber: 6, title: "Again" }).id;
+    h.tasks.transition(other, "Escalated", "to the lead: try again", {
+      escalatedTo: "lead",
+      implementThread: "t-other",
+      workerEnv: "w1",
+      startedAt: "2026-11-25T12:00:00Z",
+      prNumber: 7,
+    });
+    h.github.prs.set(7, pr(7, SHA2));
     let release = (): void => undefined;
-    const issue = h.github.issue.bind(h.github);
-    h.github.issue = async (repo, number) => {
-      await new Promise<void>((resolve) => {
-        release = resolve;
-      });
-      return issue(repo, number);
+    let reads = 0;
+    const state = h.github.mergeState.bind(h.github);
+    h.github.mergeState = async (repo, number) => {
+      // The restart reads once before it moves the task, then again inside the launch queue.
+      if (number === 7 && ++reads === 2) {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+      }
+      return state(repo, number);
     };
-    const other = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     const starting = h.pipeline.startWork(other, "brief");
     await new Promise((resolve) => setImmediate(resolve));
     const passing = h.pipeline.tick();
@@ -1891,14 +1844,14 @@ describe("Pipeline usage-limit waits", () => {
     release();
     await starting;
     await passing;
-    expect(h.t3.sends).toHaveLength(0);
+    expect(h.t3.sends.filter((send) => send.threadId === "t1")).toHaveLength(0);
     expect(h.tasks.get(id)).toMatchObject({ limitUntil: null, stage: "Implementing" });
   });
 
   it("hands the lead a run cancelled before any output after a usage limit", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
@@ -1924,7 +1877,7 @@ describe("Pipeline usage-limit waits", () => {
   it("hands the lead a resumed run T3 reports cancelled before it wrote any item", async () => {
     const h = harness();
     const id = admitted(h);
-    await h.pipeline.startWork(id, "brief");
+    await h.pipeline.queue(id, "brief");
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
@@ -1940,7 +1893,7 @@ describe("Pipeline usage-limit waits", () => {
     for (const change of ["pause", "snooze"] as const) {
       const h = harness();
       const id = admitted(h);
-      await h.pipeline.startWork(id, "brief");
+      await h.pipeline.queue(id, "brief");
       h.limit("t1", undefined, "r1");
       await h.pipeline.tick();
       h.setClock(Date.parse("2026-11-25T12:31:00Z"));
@@ -1979,7 +1932,7 @@ describe("Pipeline usage-limit waits", () => {
     for (const [end, text, outcome] of cases) {
       const h = harness();
       const id = admitted(h);
-      await h.pipeline.startWork(id, "brief");
+      await h.pipeline.queue(id, "brief");
       if (end === "error") h.limit("t1", text);
       else h.finish("t1", text);
       await h.pipeline.tick();
@@ -1997,7 +1950,7 @@ describe("Pipeline usage-limit waits", () => {
     for (const end of ["error", "reply"] as const) {
       const h = harness();
       const id = admitted(h);
-      await h.pipeline.startWork(id, "brief");
+      await h.pipeline.queue(id, "brief");
       const text = "Blocked: GitHub API rate limit resets at 3 PM.";
       if (end === "error") h.limit("t1", text);
       else h.finish("t1", text);
@@ -2053,7 +2006,7 @@ describe("Pipeline task limit", () => {
     return h.tasks.create({ repo: "octo/app", issueNumber: 5, title }).id;
   }
 
-  it("keeps a started task admitted while its worker has a task in progress without a thread", async () => {
+  it("keeps a queued task queued while its worker has a task in progress without a thread", async () => {
     const h = oneTask();
     const first = admitted(h);
     await toReview(h, first);
@@ -2062,10 +2015,10 @@ describe("Pipeline task limit", () => {
     expect(h.tasks.get(first).stage).toBe("Validating");
     const second = another(h, "Second");
 
-    await h.pipeline.startWork(second, "brief two");
+    await h.pipeline.queue(second, "brief two");
 
     expect(h.tasks.get(second)).toMatchObject({
-      stage: "Admitted",
+      stage: "Queued",
       brief: "brief two",
       waiting: "The limit of 1 task in progress per worker is reached.",
     });
@@ -2075,14 +2028,14 @@ describe("Pipeline task limit", () => {
   it("counts a task with the lead, frees the slot of a task with the owner, and then starts the queued task", async () => {
     const h = oneTask();
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
     expect(h.tasks.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     const second = another(h, "Second");
-    await h.pipeline.startWork(second, "brief two");
+    await h.pipeline.queue(second, "brief two");
     await h.pipeline.tick();
-    expect(h.tasks.get(second).stage).toBe("Admitted");
+    expect(h.tasks.get(second).stage).toBe("Queued");
 
     await h.pipeline.escalateToOwner(first, "needs a decision");
     await h.pipeline.tick();
@@ -2091,41 +2044,41 @@ describe("Pipeline task limit", () => {
     expect(h.t3.launches.at(-1)?.message).toContain("brief two");
   });
 
-  it("starts the task that has waited longest, even when the lead starts a newer one", async () => {
+  it("starts the task ahead in the queue when a task slot frees", async () => {
     const h = oneTask();
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     const older = another(h, "Older");
     const newer = another(h, "Newer");
-    await h.pipeline.startWork(older, "older brief");
+    await h.pipeline.queue(older, "older brief");
     await h.pipeline.escalateToOwner(first, "needs a decision");
 
-    await h.pipeline.startWork(newer, "newer brief");
+    await h.pipeline.queue(newer, "newer brief");
 
-    expect(h.tasks.get(newer)).toMatchObject({
-      stage: "Admitted",
-      waiting:
-        "The limit of 1 task in progress per worker is reached; 1 task that has waited longer starts first.",
-    });
-    await h.pipeline.tick();
     expect(h.tasks.get(older).stage).toBe("Implementing");
-    expect(h.tasks.get(newer).stage).toBe("Admitted");
+    expect(h.tasks.get(newer)).toMatchObject({
+      stage: "Queued",
+      waiting: "The limit of 1 task in progress per worker is reached.",
+    });
   });
 
-  it("counts a started task on its worker before its thread launches", async () => {
+  it("holds no task slot for a queued task whose thread has not launched", async () => {
     const h = harness((config) => {
       config.factory.limits.tasksPerWorker = 1;
       config.factory.limits.threads = 0;
     });
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
-    expect(h.tasks.get(first)).toMatchObject({ stage: "Implementing", workerEnv: "w1" });
+    await h.pipeline.queue(first, "brief");
+    expect(h.tasks.get(first)).toMatchObject({ stage: "Queued", workerEnv: null });
     expect(h.t3.launches).toHaveLength(0);
     const second = another(h, "Second");
 
-    await h.pipeline.startWork(second, "brief two");
+    await h.pipeline.queue(second, "brief two");
 
-    expect(h.tasks.get(second).stage).toBe("Admitted");
+    expect(h.tasks.get(second)).toMatchObject({
+      stage: "Queued",
+      waiting: "The limit of 0 running factory threads is reached.",
+    });
   });
 
   it("puts a started task on the worker with room for both a task and a thread", async () => {
@@ -2147,7 +2100,7 @@ describe("Pipeline task limit", () => {
     place("Verifying too", "Validating", "w2");
     const task = admitted(h);
 
-    await h.pipeline.startWork(task, "brief");
+    await h.pipeline.queue(task, "brief");
 
     expect(h.tasks.get(task).workerEnv).toBe("w2");
     expect(h.t3.launches.at(-1)?.environmentId).toBe("w2");
@@ -2158,8 +2111,8 @@ describe("Pipeline task limit", () => {
       config.factory.limits.threads = 0;
     });
     const task = admitted(h);
-    await h.pipeline.startWork(task, "brief");
-    expect(h.tasks.get(task).workerEnv).toBe("w1");
+    await h.pipeline.queue(task, "brief");
+    expect(h.tasks.get(task).workerEnv).toBeNull();
     h.ready.splice(0, 1, { environmentId: "w2", label: "w2", home: "/home/w2" });
     h.config.factory.limits.threads = 4;
 
@@ -2172,9 +2125,10 @@ describe("Pipeline task limit", () => {
   it("launches a task with no worker yet only on a worker with a free task slot", async () => {
     const h = oneTask();
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     // A task started before workers were assigned at start.
     const legacy = another(h, "Legacy");
+    h.tasks.transition(legacy, "Queued", "the lead queued the work");
     h.tasks.transition(legacy, "Implementing", "test", { brief: "old brief" });
 
     await h.pipeline.tick();
@@ -2189,11 +2143,11 @@ describe("Pipeline task limit", () => {
   it("frees the slot of a task whose project was removed, and skips its queued tasks", async () => {
     const h = oneTask();
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     const removed = h.tasks.create({ repo: "octo/gone", issueNumber: 5, title: "Gone" }).id;
-    await h.pipeline.startWork(removed, "brief gone");
+    await h.pipeline.queue(removed, "brief gone");
     const next = another(h, "Next");
-    await h.pipeline.startWork(next, "brief next");
+    await h.pipeline.queue(next, "brief next");
     // The task of a repo that is not a factory project holds no place ahead of it.
     expect(h.tasks.get(next).waiting).toBe(
       "The limit of 1 task in progress per worker is reached.",
@@ -2207,31 +2161,33 @@ describe("Pipeline task limit", () => {
     expect(h.tasks.get(next).stage).toBe("Implementing");
   });
 
-  it("starts queued tasks in the order their starts were asked for", async () => {
+  it("starts queued tasks in the order the lead queued them", async () => {
     const h = oneTask();
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     const created = another(h, "Created first");
     const asked = another(h, "Asked first");
-    await h.pipeline.startWork(asked, "asked brief");
+    await h.pipeline.queue(asked, "asked brief");
     h.setClock(Date.parse("2026-11-25T12:05:00Z"));
-    await h.pipeline.startWork(created, "created brief");
-    expect(h.tasks.get(created).waiting).toMatch(/1 task that has waited longer starts first/);
+    await h.pipeline.queue(created, "created brief");
+    expect(h.tasks.get(created).waiting).toBe(
+      "The limit of 1 task in progress per worker is reached.",
+    );
 
     await h.pipeline.escalateToOwner(first, "needs a decision");
     await h.pipeline.tick();
 
     expect(h.tasks.get(asked).stage).toBe("Implementing");
-    expect(h.tasks.get(created).stage).toBe("Admitted");
+    expect(h.tasks.get(created).stage).toBe("Queued");
   });
 
   it("leaves a queued task unchanged on a pass that cannot start it", async () => {
     const h = oneTask();
     const first = admitted(h);
-    await h.pipeline.startWork(first, "brief");
+    await h.pipeline.queue(first, "brief");
     const queued = another(h, "Queued");
-    await h.pipeline.startWork(queued, "brief two");
-    expect(h.tasks.get(queued).stage).toBe("Admitted");
+    await h.pipeline.queue(queued, "brief two");
+    expect(h.tasks.get(queued).stage).toBe("Queued");
     const version = h.tasks.get(queued).version;
 
     await h.pipeline.tick();
@@ -2245,7 +2201,7 @@ describe("Pipeline task limit", () => {
       config.factory.limits.threads = 0;
     });
     const task = admitted(h);
-    await h.pipeline.startWork(task, "brief");
+    await h.pipeline.queue(task, "brief");
     // A launch T3 answered, recorded before the process stopped and the task got its thread.
     h.db
       .prepare(
@@ -2259,9 +2215,11 @@ describe("Pipeline task limit", () => {
 
     await h.pipeline.tick();
 
+    // The task takes up the thread that launch started, on the worker that started it.
     expect(h.tasks.get(task)).toMatchObject({
+      stage: "Implementing",
       workerEnv: "w1",
-      waiting: "The task's worker w1 is not ready.",
+      implementThread: "t9",
     });
     expect(h.t3.launches).toHaveLength(0);
   });
@@ -2269,6 +2227,7 @@ describe("Pipeline task limit", () => {
   it("records the worker of a task with none before its launch is sent", async () => {
     const h = oneTask();
     const legacy = admitted(h);
+    h.tasks.transition(legacy, "Queued", "the lead queued the work");
     h.tasks.transition(legacy, "Implementing", "test", { brief: "old brief" });
     const launch = h.t3.launchThread.bind(h.t3);
     let workerAtLaunch: string | null | undefined;

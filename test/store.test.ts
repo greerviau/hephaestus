@@ -11,6 +11,7 @@ import { openStore, renameCardWords } from "../src/store.js";
  * so this is their last form: the same tables, columns, and index under their old names.
  */
 function backToCardSchema(db: Database): void {
+  backToBeforeQueue(db);
   // queued_at came after the rename.
   db.exec(`ALTER TABLE tasks DROP COLUMN queued_at;
     ALTER TABLE tasks RENAME TO cards;
@@ -25,6 +26,17 @@ function backToCardSchema(db: Database): void {
     ALTER TABLE notifications RENAME COLUMN task_id TO card_id;
     DROP INDEX task_events_by_task;
     CREATE INDEX card_events_by_card ON card_events (card_id, id);`);
+}
+
+/** Puts a current database back into the shape it had before the lead's queue. */
+function backToBeforeQueue(db: Database): void {
+  db.exec(`ALTER TABLE tasks DROP COLUMN queue_order;
+    ALTER TABLE tasks DROP COLUMN defer_reason;
+    ALTER TABLE tasks DROP COLUMN defer_after;
+    ALTER TABLE tasks DROP COLUMN defer_mark;
+    ALTER TABLE tasks DROP COLUMN triage_since;
+    ALTER TABLE tasks DROP COLUMN triage_alerted;
+    ALTER TABLE tasks ADD COLUMN queued_at TEXT;`);
 }
 
 let dir: string | undefined;
@@ -70,7 +82,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 16)}`);
+    db.pragma(`user_version = ${String(latest - 17)}`);
     db.close();
 
     db = openStore(path);
@@ -79,10 +91,12 @@ describe("store migrations", () => {
       { id: 1, reverting: 1 },
       { id: 2, reverting: 0 },
     ]);
-    // A start asked for while paused, before queues existed, keeps its place in the queue.
-    expect(db.prepare("SELECT id, queued_at FROM tasks WHERE id > 2 ORDER BY id").all()).toEqual([
-      { id: 3, queued_at: "asked" },
-      { id: 4, queued_at: null },
+    // A start asked for while paused, before queues existed, goes to the queue.
+    expect(
+      db.prepare("SELECT id, stage, queue_order FROM tasks WHERE id > 2 ORDER BY id").all(),
+    ).toEqual([
+      { id: 3, stage: "Queued", queue_order: 1 },
+      { id: 4, stage: "Admitted", queue_order: null },
     ]);
     expect(db.pragma("user_version", { simple: true })).toBe(latest);
     db.close();
@@ -112,7 +126,7 @@ describe("store migrations", () => {
       INSERT INTO mcp_calls (role, tool, arguments, ok, result, at)
         VALUES ('lead', 'start_work', '{"card_id":8,"brief":"b"}', 1, '{"card_id":8,"stage":"Implementing"}', 'x'),
                ('lead', 'list_cards', '{}', 1, '[{"card_id":8,"title":"Rename the card"}]', 'x');`);
-    db.pragma(`user_version = ${String(latest - 3)}`);
+    db.pragma(`user_version = ${String(latest - 4)}`);
     db.close();
 
     db = openStore(path);
@@ -193,7 +207,8 @@ describe("store migrations", () => {
         INSERT INTO mcp_calls (role, tool, arguments, ok, result, at) VALUES ('planner', 'file_issue', '{}', 1, '{}', 'x'), ('lead', 'start_work', '{}', 1, '{}', 'x');
         INSERT INTO chat_changes (target, summary, conversation, state, after_text, proposed_at)
           VALUES ('persona:planner', 's', 'c', 'proposed', 'a', 'x'), ('instruction:factory', 's', 'c', 'proposed', 'a', 'x');`);
-      db.pragma(`user_version = ${String(latest - 1)}`);
+      backToBeforeQueue(db);
+      db.pragma(`user_version = ${String(latest - 2)}`);
     };
     const expectRenamed = (): void => {
       expect(db.pragma("user_version", { simple: true })).toBe(latest);
@@ -227,10 +242,51 @@ describe("store migrations", () => {
     db = openStore(path);
     expectRenamed();
     // Run again over the renamed rows, as after a crash between the rename and the version bump.
-    db.pragma(`user_version = ${String(latest - 1)}`);
+    backToBeforeQueue(db);
+    db.pragma(`user_version = ${String(latest - 2)}`);
     db.close();
     db = openStore(path);
     expectRenamed();
+    db.close();
+  });
+
+  it("moves a task that never launched a thread into the queue, oldest request first", () => {
+    dir = mkdtempSync(join(tmpdir(), "hephaestus-store-"));
+    const path = join(dir, "state.db");
+    let db = openStore(path);
+    const latest = db.pragma("user_version", { simple: true }) as number;
+    backToBeforeQueue(db);
+    db.exec(`INSERT INTO tasks (id, repo, title, stage, brief, implement_thread, started_at, worker_env, waiting, queued_at, created_at, updated_at)
+      VALUES (1, 'octo/app', 'waiting for a thread', 'Implementing', 'b', NULL, NULL, 'w1', 'The limit is reached.', NULL, 'x', '2026-11-25T12:03:00Z'),
+             (2, 'octo/app', 'running', 'Implementing', 'b', 't1', 'x', 'w1', NULL, NULL, 'x', 'x'),
+             (3, 'octo/app', 'launch reply lost', 'Implementing', 'b', NULL, NULL, 'w1', NULL, NULL, 'x', 'x'),
+             (4, 'octo/app', 'waiting for a task slot', 'Admitted', 'b', NULL, NULL, NULL, 'The limit is reached.', '2026-11-25T12:01:00Z', 'x', 'x'),
+             (5, 'octo/app', 'untriaged', 'Admitted', NULL, NULL, NULL, NULL, NULL, NULL, 'x', 'x'),
+             (6, 'octo/app', 'restarted, waiting for a slot', 'Implementing', 'b', NULL, 'x', 'w1', NULL, NULL, 'x', 'x'),
+             (7, 'octo/app', 'launched before a crash', 'Implementing', 'b', NULL, NULL, 'w1', NULL, NULL, 'x', 'x');
+      INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id, model, config_version, task_id, status, created_at, updated_at)
+      VALUES ('hephaestus-implement-3-0', 'w1', 'Task 3', 'p', 'm', 1, '3', 'pending', 'x', 'x'),
+             ('hephaestus-implement-7-0', 'w1', 'Task 7', 'p', 'm', 1, '7', 'launched', 'x', 'x');`);
+    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.close();
+
+    db = openStore(path);
+    expect(
+      db.prepare("SELECT id, stage, queue_order, worker_env, waiting FROM tasks ORDER BY id").all(),
+    ).toEqual([
+      { id: 1, stage: "Queued", queue_order: 2, worker_env: null, waiting: null },
+      { id: 2, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
+      { id: 3, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
+      { id: 4, stage: "Queued", queue_order: 1, worker_env: null, waiting: null },
+      { id: 5, stage: "Admitted", queue_order: null, worker_env: null, waiting: null },
+      { id: 6, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
+      { id: 7, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
+    ]);
+    expect(
+      db
+        .prepare("SELECT task_id FROM task_events WHERE kind = 'stage:Queued' ORDER BY task_id")
+        .all(),
+    ).toEqual([{ task_id: 1 }, { task_id: 4 }]);
     db.close();
   });
 

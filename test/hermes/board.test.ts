@@ -11,6 +11,7 @@ describe("kanbanStateFor", () => {
   it("maps task stages onto kanban states as the Hermes prototype proposed", () => {
     expect(kanbanStateFor("Admitted")).toBe("ready");
     for (const stage of [
+      "Queued",
       "Implementing",
       "Reviewing",
       "Merging",
@@ -85,6 +86,58 @@ describe("FactoryBoard", () => {
       "kanban --board factory comment --author=hephaestus -- t_1 stage=Implementing thread=thread-9",
       "kanban --board factory comment --author=hephaestus -- t_1 stage=Reviewing thread=thread-10",
     ]);
+  });
+
+  it("parks a deferred task as scheduled, from ready or from triage, with the reason", async () => {
+    const { hermes, board: b } = board();
+    let status = "running";
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status } }),
+    );
+    hermes.answer(
+      (args) => args.includes("schedule") || args.includes("move-task"),
+      () => {
+        status = "scheduled";
+        return JSON.stringify({ ok: true, status });
+      },
+    );
+
+    await b.park("t_1", "Deferred until a task finishes: later");
+    status = "triage";
+    await b.park("t_1", "Deferred until task 3 is finished: needs it");
+
+    expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
+      "kanban --board factory schedule -- t_1 deferred",
+      "kanban --board factory comment --author=hephaestus -- t_1 Deferred until a task finishes: later",
+      "hephaestus move-task --board=factory --to=scheduled -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 Deferred until task 3 is finished: needs it",
+    ]);
+  });
+
+  it("parks a deferred task though the note cannot be added", async () => {
+    const { hermes, board: b } = board();
+    let status = "ready";
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status } }),
+    );
+    hermes.answer(
+      (args) => args.includes("schedule"),
+      () => {
+        status = "scheduled";
+        return "";
+      },
+    );
+    hermes.answer(
+      (args) => args.includes("comment"),
+      () => {
+        throw new Error("database is locked");
+      },
+    );
+
+    await b.park("t_1", "Deferred until a task finishes: later");
+    expect(status).toBe("scheduled");
   });
 
   it("records Done only after the task completes, and archives for Abandoned", async () => {
@@ -238,39 +291,6 @@ describe("FactoryBoard", () => {
     );
 
     await expect(b.handBack("t_1", "note")).rejects.toThrow(/archived/);
-  });
-
-  it("claims a task for a stage unless the lead parked it, even while the claim ran", async () => {
-    const { hermes, board: b } = board();
-    const created = { kind: "created", payload: {} };
-    const blocked = { kind: "blocked", payload: { reason: "Waiting on task 5." } };
-    // Each show answers from the next of these, then from the last.
-    let shows: unknown[] = [];
-    hermes.answer(
-      (args) => args.includes("show"),
-      () => JSON.stringify(shows.length > 1 ? shows.shift() : shows[0]),
-    );
-
-    shows = [
-      { task: { id: "t_1", status: "ready" }, events: [created] },
-      { task: { id: "t_1", status: "ready" }, events: [created] },
-      { task: { id: "t_1", status: "scheduled" }, events: [created] },
-    ];
-    expect(await b.claim("t_1", "Implementing")).toBeUndefined();
-    expect(hermes.lines()).toContain("kanban --board factory schedule -- t_1 stage=Implementing");
-
-    hermes.calls.length = 0;
-    shows = [{ task: { id: "t_1", status: "blocked" }, events: [created, blocked] }];
-    expect(await b.claim("t_1", "Implementing")).toBe("Waiting on task 5.");
-    expect(hermes.lines().some((line) => line.includes("schedule"))).toBe(false);
-
-    // The lead blocks the task after the first read; Hermes lets the schedule move it anyway.
-    shows = [
-      { task: { id: "t_1", status: "ready" }, events: [created] },
-      { task: { id: "t_1", status: "blocked" }, events: [created, blocked] },
-      { task: { id: "t_1", status: "scheduled" }, events: [created, blocked] },
-    ];
-    expect(await b.claim("t_1", "Implementing")).toBe("Waiting on task 5.");
   });
 
   it("fails a hand-back whose task is not in the lead's queue once it is done", async () => {

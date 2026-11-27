@@ -28,6 +28,7 @@ function setup(): {
     at(o.doneAt);
     const id = tasks.create({ repo: o.repo, issueNumber: o.pr, title: `task ${String(o.pr)}` }).id;
     tasks.update(id, { prNumber: o.pr, rounds: o.rounds ?? 0 });
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     if (o.mergedAt !== null) {
       at(o.mergedAt);
@@ -169,6 +170,7 @@ describe("chartData tasks_by_stage", () => {
 
     const result = chart(db, "tasks_by_stage");
     expect(Object.fromEntries(result.bars.map((bar) => [bar.label, bar.value]))).toEqual({
+      Queued: 2,
       Implementing: 2,
       Done: 2,
       Escalated: 1,

@@ -53,6 +53,8 @@ export interface FactoryMcpOptions {
 type Tool =
   | "file_issue"
   | "comment_issue"
+  | "queue_work"
+  | "defer_work"
   | "start_work"
   | "get_status"
   | "escalate"
@@ -85,6 +87,26 @@ const TOOL_SHAPES = {
     repo: z.string().describe("owner/repo of a factory project"),
     issue_number: z.number().int().positive(),
     body: z.string().describe("the comment's text"),
+  },
+  queue_work: {
+    task_id: z.number().int(),
+    brief: z.string().min(1),
+    before_task_id: z
+      .number()
+      .int()
+      .optional()
+      .describe("a queued task to put this one before; leave it out to queue at the end"),
+  },
+  defer_work: {
+    task_id: z.number().int(),
+    reason: z.string().min(1),
+    after_task_id: z
+      .number()
+      .int()
+      .optional()
+      .describe(
+        "the task whose finish brings this one back to you; leave it out to wait for any task to finish",
+      ),
   },
   start_work: { task_id: z.number().int(), brief: z.string().min(1) },
   escalate: { task_id: z.number().int(), reason: z.string().min(1) },
@@ -147,7 +169,16 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
     "get_host_health",
     ...CHANGE_TOOLS,
   ],
-  lead: ["start_work", "escalate", "file_issue", "get_status", "list_tasks", "read_thread"],
+  lead: [
+    "queue_work",
+    "defer_work",
+    "start_work",
+    "escalate",
+    "file_issue",
+    "get_status",
+    "list_tasks",
+    "read_thread",
+  ],
   improver: [
     "propose_version",
     "get_config",
@@ -177,13 +208,23 @@ function writeChart(dir: string, metric: string, png: Buffer): string {
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_TEXT = 60_000;
 
-function taskSummary(task: Task, mergedAt: string | null): Record<string, unknown> {
+function taskSummary(
+  task: Task,
+  mergedAt: string | null,
+  queuePosition: number | null,
+): Record<string, unknown> {
   return {
     task_id: task.id,
     repo: task.repo,
     issue: task.issueNumber,
     title: task.title,
     stage: task.stage,
+    // 1 launches next.
+    queue_position: queuePosition,
+    deferred:
+      task.deferReason === null
+        ? null
+        : { reason: task.deferReason, until_task_id: task.deferAfter },
     escalated_to: task.escalatedTo,
     reason: task.reason,
     waiting: task.waiting,
@@ -392,8 +433,10 @@ export class FactoryMcp {
     const server = new McpServer({ name: "hephaestus", version: "1.0.0" });
     const allowed = new Set(ROLE_TOOLS[role]);
     const { tasks, intake, pipeline, store, events } = this.options;
-    const summary = (task: Task): Record<string, unknown> =>
-      taskSummary(task, tasks.mergedAt(task.repo, task.prNumber));
+    const positions = (): Map<number, number> =>
+      new Map(tasks.queue().map((queued, index) => [queued.id, index + 1]));
+    const summary = (task: Task, queue = positions()): Record<string, unknown> =>
+      taskSummary(task, tasks.mergedAt(task.repo, task.prNumber), queue.get(task.id) ?? null);
     const register = <T extends Tool>(
       tool: T,
       description: string,
@@ -450,8 +493,20 @@ export class FactoryMcp {
     );
     register(
       "start_work",
-      "Start work on an admitted task, or restart a task escalated to you, with a brief for the engineer.",
+      "Restart a task escalated to you with a new brief for the engineer.",
       async ({ task_id, brief }) => summary(await pipeline.startWork(task_id, brief)),
+    );
+    register(
+      "queue_work",
+      "Put an admitted task in the work queue with a brief for the engineer, before another queued task or at the end. Queue a queued task again to move it or change its brief. Queued tasks start in queue order as slots free up.",
+      async ({ task_id, brief, before_task_id }) =>
+        summary(await pipeline.queue(task_id, brief, before_task_id)),
+    );
+    register(
+      "defer_work",
+      "Keep an admitted or queued task out of the queue, with the reason, until another task finishes. It comes back to you then.",
+      async ({ task_id, reason, after_task_id }) =>
+        summary(await pipeline.defer(task_id, reason, after_task_id)),
     );
     register(
       "escalate",
@@ -489,12 +544,13 @@ export class FactoryMcp {
         return { paused: pipeline.paused(), projects };
       },
     );
-    register("list_tasks", "Tasks, newest first, optionally in one stage.", ({ stage }) =>
-      tasks
+    register("list_tasks", "Tasks, newest first, optionally in one stage.", ({ stage }) => {
+      const queue = positions();
+      return tasks
         .list(stage === undefined ? undefined : [stage as Task["stage"]])
         .slice(0, 100)
-        .map(summary),
-    );
+        .map((task) => summary(task, queue));
+    });
     register(
       "list_threads",
       "Factory threads (implement and review) started since a time, with their task and status.",

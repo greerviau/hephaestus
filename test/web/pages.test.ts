@@ -123,6 +123,7 @@ interface Tasks {
 function gateTask(running: Dashboard, issueNumber: number, waiting: string): number {
   const { tasks } = running.h;
   const id = tasks.create({ repo: "octo/app", issueNumber, title: `Gate ${waiting}` }).id;
+  tasks.transition(id, "Queued", "the lead queued the work");
   tasks.transition(id, "Implementing", "work started", { workerEnv: "w1" });
   tasks.transition(id, "Reviewing", "PR #6 at 1111111", { prNumber: 6, headSha: SHA });
   tasks.transition(id, "Merging", "approved");

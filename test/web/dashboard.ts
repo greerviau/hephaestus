@@ -164,6 +164,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
 /** A task escalated to the owner, waiting for approval to merge PR 5 at SHA. */
 export function escalatedTask(h: Harness): number {
   const id = h.tasks.create({ repo: "octo/app", issueNumber: 7, title: "Fix <the> parser" }).id;
+  h.tasks.transition(id, "Queued", "the lead queued the work");
   h.tasks.transition(id, "Implementing", "work started", {
     workerEnv: "w1",
     startedAt: new Date(NOW).toISOString(),
@@ -182,6 +183,7 @@ export function escalatedTask(h: Harness): number {
 /** A task implementing on w1 with a running implement thread. */
 export function runningTask(h: Harness): number {
   const id = h.tasks.create({ repo: "octo/app", issueNumber: 8, title: "Add a cache" }).id;
+  h.tasks.transition(id, "Queued", "the lead queued the work");
   h.tasks.transition(id, "Implementing", "work started", {
     workerEnv: "w1",
     implementer: "codex",

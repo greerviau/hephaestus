@@ -62,8 +62,18 @@ export interface Task {
    */
   limitUntil: string | null;
   limitRun: string | null;
-  /** When the task's start was first asked for while no task slot was free; its place in the queue. */
-  queuedAt: string | null;
+  /** The task's place in the lead's queue, lowest first, while it is Queued. */
+  queueOrder: number | null;
+  /** Why the lead deferred the admitted task; null when it is not deferred. */
+  deferReason: string | null;
+  /** The task whose finish ends the deferral; null ends it when any task finishes. */
+  deferAfter: number | null;
+  /** The last task event when the task was deferred, so only later finishes end the deferral. */
+  deferMark: number | null;
+  /** When the task last went to the lead to be queued or deferred; null means since it was admitted. */
+  triageSince: string | null;
+  /** Whether the owner was told the task waits too long for the lead, since triageSince. */
+  triageAlerted: boolean;
   /** Counts every change, so a form from an earlier state of the task is refused. */
   version: number;
   createdAt: string;
@@ -83,7 +93,9 @@ export interface TaskEvent {
  * {@link TaskStore.transition} refuses any change it does not list.
  */
 export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
-  Admitted: ["Implementing", "Escalated", "Abandoned"],
+  Admitted: ["Queued", "Escalated", "Abandoned"],
+  // Implementing only once the implement thread launches; back to Admitted when the lead defers it.
+  Queued: ["Implementing", "Admitted", "Escalated", "Abandoned"],
   // Done straight from Implementing, Reviewing, or Merging is a PR merged outside Hephaestus.
   Implementing: ["Implementing", "Reviewing", "Merging", "Escalated", "Abandoned", "Done"],
   Reviewing: ["Reviewing", "Implementing", "Merging", "Escalated", "Abandoned", "Done"],
@@ -91,7 +103,8 @@ export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
   Merging: ["Validating", "Implementing", "Escalated", "Abandoned", "Done"],
   Validating: ["Done", "Reverting", "Escalated"],
   Reverting: ["Implementing", "Escalated"],
-  Escalated: ["Implementing", "Merging", "Reverting", "Abandoned", "Done"],
+  // Queued when the lead restarts a task that never launched a thread.
+  Escalated: ["Queued", "Implementing", "Merging", "Reverting", "Abandoned", "Done"],
   Done: [],
   Abandoned: [],
 };
@@ -137,7 +150,12 @@ interface Row {
   policy: string | null;
   limit_until: string | null;
   limit_run: string | null;
-  queued_at: string | null;
+  queue_order: number | null;
+  defer_reason: string | null;
+  defer_after: number | null;
+  defer_mark: number | null;
+  triage_since: string | null;
+  triage_alerted: number;
   version: number;
   created_at: string;
   updated_at: string;
@@ -177,7 +195,12 @@ const COLUMNS: Record<keyof Omit<Task, "id" | "createdAt" | "updatedAt" | "versi
   policy: "policy",
   limitUntil: "limit_until",
   limitRun: "limit_run",
-  queuedAt: "queued_at",
+  queueOrder: "queue_order",
+  deferReason: "defer_reason",
+  deferAfter: "defer_after",
+  deferMark: "defer_mark",
+  triageSince: "triage_since",
+  triageAlerted: "triage_alerted",
 };
 
 function toTask(row: Row): Task {
@@ -218,7 +241,12 @@ function toTask(row: Row): Task {
     policy: row.policy === null ? null : (JSON.parse(row.policy) as PolicySettings),
     limitUntil: row.limit_until,
     limitRun: row.limit_run,
-    queuedAt: row.queued_at,
+    queueOrder: row.queue_order,
+    deferReason: row.defer_reason,
+    deferAfter: row.defer_after,
+    deferMark: row.defer_mark,
+    triageSince: row.triage_since,
+    triageAlerted: row.triage_alerted === 1,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -296,6 +324,83 @@ export class TaskStore {
     return rows.map(toTask);
   }
 
+  /** The lead's queue: every Queued task, first to launch first. */
+  queue(): Task[] {
+    return (
+      this.db
+        .prepare("SELECT * FROM tasks WHERE stage = 'Queued' ORDER BY queue_order, id")
+        .all() as Row[]
+    ).map(toTask);
+  }
+
+  /**
+   * Moves the task into the lead's queue, before `before` or at the end, and
+   * logs it. Every step runs in one transaction, so the queue's order holds.
+   */
+  enqueue(
+    id: number,
+    before: number | undefined,
+    detail: string,
+    fields: Partial<Omit<Task, "id" | "createdAt" | "updatedAt" | "stage" | "version">>,
+  ): Task {
+    return this.db.transaction(() => {
+      let order: number;
+      if (before === undefined) {
+        const last = this.db
+          .prepare("SELECT MAX(queue_order) AS n FROM tasks WHERE stage = 'Queued' AND id != ?")
+          .get(id) as { n: number | null };
+        order = (last.n ?? 0) + 1;
+      } else {
+        const target = this.get(before);
+        if (target.stage !== "Queued" || target.queueOrder === null || target.id === id) {
+          throw new Error(
+            `Task ${String(before)} is not queued, so nothing can be queued before it.`,
+          );
+        }
+        order = target.queueOrder;
+        this.db
+          .prepare(
+            "UPDATE tasks SET queue_order = queue_order + 1 WHERE stage = 'Queued' AND queue_order >= ? AND id != ?",
+          )
+          .run(order, id);
+      }
+      const task = this.get(id);
+      const queue = {
+        ...fields,
+        queueOrder: order,
+        deferReason: null,
+        deferAfter: null,
+        deferMark: null,
+      };
+      if (task.stage === "Queued") {
+        this.update(id, queue);
+        this.event(id, "queue:moved", detail);
+        return this.get(id);
+      }
+      return this.transition(id, "Queued", detail, queue);
+    })();
+  }
+
+  /** The id of the newest task event, or 0 when there is none. */
+  lastEventId(): number {
+    const row = this.db.prepare("SELECT MAX(id) AS n FROM task_events").get() as {
+      n: number | null;
+    };
+    return row.n ?? 0;
+  }
+
+  /** Whether a task other than `except` reached Done or Abandoned after the event `mark`. */
+  finishedSince(mark: number, except: number): boolean {
+    return (
+      this.db
+        .prepare(
+          `SELECT 1 FROM task_events WHERE id > ? AND task_id != ?
+           AND kind IN ('stage:Done', 'stage:Abandoned') LIMIT 1`,
+        )
+        .get(mark, except) !== undefined
+    );
+  }
+
   update(
     id: number,
     fields: Partial<Omit<Task, "id" | "createdAt" | "updatedAt" | "stage" | "version">>,
@@ -304,7 +409,7 @@ export class TaskStore {
     if (entries.length > 0) {
       const sets = entries.map(([key]) => `${COLUMNS[key]} = ?`).join(", ");
       const values = entries.map(([key, value]) =>
-        key === "foreignMerge" || key === "reverting"
+        key === "foreignMerge" || key === "reverting" || key === "triageAlerted"
           ? value === true
             ? 1
             : 0

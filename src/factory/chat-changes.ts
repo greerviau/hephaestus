@@ -30,7 +30,7 @@ const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
 
 /** The settings chat may change, by name, and where each lives in the config. */
 const SETTINGS: Record<string, string[]> = {
-  autoStartMinutes: ["factory", "autoStartMinutes"],
+  triageAlertMinutes: ["factory", "triageAlertMinutes"],
   threadSkills: ["factory", "threadSkills"],
   "models.claude": ["factory", "models", "claude"],
   "models.codex": ["factory", "models", "codex"],

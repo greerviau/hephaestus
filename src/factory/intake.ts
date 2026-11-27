@@ -27,7 +27,7 @@ function unstarted(row: Pick<Candidate, "taskId" | "startedAt" | "stage">): bool
   return (
     row.taskId !== null &&
     row.startedAt === null &&
-    ["Admitted", "Implementing", "Escalated"].includes(row.stage ?? "")
+    ["Admitted", "Queued", "Implementing", "Escalated"].includes(row.stage ?? "")
   );
 }
 
@@ -369,7 +369,7 @@ export class Intake {
         .prepare(
           `SELECT COUNT(*) AS n FROM issues i JOIN tasks c ON c.id = i.task_id
            WHERE i.repo = ? COLLATE NOCASE AND i.provenance = 'factory' AND c.started_at IS NULL
-           AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
+           AND c.stage IN ('Admitted', 'Queued', 'Implementing', 'Escalated')`,
         )
         .get(repo) as { n: number }
     ).n;
@@ -410,7 +410,7 @@ export class Intake {
       try {
         const hermesTaskId = await board.createTask({
           title: `[task ${String(task.id)}] ${issue.title}`,
-          body: `Hephaestus task ${String(task.id)} for https://github.com/${issue.repo}/issues/${String(issue.number)}. Start it with start_work and task_id ${String(task.id)}.`,
+          body: `Hephaestus task ${String(task.id)} for https://github.com/${issue.repo}/issues/${String(issue.number)}. Queue it with queue_work and task_id ${String(task.id)}, or defer it with defer_work.`,
           idempotencyKey: `hephaestus-task-${String(task.id)}`,
         });
         this.options.tasks.update(task.id, { hermesTaskId });
