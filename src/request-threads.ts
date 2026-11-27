@@ -71,7 +71,7 @@ interface Thread {
  */
 export class RequestThreads {
   private readonly now: () => Date;
-  private bot: { token: string; id: string; guild: string } | undefined;
+  private bot: { token: string; anchor: string; id: string; guild: string } | undefined;
   private slackBot: { token: string; id: string } | undefined;
 
   constructor(private readonly options: RequestThreadsOptions) {
@@ -83,7 +83,7 @@ export class RequestThreads {
   }
 
   /**
-   * Finds threads in each platform's request channel whose tracking line names
+   * Finds request threads on each platform whose tracking line names
    * an issue not yet followed. A platform that cannot be read does not stop the
    * others; its error is thrown once they are done.
    */
@@ -99,20 +99,29 @@ export class RequestThreads {
     if (failures.length > 0) throw failures[0];
   }
 
+  /**
+   * The Discord side of `link`: a request is a mention, which Hermes answers in
+   * a thread of its own, so the threads of every channel the bot reads are looked at.
+   */
   private async linkDiscord(): Promise<void> {
     const credentials = this.options.messaging.credentials("discord");
-    if (credentials?.request === undefined) return;
+    // The status channel is in the bot's server, which holds the threads.
+    const anchor = credentials?.status ?? credentials?.reads[0];
+    if (credentials === undefined || anchor === undefined) return;
+    if (!credentials.readAll && credentials.reads.length === 0) return;
     const api = new DiscordApi(credentials.token, this.options.fetcher);
-    if (this.bot?.token !== credentials.token) {
+    if (this.bot?.token !== credentials.token || this.bot.anchor !== anchor) {
       this.bot = {
         token: credentials.token,
+        anchor,
         id: await api.botId(),
-        guild: await api.guildOf(credentials.request),
+        guild: await api.guildOf(anchor),
       };
     }
     const { id: botId, guild } = this.bot;
+    const reads = new Set(credentials.reads);
     const threads = (await api.activeThreads(guild)).filter(
-      (thread) => thread.parent_id === credentials.request,
+      (thread) => credentials.readAll || (thread.parent_id !== null && reads.has(thread.parent_id)),
     );
     for (const thread of threads) {
       // Each thread is read from the last message seen, so a request that files a second

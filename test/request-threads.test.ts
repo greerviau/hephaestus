@@ -10,6 +10,7 @@ const GUILD = "222222222222222222";
 const CHANNEL = "333333333333333333";
 const THREAD = "444444444444444444";
 const OTHER = "555555555555555555";
+const STATUS = "666666666666666666";
 
 let db: Database;
 let tasks: TaskStore;
@@ -20,12 +21,13 @@ let messages: Record<string, { id: string; content: string; author: { id: string
 let evidence: { tree: string; files: { name: string; data: Buffer }[] } | undefined;
 let refs: string[] = [];
 let threads: RequestThreads;
+let readAll: boolean;
 
 const fetcher: Fetch = (url) => {
   const path = url.replace("https://discord.com/api/v10", "");
   let body: unknown;
   if (path === "/users/@me") body = { id: BOT };
-  else if (path === `/channels/${CHANNEL}`) body = { guild_id: GUILD };
+  else if (path === `/channels/${STATUS}`) body = { guild_id: GUILD };
   else if (path === `/guilds/${GUILD}/threads/active`) {
     body = {
       threads: [
@@ -58,12 +60,22 @@ beforeEach(() => {
   messages = {};
   evidence = undefined;
   refs = [];
+  readAll = false;
   threads = new RequestThreads({
     db,
     tasks,
     messaging: {
+      // Discord has no request channel: requests are mentions in the channels the bot reads.
       credentials: (platform) =>
-        platform === "discord" ? { token: "token", request: CHANNEL } : undefined,
+        platform === "discord"
+          ? {
+              token: "token",
+              request: undefined,
+              status: STATUS,
+              reads: readAll ? [] : [CHANNEL],
+              readAll,
+            }
+          : undefined,
       sendTo: (platform, chat, text, attachments) => {
         if (failPosts > 0) {
           failPosts -= 1;
@@ -154,7 +166,7 @@ describe("RequestThreads", () => {
     ]);
   });
 
-  it("ignores a tracking line from anyone but the bot, and threads outside the request channel", async () => {
+  it("ignores a tracking line from anyone but the bot, and threads outside the channels the bot reads", async () => {
     task();
     messages[THREAD] = [
       { id: "1", content: trackingLine("octo/app", 7), author: { id: "777777777777777777" } },
@@ -163,6 +175,14 @@ describe("RequestThreads", () => {
     await threads.link();
     await threads.progress();
     expect(posts).toEqual([]);
+  });
+
+  it("follows a thread in any channel when the bot reads every channel", async () => {
+    task();
+    readAll = true;
+    messages[OTHER] = [{ id: "2", content: trackingLine("octo/app", 7), author: { id: BOT } }];
+    await threads.link();
+    expect(posts.map((post) => post.chat)).toEqual([OTHER]);
   });
 
   it("attaches the engineer's evidence once when the PR opens", async () => {
@@ -595,7 +615,15 @@ describe("RequestThreads on Slack", () => {
       tasks,
       messaging: {
         credentials: (platform) =>
-          platform === "slack" ? { token: "xoxb-token", request: SLACK_CHANNEL } : undefined,
+          platform === "slack"
+            ? {
+                token: "xoxb-token",
+                request: SLACK_CHANNEL,
+                status: undefined,
+                reads: [],
+                readAll: false,
+              }
+            : undefined,
         sendTo: (platform, chat, text, attachments) => {
           posts.push({ platform, chat, text, attachments: attachments === true });
           return Promise.resolve();

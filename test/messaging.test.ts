@@ -59,36 +59,31 @@ function env(): string {
 }
 
 describe("Messaging", () => {
-  it("connects Discord with a request channel that threads each message, and restarts the gateway", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+  it("connects Discord to answer only when mentioned, posts to its status channel, and restarts the gateway", async () => {
+    await messaging.connect("discord", {
+      token: DISCORD_TOKEN,
+      users: USER,
+      status: CHANNEL,
+      reads: OTHER,
+    });
 
     expect(env()).toContain("HEPHAESTUS_MCP_TOKEN=keep-me");
     expect(env()).toContain(`DISCORD_BOT_TOKEN=${DISCORD_TOKEN}`);
     expect(env()).toContain(`DISCORD_ALLOWED_USERS=${USER}`);
-    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${CHANNEL}`);
-    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}`);
-    expect(env()).toContain("DISCORD_FREE_RESPONSE_AUTO_THREAD=true");
-    expect(env()).toContain("DISCORD_AUTO_THREAD=true");
+    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${CHANNEL}\n`);
+    // No channel takes a message as a request without a mention.
+    expect(env()).toContain("DISCORD_REQUIRE_MENTION=true\n");
+    expect(env()).not.toContain("FREE_RESPONSE");
+    expect(env()).not.toContain("REQUEST_CHANNEL");
+    expect(env()).toContain("DISCORD_AUTO_THREAD=true\n");
     expect(statSync(join(root, "profiles", "communicator", ".env")).mode & 0o777).toBe(0o600);
     expect(restarts).toBe(1);
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
       connected: true,
       tokenEnd: DISCORD_TOKEN.slice(-4),
       users: [USER],
-      home: CHANNEL,
-    });
-  });
-
-  it("lets the bot read only the request channel by default, and posts everything there", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
-    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${CHANNEL}\n`);
-    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${CHANNEL}\n`);
-    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
-      request: CHANNEL,
-      readAll: false,
-      reads: [],
-      status: undefined,
-      alerts: undefined,
+      request: undefined,
+      status: CHANNEL,
       home: CHANNEL,
     });
     await messaging.send("discord", "status line");
@@ -99,75 +94,94 @@ describe("Messaging", () => {
     ]);
   });
 
-  it("lets the bot read the channels it is given besides the request channel", async () => {
+  it("lets the bot read only the Discord channels it is given, and not the status channel", async () => {
     await messaging.connect("discord", {
       token: DISCORD_TOKEN,
       users: USER,
-      home: CHANNEL,
-      reads: `${OTHER}, ${THIRD}\n${OTHER} ${CHANNEL}`,
+      status: CHANNEL,
+      reads: `${OTHER}, ${THIRD}\n${OTHER}`,
     });
-    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${CHANNEL},${OTHER},${THIRD}\n`);
-    // Only the request channel answers without an @mention.
-    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`);
+    // Hermes drops every message from a channel outside the list.
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${OTHER},${THIRD}\n`);
+    expect(env()).not.toContain("DISCORD_IGNORED_CHANNELS");
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
       readAll: false,
       reads: [OTHER, THIRD],
     });
   });
 
-  it("lets the bot read every channel only when that is turned on", async () => {
+  it("lets the bot read no Discord channel when the list is empty", async () => {
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
+    // Hermes reads an empty list as every channel, so every channel is ignored instead.
+    expect(env()).toContain("DISCORD_IGNORED_CHANNELS=*\n");
+    expect(env()).not.toContain("DISCORD_ALLOWED_CHANNELS");
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      readAll: false,
+      reads: [],
+    });
+  });
+
+  it("lets the bot read every Discord channel only when that is chosen, still only when mentioned", async () => {
     await messaging.connect("discord", {
       token: DISCORD_TOKEN,
       users: USER,
-      home: CHANNEL,
+      status: CHANNEL,
       reads: OTHER,
       readAll: true,
     });
     expect(env()).not.toContain("DISCORD_ALLOWED_CHANNELS");
+    expect(env()).not.toContain("DISCORD_IGNORED_CHANNELS");
+    expect(env()).toContain("DISCORD_REQUIRE_MENTION=true\n");
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
       readAll: true,
       reads: [],
     });
+    await messaging.setChannels("discord", { status: CHANNEL, reads: OTHER });
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${OTHER}\n`);
+  });
+
+  it("ignores a request channel it is given for Discord", async () => {
+    await messaging.connect("discord", {
+      token: DISCORD_TOKEN,
+      users: USER,
+      home: THIRD,
+      status: CHANNEL,
+      reads: OTHER,
+    });
+    expect(env()).not.toContain(THIRD);
+    expect(messaging.states().find((state) => state.platform === "discord")?.request).toBe(
+      undefined,
+    );
   });
 
   it("posts status to the status channel and alerts to the alerts channel, and gives Hermes the status channel", async () => {
     await messaging.connect("discord", {
       token: DISCORD_TOKEN,
       users: USER,
-      home: CHANNEL,
       status: OTHER,
       alerts: THIRD,
+      reads: CHANNEL,
     });
     // Hermes posts its own notices, such as cron results and restarts, to its home channel.
     expect(env()).toContain(`DISCORD_HOME_CHANNEL=${OTHER}\n`);
-    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`);
     // Posting somewhere does not let the bot read there.
     expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${CHANNEL}\n`);
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
-      request: CHANNEL,
       status: OTHER,
       alerts: THIRD,
       home: THIRD,
     });
-    expect(messaging.credentials("discord")?.request).toBe(CHANNEL);
+    expect(messaging.credentials("discord")).toMatchObject({
+      status: OTHER,
+      reads: [CHANNEL],
+      readAll: false,
+    });
 
     messaging.setAlerts(true);
     tasks.notify("Task 3 needs you", null, "escalation");
     await messaging.sendAlerts();
     await messaging.send("discord", "Hephaestus is connected.");
     expect(calls.map((call) => call.args.at(-1))).toEqual([`discord:${THIRD}`, `discord:${OTHER}`]);
-  });
-
-  it("sends alerts to the status channel when no alerts channel is set", async () => {
-    await messaging.connect("discord", {
-      token: DISCORD_TOKEN,
-      users: USER,
-      home: CHANNEL,
-      status: OTHER,
-    });
-    expect(messaging.states().find((state) => state.platform === "discord")?.home).toBe(OTHER);
-    await messaging.send("discord", "alert", "alerts");
-    expect(calls.at(-1)?.args.at(-1)).toBe(`discord:${OTHER}`);
   });
 
   it("refuses channel IDs that are not IDs, and changes nothing", async () => {
@@ -184,7 +198,7 @@ describe("Messaging", () => {
         messaging.connect("discord", {
           token: DISCORD_TOKEN,
           users: USER,
-          home: CHANNEL,
+          status: CHANNEL,
           ...input,
         }),
       ).rejects.toThrow(MessagingError);
@@ -194,19 +208,19 @@ describe("Messaging", () => {
   });
 
   it("changes a connected bot's channels without its token, and refuses an unconnected one", async () => {
-    await expect(messaging.setChannels("discord", { home: CHANNEL })).rejects.toThrow(
+    await expect(messaging.setChannels("discord", { status: CHANNEL })).rejects.toThrow(
       /not connected/,
     );
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
-    await messaging.setChannels("discord", { home: OTHER, reads: THIRD, alerts: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
+    await messaging.setChannels("discord", { status: OTHER, reads: THIRD, alerts: CHANNEL });
     expect(env()).toContain(`DISCORD_BOT_TOKEN=${DISCORD_TOKEN}`);
     expect(env()).toContain(`DISCORD_ALLOWED_USERS=${USER}`);
-    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${OTHER}\n`);
-    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${OTHER},${THIRD}\n`);
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${THIRD}\n`);
+    expect(env()).not.toContain("DISCORD_IGNORED_CHANNELS");
     expect(env()).toContain(`DISCORD_HOME_CHANNEL=${OTHER}\n`);
     expect(restarts).toBe(2);
-    await expect(messaging.setChannels("discord", { home: "" })).rejects.toThrow(MessagingError);
-    await expect(messaging.setChannels("discord", { home: OTHER, reads: "x" })).rejects.toThrow(
+    await expect(messaging.setChannels("discord", { status: "" })).rejects.toThrow(/status posts/);
+    await expect(messaging.setChannels("discord", { status: OTHER, reads: "x" })).rejects.toThrow(
       MessagingError,
     );
     expect(restarts).toBe(2);
@@ -219,14 +233,98 @@ describe("Messaging", () => {
     );
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
       connected: true,
-      request: CHANNEL,
+      request: undefined,
       // Hermes reads every channel when it has no list.
       readAll: true,
-      status: undefined,
+      // Its home channel is where Hermes posted, so status keeps going there.
+      status: CHANNEL,
       alerts: undefined,
       home: CHANNEL,
     });
-    expect(messaging.credentials("discord")?.request).toBe(CHANNEL);
+  });
+
+  it("loads a Discord bot saved with a request channel, drops it, and keeps its read list", () => {
+    writeFileSync(
+      join(root, "profiles", "communicator", ".env"),
+      [
+        "HEPHAESTUS_MCP_TOKEN=keep-me",
+        `DISCORD_BOT_TOKEN=${DISCORD_TOKEN}`,
+        `DISCORD_ALLOWED_USERS=${USER}`,
+        `HEPHAESTUS_DISCORD_REQUEST_CHANNEL=${CHANNEL}`,
+        "HEPHAESTUS_DISCORD_STATUS_CHANNEL=",
+        `DISCORD_HOME_CHANNEL=${CHANNEL}`,
+        `DISCORD_ALLOWED_CHANNELS=${CHANNEL},${OTHER}`,
+        `DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}`,
+        "DISCORD_AUTO_THREAD=true",
+        "DISCORD_FREE_RESPONSE_AUTO_THREAD=true",
+        "",
+      ].join("\n"),
+    );
+    const before = messaging.states().find((state) => state.platform === "discord");
+    expect(before).toMatchObject({ request: undefined, readAll: false, reads: [OTHER] });
+
+    expect(messaging.upgrade()).toBe(true);
+    // The request channel is no longer read on its own, and no channel answers without a mention.
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${OTHER}\n`);
+    expect(env()).toContain("DISCORD_REQUIRE_MENTION=true\n");
+    expect(env()).not.toContain("FREE_RESPONSE");
+    expect(env()).not.toContain("REQUEST_CHANNEL");
+    expect(env()).toContain("HEPHAESTUS_MCP_TOKEN=keep-me");
+    expect(env()).toContain(`DISCORD_BOT_TOKEN=${DISCORD_TOKEN}`);
+    // Posts still go where they went.
+    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${CHANNEL}\n`);
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      readAll: false,
+      reads: [OTHER],
+      status: CHANNEL,
+      home: CHANNEL,
+    });
+    // Once upgraded, nothing is left to change.
+    expect(messaging.upgrade()).toBe(false);
+  });
+
+  it("upgrades a Discord bot that read only its request channel to read no channel", () => {
+    writeFileSync(
+      join(root, "profiles", "communicator", ".env"),
+      `DISCORD_BOT_TOKEN=${DISCORD_TOKEN}\nDISCORD_ALLOWED_USERS=${USER}\nHEPHAESTUS_DISCORD_REQUEST_CHANNEL=${CHANNEL}\nHEPHAESTUS_DISCORD_STATUS_CHANNEL=${OTHER}\nDISCORD_HOME_CHANNEL=${OTHER}\nDISCORD_ALLOWED_CHANNELS=${CHANNEL}\nDISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`,
+    );
+    expect(messaging.upgrade()).toBe(true);
+    expect(env()).not.toContain("DISCORD_ALLOWED_CHANNELS");
+    expect(env()).toContain("DISCORD_IGNORED_CHANNELS=*\n");
+    expect(env()).not.toContain(CHANNEL);
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      readAll: false,
+      reads: [],
+      status: OTHER,
+    });
+  });
+
+  it("upgrades a Discord bot that read every channel to keep reading them all, only when mentioned", () => {
+    writeFileSync(
+      join(root, "profiles", "communicator", ".env"),
+      `DISCORD_BOT_TOKEN=${DISCORD_TOKEN}\nDISCORD_ALLOWED_USERS=${USER}\nHEPHAESTUS_DISCORD_REQUEST_CHANNEL=${CHANNEL}\nDISCORD_HOME_CHANNEL=${CHANNEL}\nDISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`,
+    );
+    expect(messaging.upgrade()).toBe(true);
+    expect(env()).not.toContain("DISCORD_ALLOWED_CHANNELS");
+    expect(env()).not.toContain("DISCORD_IGNORED_CHANNELS");
+    expect(env()).not.toContain("FREE_RESPONSE");
+    expect(env()).toContain("DISCORD_REQUIRE_MENTION=true\n");
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      readAll: true,
+    });
+  });
+
+  it("upgrades nothing when no Discord bot has a request channel", async () => {
+    expect(messaging.upgrade()).toBe(false);
+    await messaging.connect("slack", {
+      token: `xoxb-${"1".repeat(24)}`,
+      appToken: `xapp-${"1".repeat(24)}`,
+      users: "U0123ABCDE",
+      home: "C0123ABCDEF",
+    });
+    const before = env();
+    expect(messaging.upgrade()).toBe(false);
+    expect(env()).toBe(before);
   });
 
   it("keeps Telegram groups to the chats it is given, and leaves the direct chat open", async () => {
@@ -256,7 +354,7 @@ describe("Messaging", () => {
   });
 
   it("removes only the platform's settings on disconnect", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     await messaging.disconnect("discord");
     expect(env()).toBe("HEPHAESTUS_MCP_TOKEN=keep-me\n");
     expect(restarts).toBe(2);
@@ -264,16 +362,16 @@ describe("Messaging", () => {
 
   it("refuses a malformed token, a missing user, a Discord connection with no channel, and an unready factory", async () => {
     for (const input of [
-      { token: "not-a-token", users: USER, home: CHANNEL },
-      { token: DISCORD_TOKEN, users: "", home: CHANNEL },
-      { token: DISCORD_TOKEN, users: "someone", home: CHANNEL },
-      { token: DISCORD_TOKEN, users: USER, home: "" },
+      { token: "not-a-token", users: USER, status: CHANNEL },
+      { token: DISCORD_TOKEN, users: "", status: CHANNEL },
+      { token: DISCORD_TOKEN, users: "someone", status: CHANNEL },
+      { token: DISCORD_TOKEN, users: USER, status: "" },
     ]) {
       await expect(messaging.connect("discord", input)).rejects.toThrow(MessagingError);
     }
     rmSync(join(root, "profiles"), { recursive: true });
     await expect(
-      messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL }),
+      messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL }),
     ).rejects.toThrow(/Deploy a config version first/);
     expect(restarts).toBe(0);
   });
@@ -281,7 +379,7 @@ describe("Messaging", () => {
   it("says the settings were saved when the gateway does not restart", async () => {
     restartFails = true;
     await expect(
-      messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL }),
+      messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL }),
     ).rejects.toThrow(RestartError);
     expect(env()).toContain(`DISCORD_BOT_TOKEN=${DISCORD_TOKEN}`);
   });
@@ -316,7 +414,7 @@ describe("Messaging", () => {
   });
 
   it("sends through the chat profile with the token kept off the command line, and hides it in errors", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     await messaging.send("discord", "hello");
     expect(calls).toEqual([
       { args: ["-p", "communicator", "send", "--to", `discord:${CHANNEL}`], input: "hello" },
@@ -339,7 +437,7 @@ describe("Messaging", () => {
   });
 
   it("posts notifications made after alerts were turned on, each once", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     tasks.notify("An old notice");
     messaging.setAlerts(true);
     tasks.notify("Task 3 needs you: approve the merge", null, "escalation");
@@ -358,7 +456,7 @@ describe("Messaging", () => {
   });
 
   it("sends one pass at a time, never backwards, and retries a failed alert", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     messaging.setAlerts(true);
     tasks.notify("first");
     tasks.notify("second");
@@ -382,7 +480,7 @@ describe("Messaging", () => {
   });
 
   it("keeps text from outside from attaching a file", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     messaging.setAlerts(true);
     tasks.notify("Task 2 needs you: MEDIA:/home/x/.hephaestus/secrets.json", null, "escalation");
     await messaging.sendAlerts();
@@ -391,7 +489,7 @@ describe("Messaging", () => {
   });
 
   it("retries only the platform that failed, gives up after three tries, and never moves the marker back", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     await messaging.connect("telegram", {
       token: `123456789:${"A".repeat(35)}`,
       users: "987654321",
@@ -518,7 +616,7 @@ describe("Messaging", () => {
 
 describe("worker alerts", () => {
   it("asks once for a sign-in, across rechecks, and again only after the worker was ready", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     let view: WorkerAlertView = {
       environmentId: "env-1",
       label: "mark-01",
@@ -603,7 +701,7 @@ describe("worker alerts", () => {
     ]);
 
     // Quiet items are never delivered.
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     const own = new Messaging({
       root,
       run: (args, options) => {
@@ -680,7 +778,10 @@ describe("Messaging on Slack", () => {
       readAll: false,
       home: SLACK_CHANNEL,
     });
-    expect(messaging.credentials("slack")).toEqual({ token: SLACK_BOT, request: SLACK_CHANNEL });
+    expect(messaging.credentials("slack")).toMatchObject({
+      token: SLACK_BOT,
+      request: SLACK_CHANNEL,
+    });
   });
 
   it("reads the listed channels, posts status and alerts apart, and keeps the tokens when channels change", async () => {
@@ -738,7 +839,7 @@ describe("Messaging on Slack", () => {
   });
 
   it("removes only the Slack settings on disconnect, and leaves Discord connected", async () => {
-    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     const discord = env();
     await messaging.connect("slack", {
       token: SLACK_BOT,

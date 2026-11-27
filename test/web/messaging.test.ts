@@ -49,7 +49,9 @@ async function withMessaging(
 const DISCORD = {
   token: TOKEN,
   users: "284102345871466496",
-  channel: "1234567890123456789",
+  status: "1234567890123456789",
+  read_all: "0",
+  reads: "2234567890123456789",
 };
 
 describe("Chat page", () => {
@@ -70,7 +72,6 @@ describe("Chat page", () => {
   });
 
   it.each([
-    ["discord", "Connect Discord", "Request channel ID", true],
     ["telegram", "Connect Telegram", "Request chat ID (optional)", false],
     ["slack", "Connect Slack", "Request channel ID", true],
   ] as const)(
@@ -102,6 +103,28 @@ describe("Chat page", () => {
     },
   );
 
+  it("gives Discord no request channel, and one choice between listed channels and every channel", async () => {
+    dashboard = await withMessaging();
+    const { status, html } = await dashboard.get("/chat/connect/discord");
+    expect(status).toBe(200);
+    expect(html).toContain('<h1 id="page-title">Connect Discord</h1>');
+    expect(html).toContain('<form class="form" method="post" action="/chat/discord/connect"');
+    expect(html).not.toMatch(/request channel/i);
+    expect(html).not.toContain('name="channel"');
+    expect(html).not.toContain('type="checkbox"');
+    // The status channel is where posts go, so it is the one channel Discord needs.
+    expect(html).toMatch(/<input type="text" id="status" name="status"[^>]* required/);
+    expect(html).toMatch(/name="alerts"(?![^>]* required)[^>]*>/);
+    // Two ways to let the bot read, one at a time; the list hides while every channel is chosen.
+    expect(html.match(/<input type="radio" name="read_all"/g)).toHaveLength(2);
+    expect(html).toContain('<input type="radio" name="read_all" value="0" checked>');
+    expect(html).toContain('<input type="radio" name="read_all" value="1">');
+    expect(html).toMatch(/<div class="access-list">.*?name="reads"(?![^>]* required)/s);
+    expect(html).toContain("only when you mention it");
+    expect(html.match(/<ol class="steps">.*?<\/ol>/s)?.[0].match(/<li>/g)).toHaveLength(3);
+    expect(html).not.toMatch(/communicator|lead|improver/i);
+  });
+
   it("connects, shows the stored IDs, sends a test message, turns alerts on, and never shows the token", async () => {
     const sent: string[] = [];
     dashboard = await withMessaging(sent);
@@ -111,7 +134,7 @@ describe("Chat page", () => {
     expect(page).toContain("Connected");
     expect(page).toContain(`Bot token ending <code>${TOKEN.slice(-4)}</code>`);
     expect(page).toContain("answers 284102345871466496");
-    expect(page).toContain("reads channel 1234567890123456789");
+    expect(page).toContain("reads channel 2234567890123456789 when mentioned");
     expect(page).toContain("status goes to channel 1234567890123456789");
     expect(page).toContain("alerts go to channel 1234567890123456789");
     expect(page).not.toContain(TOKEN);
@@ -122,7 +145,8 @@ describe("Chat page", () => {
     expect(page).not.toMatch(/communicator|lead|improver/i);
 
     await dashboard.post("/chat/discord/test");
-    expect(sent).toEqual(["Hephaestus is connected. Ask for work here."]);
+    // The status channel takes no request, so the test says how to ask.
+    expect(sent).toEqual(["Hephaestus is connected. Mention the bot to ask for work."]);
     const alerts = await dashboard.post("/chat/alerts/on");
     expect(alerts.headers.get("location")).toBe("/chat?notice=alerts-on");
     const on = (await dashboard.get("/chat")).html;
@@ -136,12 +160,14 @@ describe("Chat page", () => {
     dashboard = await withMessaging(sent);
     await dashboard.post("/chat/discord/connect", {
       ...DISCORD,
-      reads: "2234567890123456789",
+      reads: "2234567890123456789, 5234567890123456789",
       status: "3234567890123456789",
       alerts: "4234567890123456789",
     });
     const page = (await dashboard.get("/chat")).html;
-    expect(page).toContain("reads channel 1234567890123456789, 2234567890123456789");
+    expect(page).toContain(
+      "reads channels 2234567890123456789, 5234567890123456789 when mentioned",
+    );
     expect(page).toContain("status goes to channel 3234567890123456789");
     expect(page).toContain("alerts go to channel 4234567890123456789");
     expect(page).toContain('href="/chat/discord/channels"');
@@ -160,13 +186,15 @@ describe("Chat page", () => {
     expect(form.status).toBe(200);
     expect(form.html).toContain('<h1 id="page-title">Discord channels</h1>');
     expect(form.html).toContain('action="/chat/discord/channels"');
-    expect(form.html).toContain('name="channel" value="1234567890123456789"');
+    expect(form.html).toContain('name="status" value="1234567890123456789"');
+    expect(form.html).toContain("2234567890123456789</textarea>");
     expect(form.html).not.toContain('name="token"');
     expect(form.html).not.toContain(TOKEN);
     expect(form.html).not.toMatch(/communicator|lead|improver/i);
 
     const refused = await dashboard.post("/chat/discord/channels", {
-      channel: "1234567890123456789",
+      status: "1234567890123456789",
+      read_all: "0",
       reads: "general",
     });
     const html = await refused.text();
@@ -176,16 +204,24 @@ describe("Chat page", () => {
     expect(html).toContain("general</textarea>");
 
     const saved = await dashboard.post("/chat/discord/channels", {
-      channel: "1234567890123456789",
+      status: "1234567890123456789",
       read_all: "1",
+      reads: "2234567890123456789",
     });
     expect(saved.headers.get("location")).toBe("/chat?notice=channels");
     const page = (await dashboard.get("/chat?notice=channels")).html;
     expect(page).toContain("Channels saved");
-    expect(page).toContain("reads every channel it can see");
+    expect(page).toContain("reads every channel it can see when mentioned");
     expect((await dashboard.get("/chat/discord/channels")).html).toContain(
-      '<input type="checkbox" name="read_all" value="1" checked>',
+      '<input type="radio" name="read_all" value="1" checked>',
     );
+
+    await dashboard.post("/chat/discord/channels", {
+      status: "1234567890123456789",
+      read_all: "0",
+      reads: "",
+    });
+    expect((await dashboard.get("/chat")).html).toContain("reads no channel");
   });
 
   it("asks before it disconnects, from a menu", async () => {
