@@ -40,7 +40,7 @@ On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` 
 5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret prompt that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
 6. On **Config**, open the Models tab and then "Plan, brief, and chat", and give the factory's Hermes a model. Pick any provider Hermes supports, sign in with an API key or the code the page shows, and choose a model. The factory's Hermes home is separate from your own `~/.hermes`.
 
-7. Optionally, on **Chat**, connect a Discord or Telegram bot made for the factory. You can then talk with the factory in the chat, ask for work and follow each request in its own thread, and get alerts when something needs you.
+7. Optionally, on **Chat**, connect a Discord, Telegram, or Slack bot made for the factory. You can then talk with the factory in the chat, ask for work and follow each request in its own thread, and get alerts when something needs you.
 
 ## Use it
 

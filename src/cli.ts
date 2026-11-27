@@ -680,7 +680,7 @@ async function main(argv: string[]): Promise<number> {
             });
       let followingRequests: Promise<void> | undefined;
       const threading = setInterval(() => {
-        // One pass at a time; a slow Discord read must not stack passes.
+        // One pass at a time; a slow Discord or Slack read must not stack passes.
         followingRequests ??= (async () => {
           try {
             await requests?.link();

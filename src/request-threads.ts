@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { DiscordApi, type Fetch } from "./discord.js";
+import { SlackApi, tsOrder } from "./slack.js";
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
@@ -49,8 +50,12 @@ export interface RequestThreadsOptions {
   now?: () => Date;
 }
 
+/** Platforms whose request threads Hephaestus follows. */
+type ThreadPlatform = "discord" | "slack";
+
 interface Thread {
-  platform: "discord";
+  platform: ThreadPlatform;
+  /** A Discord thread's ID, or a Slack channel and its thread's first message, as `C123:<ts>`. */
   chat: string;
 }
 
@@ -65,6 +70,7 @@ interface Thread {
 export class RequestThreads {
   private readonly now: () => Date;
   private bot: { token: string; id: string; guild: string } | undefined;
+  private slackBot: { token: string; id: string } | undefined;
 
   constructor(private readonly options: RequestThreadsOptions) {
     this.now = options.now ?? (() => new Date());
@@ -74,8 +80,24 @@ export class RequestThreads {
     return this.options.db;
   }
 
-  /** Finds threads in the request channel whose tracking line names an issue not yet followed. */
+  /**
+   * Finds threads in each platform's request channel whose tracking line names
+   * an issue not yet followed. A platform that cannot be read does not stop the
+   * others; its error is thrown once they are done.
+   */
   async link(): Promise<void> {
+    const failures: unknown[] = [];
+    for (const pass of [() => this.linkDiscord(), () => this.linkSlack()]) {
+      try {
+        await pass();
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length > 0) throw failures[0];
+  }
+
+  private async linkDiscord(): Promise<void> {
     const credentials = this.options.messaging.credentials("discord");
     if (credentials?.request === undefined) return;
     const api = new DiscordApi(credentials.token, this.options.fetcher);
@@ -116,6 +138,60 @@ export class RequestThreads {
           await this.follow(match[1], Number(match[2]), { platform: "discord", chat: thread.id });
         }
       }
+      if (newest !== undefined) setMeta(this.db, seenKey, newest);
+    }
+  }
+
+  /** The Slack side of `link`: the request channel's threads, read again only when they have new replies. */
+  private async linkSlack(): Promise<void> {
+    const credentials = this.options.messaging.credentials("slack");
+    if (credentials?.request === undefined) return;
+    const channel = credentials.request;
+    const api = new SlackApi(credentials.token, this.options.fetcher);
+    if (this.slackBot?.token !== credentials.token) {
+      this.slackBot = { token: credentials.token, id: await api.botId() };
+    }
+    const botId = this.slackBot.id;
+    // A message with replies is a thread's first message; Hermes answers each request in one.
+    const roots = (await api.history(channel)).filter(
+      (message) => message.thread_ts === message.ts && (message.reply_count ?? 0) > 0,
+    );
+    for (const root of roots) {
+      const seenKey = `slack_thread_seen_${channel}_${root.ts}`;
+      const seen = getMeta(this.db, seenKey);
+      if (
+        seen !== undefined &&
+        root.latest_reply !== undefined &&
+        tsOrder(root.latest_reply) <= tsOrder(seen)
+      ) {
+        continue;
+      }
+      let messages;
+      try {
+        messages = await api.replies(channel, root.ts, seen);
+      } catch (error) {
+        console.error(`Reading Slack thread ${root.ts} failed`, error);
+        continue;
+      }
+      // Slack may include the thread's first message whatever the bound, so it is checked here too.
+      const fresh = messages.filter(
+        (message) => seen === undefined || tsOrder(message.ts) > tsOrder(seen),
+      );
+      for (const message of fresh) {
+        if (message.user !== botId) continue;
+        for (const match of (message.text ?? "").matchAll(TRACKING)) {
+          if (match[1] === undefined || match[2] === undefined) continue;
+          await this.follow(match[1], Number(match[2]), {
+            platform: "slack",
+            chat: `${channel}:${root.ts}`,
+          });
+        }
+      }
+      const newest = fresh.reduce<string | undefined>(
+        (top, message) =>
+          top === undefined || tsOrder(message.ts) > tsOrder(top) ? message.ts : top,
+        seen,
+      );
       if (newest !== undefined) setMeta(this.db, seenKey, newest);
     }
   }
@@ -224,8 +300,8 @@ export class RequestThreads {
         "SELECT platform, chat, after_event AS after FROM chat_threads WHERE repo = ? AND number = ?",
       )
       .get(repo, number) as { platform: string; chat: string; after: number } | undefined;
-    return row?.platform === "discord"
-      ? { platform: "discord", chat: row.chat, after: row.after }
+    return row?.platform === "discord" || row?.platform === "slack"
+      ? { platform: row.platform, chat: row.chat, after: row.after }
       : undefined;
   }
 
