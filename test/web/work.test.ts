@@ -219,7 +219,7 @@ describe("Work", () => {
     expect(html).toContain('<a href="/work">List</a>');
     expect(html).toContain('<section class="lane" aria-label="Implementing">');
     expect(html).toContain('<section class="lane" aria-label="Testing">');
-    expect(html).toContain('<section class="lane" aria-label="With the lead">');
+    expect(html).toContain('<section class="lane" aria-label="Replanning">');
     expect(html).not.toContain('aria-label="Reviewing"');
     expect(html).toContain(`<a class="tile" href="/work/${String(implementing)}">`);
     expect(html).toContain(`<a class="tile" href="/work/${String(merging)}">`);
@@ -258,7 +258,7 @@ describe("Work", () => {
     expect(order.every((index) => index >= 0)).toBe(true);
     expect(order).toEqual([...order].sort((a, b) => a - b));
     expect(page).toContain('<h2>Queued<span class="n">2</span></h2>');
-    expect(page).toContain('<h2>Waiting for the lead<span class="n">1</span></h2>');
+    expect(page).toContain('<h2>Planning<span class="n">1</span></h2>');
     expect(page).toContain('<h2>Deferred<span class="n">1</span></h2>');
     expect(page).toContain("1st in the queue");
     expect(page).toContain("2nd in the queue");
@@ -733,7 +733,8 @@ describe("Task page", () => {
     expect(html).toContain(
       `<a href="/work">Work</a><span aria-hidden="true">/</span><span>Task ${id}</span>`,
     );
-    expect(html).toContain("Waiting for you");
+    expect(html).toContain("Needs your decision");
+    expect(html).not.toContain("Waiting for you");
     expect(html).toContain("The PR touches .github/workflows/ci.yml");
     expect(html).toContain(`action="/work/${id}/approve-merge"`);
     expect(html).toContain(`Merge PR #5 at ${SHA.slice(0, 7)}`);
@@ -789,7 +790,8 @@ describe("Task page", () => {
     expect(html).not.toContain("/approve-merge");
     expect(html).toContain('<details class="menu"');
     expect(html).toContain(`<a href="/work/${id}/abandon?back=%2Fwork%2F${id}">Abandon</a>`);
-    expect(html).toContain("First attempt, not sent back.");
+    expect(html).not.toContain("First attempt");
+    expect(html).not.toContain('class="track-note"');
     expect(html).not.toContain(">Proof<");
     expect(html).not.toContain(">Attempts<");
     expect(steps(html)).toEqual([
@@ -824,8 +826,9 @@ describe("Task page", () => {
 
     expect(html).toContain('<span class="link loop" title="Sent back to Implementing 2 times">');
     expect(html).toContain('2x<span class="sr-only"> sent back</span>');
-    expect(html).toContain("<strong>Attempt 3.</strong> Sent back to Implementing 2 times.");
-    expect(html).toContain("The next one goes to the lead.");
+    expect(html).not.toContain('class="track-note"');
+    expect(html).not.toContain("Sent back to Implementing 2 times.");
+    expect(html).not.toContain("goes to the lead");
     expect(html).toContain('Attempts<span class="n">3</span>');
     expect(html).toContain("sent back 2 of 2 allowed");
     expect(html).toContain("Attempt 1");
@@ -1058,6 +1061,36 @@ describe("Task page", () => {
     await h.pipeline.abandon(task, "The owner abandoned it: blocked for good");
     const { html } = await dashboard.get(`/work/${String(task)}`);
     expect(html).toContain("<strong>Stopped at Merging.</strong>");
+  });
+
+  it("says what an escalated task waits on, the same way in its status, callout, and history", async () => {
+    dashboard = await startDashboard();
+    const { h } = dashboard;
+    const task = mergingTask(h);
+    h.tasks.transition(task, "Escalated", "to the lead: no PR to merge", {
+      escalatedTo: "lead",
+      reason: "no PR to merge",
+    });
+
+    const replanning = main((await dashboard.get(`/work/${String(task)}`)).html);
+    expect(replanning).toMatch(
+      /class="st t-wait">(?:(?!<\/span>).)*(?:<\/span>)?Replanning<\/span>/,
+    );
+    expect(replanning).toContain("<span>Replanning</span></div>");
+    expect(replanning).toContain("<strong>Sent for replanning</strong>");
+    expect(replanning).not.toContain("With the lead");
+    expect(replanning).not.toContain("Moved to Escalated");
+    expect(replanning).not.toContain("to the lead: no PR");
+
+    await h.pipeline.escalateToOwner(task, "pick a <fix>");
+    const owner = main((await dashboard.get(`/work/${String(task)}`)).html);
+    expect(owner).toMatch(
+      /class="st t-you">(?:(?!<\/span>).)*(?:<\/span>)?Needs your decision<\/span>/,
+    );
+    expect(owner).toContain("<span>Needs your decision</span></div>");
+    expect(owner).toContain("<strong>Needs your decision</strong>");
+    expect(owner).not.toContain("Escalated to you");
+    expect(owner).not.toContain("Waiting for you");
   });
 
   it("names a worker by its label, on the task and on its thread", async () => {

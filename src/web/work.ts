@@ -33,6 +33,8 @@ import {
   threadHref,
   withNotice,
   type FactoryPages,
+  NEEDS_DECISION,
+  REPLANNING,
   type NoticeKey,
   type Read,
 } from "./factory.js";
@@ -84,7 +86,6 @@ const MAX_REQUEST_BYTES = WORST_BYTES_PER_UNIT * (MAX_TITLE + MAX_DETAILS) + 8 *
 const MAX_NOTE_BYTES = WORST_BYTES_PER_UNIT * MAX_NOTE + 8 * 1024;
 const DOT = ' <span aria-hidden="true">&middot;</span> ';
 
-const WITH_LEAD = "With the lead";
 /** The board's lanes, in the order work moves through them: the task page's steps, then the two holds. */
 const LANES = [
   "Implementing",
@@ -93,7 +94,7 @@ const LANES = [
   "Merging",
   "Verifying",
   "Reverting",
-  WITH_LEAD,
+  REPLANNING,
 ];
 
 /** Factory projects in the config, plus any repo a task or issue names. */
@@ -124,12 +125,12 @@ function isSentBack(event: TaskEvent): boolean {
 }
 
 const EVENT_TITLES: Record<string, string> = {
-  "escalated:lead": "Sent to the lead",
-  "escalated:owner": "Escalated to you",
+  "escalated:lead": "Sent for replanning",
+  "escalated:owner": NEEDS_DECISION,
   held: "Put on hold on the Hermes board",
   admitted: "Admitted",
   deferred: "Deferred by the lead",
-  undeferred: "Back with the lead",
+  undeferred: "No longer deferred",
   "queue:moved": "Moved in the queue",
   error: "Error",
   waiting: "Waiting",
@@ -144,6 +145,9 @@ const EVENT_TITLES: Record<string, string> = {
 
 export function eventTitle(event: TaskEvent): string {
   if (isSentBack(event)) return "Sent back to Implementing";
+  if (event.kind === "stage:Escalated") {
+    return event.detail.startsWith("to the owner: ") ? NEEDS_DECISION : "Sent for replanning";
+  }
   if (event.kind.startsWith("stage:")) {
     return `Moved to ${stageName(event.kind.slice("stage:".length))}`;
   }
@@ -162,7 +166,9 @@ export function isBad(event: TaskEvent): boolean {
 
 /** What an event says on a page. An error's stored text can carry upstream output, so it is not shown. */
 export function eventDetail(event: TaskEvent): string {
-  return event.kind === "error" ? "A step failed; the service log has the error." : event.detail;
+  if (event.kind === "error") return "A step failed; the service log has the error.";
+  // The title already says where the escalation went.
+  return event.kind === "stage:Escalated" ? escalationReason(event.detail) : event.detail;
 }
 
 function sha(value: string): string {
@@ -255,7 +261,7 @@ function queueSections(items: Task[], places: Map<number, number>, now: number):
       const where = place === undefined ? "" : `${ordinal(place)} in the queue`;
       return [where, item.waiting ?? ""].filter((text) => text !== "").join(". ");
     }) +
-    part("Waiting for the lead", untriaged, () => "Not queued or deferred yet") +
+    part("Planning", untriaged, () => "Not queued or deferred yet") +
     part("Deferred", deferred, deferText)
   );
 }
@@ -289,7 +295,8 @@ function gridRows(items: Task[], why: (item: Task) => string, now: number): stri
 /** The tasks in progress, in a lane for each stage that holds one. */
 function board(items: Task[], lines: Map<number, string>): string {
   if (items.length === 0) return empty("No task is in progress.");
-  const laneOf = (item: Task): string => (item.stage === "Escalated" ? WITH_LEAD : taskStage(item));
+  const laneOf = (item: Task): string =>
+    item.stage === "Escalated" ? REPLANNING : taskStage(item);
   const lanes = LANES.filter((lane) => items.some((item) => laneOf(item) === lane)).map((lane) => {
     const inLane = items.filter((item) => laneOf(item) === lane);
     const tiles = inLane
@@ -304,7 +311,7 @@ function board(items: Task[], lines: Map<number, string>): string {
     return `<section class="lane" aria-label="${lane}"><h2>${lane}<span class="n">${String(inLane.length)}</span></h2><ul>${tiles}</ul></section>`;
   });
   const idle = LANES.filter(
-    (lane) => lane !== WITH_LEAD && !items.some((item) => laneOf(item) === lane),
+    (lane) => lane !== REPLANNING && !items.some((item) => laneOf(item) === lane),
   );
   const list =
     idle.length < 3
@@ -424,7 +431,7 @@ function elapsed(from: string, to: string): string {
   return hours === 0 ? `${String(minutes)}m` : `${String(hours)}h ${String(minutes % 60)}m`;
 }
 
-/** The line under the tracker: which attempt this is, or how the task ended. */
+/** The line under the tracker: how the task ended, or that it has not started. */
 function trackNote(item: Task, step: string, events: TaskEvent[], now: number): string {
   const sentBack =
     item.rounds > 0 ? `after being sent back ${times(item.rounds)}` : "not sent back";
@@ -442,20 +449,12 @@ function trackNote(item: Task, step: string, events: TaskEvent[], now: number): 
   if (item.stage === "Abandoned") {
     return `<strong>Stopped at ${step}.</strong>${item.mergeSha === null ? " Nothing was merged." : ""}`;
   }
-  if (item.rounds > 0) {
-    const max = item.policy?.maxReviewRounds;
-    const left = max === undefined ? undefined : max - item.rounds;
-    const next =
-      left === undefined
-        ? ""
-        : left > 0
-          ? ` ${String(left)} more before it goes to the lead.`
-          : " The next one goes to the lead.";
-    return `<strong>Attempt ${String(item.rounds + 1)}.</strong> Sent back to Implementing ${times(item.rounds)}.${next}`;
-  }
-  return step === "Admitted" || step === "Queued"
-    ? "Not started."
-    : "First attempt, not sent back.";
+  // A task under way gets no line: its review comments and Attempts already show any send-back.
+  return step === "Admitted" || step === "Queued" ? "Not started." : "";
+}
+
+function noteLine(note: string): string {
+  return note === "" ? "" : `<p class="track-note">${note}</p>`;
 }
 
 /**
@@ -563,12 +562,12 @@ function taskCallout(item: Task, back: string, place: number | undefined): strin
     const actions = taskActions(item);
     return callout(
       "warn",
-      "Waiting for you",
+      NEEDS_DECISION,
       reason,
       `${mergeButton(item, back)}${actions.sendToLead ? buttonLink(formHref(`/work/${id}/lead`, back), "Send to lead") : ""}${actions.abandon ? buttonLink(formHref(`/work/${id}/abandon`, back), "Abandon", { variant: "danger" }) : ""}`,
     );
   }
-  if (item.stage === "Escalated") return callout("info", "With the lead", reason);
+  if (item.stage === "Escalated") return callout("info", REPLANNING, reason);
   if (item.stage === "Abandoned") return callout("info", "Abandoned", reason);
   if (item.stage === "Admitted" && item.deferReason !== null) {
     return callout("info", "Deferred", escapeHtml(deferText(item)));
@@ -1295,7 +1294,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             })}${notice(url)}${events.ok && threads.ok && approved.ok ? "" : STORE_ERROR}${
               track === undefined
                 ? ""
-                : `${track.html}<p class="track-note">${trackNote(item, track.step, events.ok ? events.value : [], now())}</p>`
+                : `${track.html}${noteLine(trackNote(item, track.step, events.ok ? events.value : [], now()))}`
             }${taskCallout(item, back, place)}<div class="cols">${section({
               title: "Details",
               body: details(item, labels, now()),

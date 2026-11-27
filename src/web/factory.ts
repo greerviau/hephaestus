@@ -153,6 +153,13 @@ export function taskStage(task: Task): string {
   return stageName(task.stage, checksPassedAtGate(task.waiting));
 }
 
+/**
+ * What an escalated task's status says, named for what happens to it and
+ * whether the owner must act, not for who holds it.
+ */
+export const NEEDS_DECISION = "Needs your decision";
+export const REPLANNING = "Replanning";
+
 /** The task's stage as status text. */
 export function stagePill(task: Task): string {
   switch (task.stage) {
@@ -162,8 +169,8 @@ export function stagePill(task: Task): string {
       return statusText("off", "Abandoned");
     case "Escalated":
       return task.escalatedTo === "owner"
-        ? statusText("you", "Needs you")
-        : statusText("wait", "With the lead");
+        ? statusText("you", NEEDS_DECISION)
+        : statusText("wait", REPLANNING);
     case "Reverting":
       return statusText("bad", "Reverting");
     case "Admitted":

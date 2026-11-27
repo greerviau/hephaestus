@@ -13,7 +13,7 @@ const NUMBERS = [
     key: "tasksPerWorker",
     label: "Tasks per worker",
     full: "Tasks in progress per worker",
-    hint: "Tasks one machine works on at once, from implementing until verified, and tasks with the lead. A task waiting on you does not count.",
+    hint: "Tasks one machine works on at once, from implementing until verified, and tasks being replanned. A task waiting on you does not count.",
   },
   {
     key: "threadsPerWorker",
