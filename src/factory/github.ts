@@ -44,6 +44,46 @@ export class MergeConflictError extends Error {
   }
 }
 
+/**
+ * GitHub answered the merge with a 405 or 409 that is not a conflict: a branch
+ * that must be up to date, a required review, a merge queue. The same head will
+ * be refused again until someone changes the rule or the branch.
+ */
+export class MergeRefusedError extends Error {
+  constructor(
+    readonly number: number,
+    readonly status: number,
+    /** GitHub's message, on one line and short enough to show. */
+    readonly githubMessage: string,
+    options?: ErrorOptions,
+  ) {
+    super(
+      `GitHub refused to merge PR #${String(number)} (HTTP ${String(status)}): ${githubMessage}`,
+      options,
+    );
+  }
+}
+
+const REFUSAL_STATUS = /\(HTTP (405|409)\)/;
+const MESSAGE_LIMIT = 200;
+
+/** The status and message of a 405 or 409 reply in gh's error text, or undefined for any other failure. */
+function parseRefusal(error: unknown): { status: number; message: string } | undefined {
+  const text = error instanceof Error ? error.message : String(error);
+  const status = REFUSAL_STATUS.exec(text)?.[1];
+  if (status === undefined) return undefined;
+  // The command runner prefixes "<command> failed: "; gh's own line reads "gh: <message> (HTTP 405)".
+  const stderr = /\sfailed:\s([\s\S]*)$/.exec(text)?.[1] ?? text;
+  let message = stderr
+    .replace(REFUSAL_STATUS, " ")
+    .replace(/^\s*gh:\s*/, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (message === "") message = "no reason given";
+  if (message.length > MESSAGE_LIMIT) message = `${message.slice(0, MESSAGE_LIMIT - 3)}...`;
+  return { status: Number(status), message };
+}
+
 /** The PR was merged, but not by this merge call. */
 export class AlreadyMergedError extends Error {
   constructor(
@@ -401,6 +441,11 @@ export class GitHub {
           (current.mergeable === "CONFLICTING" || /merge conflict/i.test(String(error)))
         ) {
           throw new MergeConflictError(number, { cause: error });
+        }
+        const refusal = parseRefusal(error);
+        // Only an open PR at the head that was sent: a moved or closed PR is the gate's to handle.
+        if (refusal !== undefined && current.state === "OPEN" && current.headSha === headSha) {
+          throw new MergeRefusedError(number, refusal.status, refusal.message, { cause: error });
         }
         throw error;
       }

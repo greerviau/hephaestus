@@ -22,6 +22,7 @@ import { createHash } from "node:crypto";
 import {
   AlreadyMergedError,
   MergeConflictError,
+  MergeRefusedError,
   MergeOutcomeUnknownError,
   type GitHub,
   type MergeState,
@@ -1073,6 +1074,7 @@ export class Pipeline {
     } catch (error) {
       if (error instanceof AlreadyMergedError) return this.foreignMerge(card, error.mergeSha);
       if (error instanceof MergeConflictError) return this.conflicted(card, pr);
+      if (error instanceof MergeRefusedError) return this.mergeRefused(card, pr, error);
       if (error instanceof MergeOutcomeUnknownError) {
         return this.escalate(
           card,
@@ -1094,6 +1096,37 @@ export class Pipeline {
       "owner",
       `revert PR #${String(number)} conflicts with the default branch, so it cannot merge; resolve it on GitHub, then approve the revert merge to resume it; the resolved head goes through the gate again`,
       { ownerAction: "revert-merge" },
+    );
+  }
+
+  /**
+   * GitHub refused the merge for a reason that is not a conflict. The first
+   * refusal of a head is retried once, because GitHub also answers 405 while
+   * the base branch is moving; the same head refused again goes to the owner
+   * with GitHub's message. The count is the card's refusal events at this head,
+   * so it survives passes and restarts and starts over when the head changes.
+   */
+  private async mergeRefused(
+    card: Card,
+    pr: PullRequest,
+    error: MergeRefusedError,
+    revert = false,
+  ): Promise<void> {
+    const prefix = `${pr.headSha}: `;
+    const refused = this.cards
+      .events(card.id)
+      .filter((event) => event.kind === "merge-refused" && event.detail.startsWith(prefix)).length;
+    const what = revert ? `revert PR #${String(pr.number)}` : `PR #${String(pr.number)}`;
+    if (refused === 0) {
+      this.cards.event(card.id, "merge-refused", `${prefix}${error.githubMessage}`);
+      this.wait(card, `GitHub refused to merge ${what}: ${error.githubMessage}; trying once more`);
+      return;
+    }
+    return this.escalate(
+      card,
+      "owner",
+      `GitHub refuses to merge ${what}: ${error.githubMessage}. Change the rule or merge it on GitHub; approving here tries the merge again`,
+      { ownerAction: revert ? "revert-merge" : "merge" },
     );
   }
 
@@ -1352,6 +1385,7 @@ export class Pipeline {
         );
       }
       if (error instanceof MergeConflictError) return this.revertConflicted(card, pr.number);
+      if (error instanceof MergeRefusedError) return this.mergeRefused(card, pr, error, true);
       if (!(error instanceof AlreadyMergedError)) throw error;
       this.cards.recordForeignRevert(card.repo, pr.number, error.mergeSha ?? "", card.id);
     }
