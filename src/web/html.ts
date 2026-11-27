@@ -1,4 +1,5 @@
 import { ICON_LINKS, LOGO_PATH } from "./brand.js";
+import type { DeployStatus } from "./deploys.js";
 import { LIVE_SCRIPT_PATH } from "./live.js";
 
 const ESCAPES: Record<string, string> = {
@@ -115,6 +116,8 @@ export interface Shell {
     /** Whether an update runs now. Read only while origin/main is ahead. */
     updating?: boolean;
   };
+  /** Config deploys under way or just ended; absent when nothing deploys here. */
+  deploys?: DeployStatus;
   /**
    * The page's own address without a result notice: where the picker and the
    * pause control return to, and what a reloading page reloads. Undefined on
@@ -226,6 +229,38 @@ function updateNotice(version: NonNullable<Shell["version"]>): string {
   );
 }
 
+/** How many seconds a page waits before it fetches itself again while a deploy runs. */
+const DEPLOY_REFRESH_SECONDS = 3;
+
+/** The sidebar's deploy status: what runs now, and how the last deploy ended. Empty when there is nothing to say. */
+function deployLines(status: DeployStatus): string {
+  const lines: string[] = [];
+  const link = (version: number): string => `/config/versions/${String(version)}`;
+  const { running, last } = status;
+  if (running !== undefined) {
+    const queued = running.queued === 0 ? "" : ` (${String(running.queued)} more waiting)`;
+    lines.push(
+      `<div class="row-line">${statusText("run", `Deploying version ${String(running.version)}${queued}`)}</div>`,
+    );
+  }
+  if (last?.outcome === "succeeded") {
+    lines.push(
+      `<div class="row-line">${statusText("done", `Deployed version ${String(last.version)}`)}</div>`,
+    );
+  } else if (last !== undefined) {
+    const label =
+      last.outcome === "failed"
+        ? `Deploying version ${String(last.version)} failed`
+        : `Version ${String(last.version)} deployed, but not applied to the factory Hermes root`;
+    lines.push(
+      `<div class="row-line">${statusText("bad", label)}</div><p class="hint">The service log has the error. <a href="${link(last.version)}">Open the version</a> to deploy it again.</p>`,
+    );
+  }
+  return lines.length === 0
+    ? ""
+    : `<div class="deploy-status" role="status">${lines.join("")}</div>`;
+}
+
 /** The running state with its Pause or Resume control, and the dialog Pause opens. */
 function pauseControl(shell: Shell, back: string): { line: string; dialog: string } {
   if (shell.paused === undefined) {
@@ -293,14 +328,18 @@ ${shell === undefined ? "" : projectPicker(shell, back)}
 <nav class="side-nav" aria-label="Pages">
 ${groups}
 </nav>
-<div class="side-foot">${pause === undefined ? "" : `<div class="row-line">${pause.line}</div>`}${shell?.version === undefined ? "" : versionLines(shell.version)}<div class="row-line"><form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form></div></div>
+<div class="side-foot">${pause === undefined ? "" : `<div class="row-line">${pause.line}</div>`}${shell?.version === undefined ? "" : versionLines(shell.version)}${shell?.deploys === undefined ? "" : deployLines(shell.deploys)}<div class="row-line"><form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form></div></div>
 </aside>
 <main id="main" tabindex="-1"><div class="page">
 ${options.updateNotice === false || shell?.version === undefined ? "" : updateNotice(shell.version)}${crumbs}${body}
 </div></main>
 </div>
 ${pause?.dialog ?? ""}`,
-    options.refreshSeconds,
+    // A deploy under way keeps every page current, so the sidebar shows how it ends.
+    options.refreshSeconds ??
+      (shell?.deploys?.running === undefined || shell.back === undefined
+        ? undefined
+        : DEPLOY_REFRESH_SECONDS),
     shell?.back,
   );
 }

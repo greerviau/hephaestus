@@ -25,7 +25,7 @@ import {
   type Row,
 } from "./html.js";
 import { readBody, redirect, type Route, type RouteContext } from "./http.js";
-import type { Deploy } from "./settings.js";
+import type { BackgroundDeploys } from "./deploys.js";
 
 /** What the factory pages read and act on. */
 export interface FactoryPages {
@@ -53,8 +53,8 @@ export interface FactoryPages {
   analytics: (options: { repo?: string; days: number }) => Analytics;
   workers?: Pick<WorkerManager, "views">;
   environments: EnvironmentSource;
-  /** Publishes a version and deploys it to every worker; approving a proposal calls it. */
-  deploy?: Deploy;
+  /** Deploys versions to every worker in the background; an approval starts one. */
+  deploys?: BackgroundDeploys;
   /** The chat Hephaestus talks to the owner in; absent without the factory's Hermes. */
   messaging?: Pick<
     Messaging,
@@ -382,18 +382,18 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
   },
   approved: {
     kind: "info",
-    title: "Proposal approved and deployed",
-    text: "Workers pick the version up once their running factory threads finish.",
+    title: "Proposal approved",
+    text: "It deploys in the background; the sidebar shows how that ends. Workers pick the version up once their running factory threads finish.",
   },
-  "deploy-failed": {
+  "already-deployed": {
+    kind: "info",
+    title: "Already approved and deployed",
+    text: "Nothing changed.",
+  },
+  "not-deployed": {
     kind: "err",
     title: "Approved, but not deployed",
-    text: "The version is approved. Deploying it failed; retry from its page in Config. The service log has the error.",
-  },
-  "hermes-failed": {
-    kind: "err",
-    title: "Deployed, but the factory Hermes root was not updated",
-    text: "Workers get the version. Applying it to the factory Hermes root failed; the service log has the error.",
+    text: "The version is approved, but nothing here can deploy it. Deploy it from its page in Config.",
   },
   "proposal-rejected": {
     kind: "info",

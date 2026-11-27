@@ -1,6 +1,7 @@
 import { VersionNotFoundError, type ConfigVersion } from "../config/store.js";
 import { configPage, configTab, refusal } from "./config-page.js";
 import { ownerReason } from "./workers.js";
+import { approveVersion, deployVersion } from "./versions.js";
 import type { FactoryPages } from "./factory.js";
 import {
   callout,
@@ -38,7 +39,7 @@ function href(id: number): string {
 
 /** The Versions tab, each version's page, and the actions that move a version between states. */
 export function versionRoutes(factory: FactoryPages): Route[] {
-  const { store, deploy } = factory;
+  const { store, deploys } = factory;
   return [
     {
       method: "GET",
@@ -57,7 +58,9 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     {
       method: "POST",
       path: /^\/config\/versions\/(\d+)\/(approve|reject|revert|deploy)$/,
-      handle: (context) => act(context),
+      handle: (context) => {
+        act(context);
+      },
     },
     {
       method: "GET",
@@ -137,7 +140,7 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     const actions: string[] = [];
     const dialogs: string[] = [];
     if (version.state === "draft") {
-      const label = deploy === undefined ? "Approve" : "Approve and deploy";
+      const label = deploys === undefined ? "Approve" : "Approve and deploy";
       actions.push(
         dialogButton("approve-version", label, { variant: "primary" }),
         dialogButton("reject-version", "Reject"),
@@ -147,7 +150,7 @@ export function versionRoutes(factory: FactoryPages): Route[] {
           id: "approve-version",
           title: `Approve ${v}`,
           body:
-            deploy === undefined
+            deploys === undefined
               ? `<p>Approve config ${v}?</p>`
               : `<p>Approve config ${v} and deploy it to every worker?</p><p class="muted">${PICKED_UP}</p>`,
           action: `${here}/approve`,
@@ -163,7 +166,7 @@ export function versionRoutes(factory: FactoryPages): Route[] {
         }),
       );
     }
-    if (deploy !== undefined && (version.state === "approved" || version.state === "deployed")) {
+    if (deploys !== undefined && (version.state === "approved" || version.state === "deployed")) {
       const again = version.state === "deployed";
       actions.push(
         dialogButton(
@@ -199,20 +202,6 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     }
     const conflicts = Number(url.searchParams.get("conflicts") ?? "0");
     const notes = [
-      url.searchParams.get("deploy") === null
-        ? ""
-        : callout(
-            "err",
-            "Approved, but not deployed",
-            'Deploying the version failed. Check that the config repo is named on <a href="/config">Config</a>, then deploy again. The service log has the error.',
-          ),
-      url.searchParams.get("hermes") === "failed"
-        ? callout(
-            "err",
-            "The factory Hermes root was not updated",
-            "The version is deployed, but applying it to the factory Hermes root failed. The service log has the error.",
-          )
-        : "",
       Number.isInteger(conflicts) && conflicts > 0
         ? callout(
             "info",
@@ -249,11 +238,11 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     );
   }
 
-  async function act(context: RouteContext): Promise<void> {
+  function act(context: RouteContext): void {
     const { response, params } = context;
     const id = Number(params[0]);
     const action = params[1];
-    if (find(id) === undefined || (action === "deploy" && deploy === undefined)) {
+    if (find(id) === undefined || (action === "deploy" && deploys === undefined)) {
       notFound(context);
       return;
     }
@@ -267,8 +256,8 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     };
     if (action === "deploy") {
       try {
-        const { hermesError } = (await deploy?.(id)) ?? {};
-        redirect(response, `${here}${hermesError === undefined ? "" : "?hermes=failed"}`);
+        if (deploys !== undefined) deployVersion(store, deploys, id);
+        redirect(response, here);
       } catch (error) {
         refuse("Not deployed", error);
       }
@@ -280,21 +269,11 @@ export function versionRoutes(factory: FactoryPages): Route[] {
         redirect(response, `${href(version.id)}?conflicts=${String(conflicts.length)}`);
         return;
       }
+      // Approval starts the deploy, which runs in the background; a failed one can be retried from the page.
       if (action === "reject") store.reject(id);
-      else store.approve(id);
+      else approveVersion(store, deploys, id);
     } catch (error) {
       refuse("Not allowed", error);
-      return;
-    }
-    // Approval deploys the version; a failed deploy can be retried from its page.
-    if (action === "approve" && deploy !== undefined) {
-      try {
-        const { hermesError } = await deploy(id);
-        redirect(response, `${here}${hermesError === undefined ? "" : "?hermes=failed"}`);
-      } catch (error) {
-        console.error(`Deploying version ${String(id)} failed`, error);
-        redirect(response, `${here}?deploy=failed`);
-      }
       return;
     }
     redirect(response, here);

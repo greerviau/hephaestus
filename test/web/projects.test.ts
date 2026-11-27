@@ -203,15 +203,17 @@ describe("Projects", () => {
     expect((await dashboard.get("/projects")).html).toContain("No project yet.");
   });
 
-  it("says when the approved version could not be deployed", async () => {
+  it("shows in the sidebar when the approved version could not be deployed", async () => {
     dashboard = await startDashboard({
       github,
       deploy: () => Promise.reject(new Error("no config repo")),
     });
     const base = dashboard.store.current()?.id ?? 0;
     const response = await dashboard.post("/projects/save", added("octo/lib", base));
-    expect(response.headers.get("location")).toBe("/projects?notice=deploy-failed");
+    await dashboard.deploysSettled();
+    expect(response.headers.get("location")).toBe("/projects?notice=added");
     expect(dashboard.store.list()[0]?.state).toBe("approved");
+    expect((await dashboard.get("/projects")).html).toContain("failed</span>");
   });
 
   it("refuses actions from another origin", async () => {
@@ -379,7 +381,7 @@ describe("Projects, under concurrent changes", () => {
     expect(html).not.toContain("/settings");
   });
 
-  it("says when the factory Hermes root was not updated", async () => {
+  it("shows in the sidebar when the factory Hermes root was not updated", async () => {
     dashboard = await startDashboard({
       github,
       deploy: (id) => {
@@ -391,7 +393,11 @@ describe("Projects, under concurrent changes", () => {
       "/projects/save",
       added("octo/lib", dashboard.store.current()?.id ?? 0),
     );
-    expect(response.headers.get("location")).toBe("/projects?notice=hermes-failed");
+    await dashboard.deploysSettled();
+    expect(response.headers.get("location")).toBe("/projects?notice=added");
+    expect((await dashboard.get("/projects")).html).toContain(
+      "not applied to the factory Hermes root",
+    );
   });
 });
 

@@ -367,8 +367,54 @@ describe("Instructions editor", () => {
     });
     expect(saved.document.roles.planner).toEqual(agentsConfig().roles.planner);
     const { html } = await dashboard.get(`/config/agents/lead?saved=${String(base + 1)}`);
-    expect(html).toContain(`Version ${String(base + 1)} is deployed.`);
+    expect(html).toContain(`Version ${String(base + 1)} is saved and deploying.`);
     expect(html).toContain("Lead &lt;carefully&gt;.");
+  });
+
+  it("answers a save before its deploy finishes, and deploys saves one after another", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    const running: number[] = [];
+    let overlap = false;
+    await dashboard.close();
+    dashboard = await startDashboard({
+      configRepo: "octo/hephaestus-config",
+      deploy: async (id) => {
+        if (running.length > 0) overlap = true;
+        running.push(id);
+        await held;
+        dashboard.store.markDeployed(id);
+        running.pop();
+        return {};
+      },
+    });
+    const first = dashboard.store.createVersion({
+      document: agentsConfig(),
+      author: "owner",
+      message: "Two skills",
+      parentId: 1,
+    });
+    dashboard.store.approve(first.id);
+    dashboard.store.markDeployed(first.id);
+    const fields = (text: string) => ({
+      parentId: String(first.id),
+      text,
+      skills: ["brief"],
+      message: "Edit",
+      deploy: "on",
+    });
+
+    const one = await post("/config/agents/lead", fields("One."));
+    const two = await post("/config/agents/lead", fields("Two."));
+
+    expect(one.status).toBe(303);
+    expect(two.status).toBe(303);
+    expect((await dashboard.get("/config/agents/lead")).html).toContain("Deploying version");
+    release();
+    await dashboard.deploysSettled();
+    expect(overlap).toBe(false);
   });
 
   it("saves the thread instructions and thread skills, as a draft when Deploy now is not ticked", async () => {

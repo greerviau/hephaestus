@@ -132,14 +132,14 @@ export function problems(title: string, errors: readonly string[] | undefined): 
   return `<div class="box err" role="alert"><div class="box-title">${icon("x")}<span>${escapeHtml(title)}</span></div><ul>${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`;
 }
 
-/** The callout a page shows after a save that deployed, from the `saved` query the save redirects with. */
+/** The callout a page shows after a save that started a deploy, from the `saved` query the save redirects with. */
 export function savedNotice(url: URL): string {
   const id = url.searchParams.get("saved") ?? "";
   return /^\d{1,9}$/.test(id)
     ? callout(
         "info",
         "Saved",
-        `Version ${id} is deployed. <a href="/config/versions/${id}">See what changed</a>.`,
+        `Version ${id} is saved and deploying. The sidebar shows how the deploy ends. <a href="/config/versions/${id}">See what changed</a>.`,
       )
     : "";
 }
@@ -219,25 +219,26 @@ export interface Save {
   message: string;
   base: ConfigVersion;
   form: URLSearchParams;
-  /** Where to go once the version is deployed; the version's number is added as `saved`. */
+  /** Where to go once a deploy is under way; the version's number is added as `saved`. */
   saved: string;
 }
 
 /**
- * Saves `document` as a version, deploys it when the form asks, and redirects:
- * to `saved` once deployed, else to the version's page, which says what is
- * left to do. Returns the reasons instead when the config refuses the document.
+ * Saves `document` as a version, starts its deploy in the background when the
+ * form asks, and redirects at once: to `saved` once a deploy is under way, else
+ * to the version's page, which says what is left to do. Returns the reasons
+ * instead when the config refuses the document.
  */
-export async function saveVersion(
+export function saveVersion(
   factory: FactoryPages,
   context: RouteContext,
   save: Save,
-): Promise<string[] | undefined> {
+): string[] | undefined {
   let published;
   try {
-    published = await publishVersion({
+    published = publishVersion({
       store: factory.store,
-      deploy: factory.deploy,
+      deploys: factory.deploys,
       document: save.document,
       message: save.message,
       parentId: save.base.id,
@@ -249,9 +250,7 @@ export async function saveVersion(
     throw error;
   }
   const page = `/config/versions/${String(published.id)}`;
-  if (published.state === "deploy-failed") redirect(context.response, `${page}?deploy=failed`);
-  else if (published.state !== "deployed") redirect(context.response, page);
-  else if (published.hermesError !== undefined) redirect(context.response, `${page}?hermes=failed`);
+  if (published.state !== "deploying") redirect(context.response, page);
   else {
     redirect(
       context.response,

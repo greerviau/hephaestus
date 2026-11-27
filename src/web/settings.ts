@@ -87,7 +87,7 @@ export function configRoutes(factory: FactoryPages): Route[] {
     const errors =
       applied.errors.length > 0
         ? applied.errors
-        : await saveVersion(factory, context, {
+        : saveVersion(factory, context, {
             document: applied.config,
             message: "Change the factory settings",
             base,
