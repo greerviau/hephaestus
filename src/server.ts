@@ -17,6 +17,7 @@ import {
 import { CHART_TIP_SCRIPT, CHART_TIP_SCRIPT_PATH } from "./web/chart-tip.js";
 import { LAZY_SCRIPT, LAZY_SCRIPT_PATH } from "./web/lazy.js";
 import { LIVE_SCRIPT, LIVE_SCRIPT_PATH } from "./web/live.js";
+import { PROJECT_FILTER_SCRIPT, PROJECT_FILTER_SCRIPT_PATH } from "./web/project-filter.js";
 import { STYLESHEET } from "./web/style.js";
 import { LOGO_PATH, brandFile } from "./web/brand.js";
 
@@ -95,6 +96,10 @@ export function createDashboardServer({
     }
     if (path === CHART_TIP_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
       send(response, 200, "text/javascript; charset=utf-8", CHART_TIP_SCRIPT);
+      return;
+    }
+    if (path === PROJECT_FILTER_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
+      send(response, 200, "text/javascript; charset=utf-8", PROJECT_FILTER_SCRIPT);
       return;
     }
     const brand = method === "GET" || method === "HEAD" ? brandFile(path) : undefined;

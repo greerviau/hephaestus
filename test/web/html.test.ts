@@ -128,7 +128,11 @@ describe("layout", () => {
     expect(form).toContain('<option value="">All projects</option>');
     expect(form).toContain('<option value="octo/app">app</option>');
     expect(form).toContain('<option value="octo/site" selected>site</option>');
-    expect(form).toContain('<button type="submit">Apply</button>');
+    expect(form).toContain('<select id="shell-project" name="project" data-submit-on-change>');
+    // Changing the project applies it at once; the button is only for a browser without scripts.
+    expect(form).toContain('<noscript><button type="submit">Apply</button></noscript>');
+    expect(form.replace(/<noscript>.*?<\/noscript>/gs, "")).not.toContain("<button");
+    expect(html).toContain('<script src="/assets/project-filter.js" defer></script>');
   });
 
   it("names the owner in the picker when two projects share a repo name", () => {
@@ -205,7 +209,10 @@ describe("layout", () => {
     expect(html).toContain(
       'popovertarget="side" popovertargetaction="hide" aria-label="Close menu"',
     );
-    expect(html).not.toContain("<script");
+    // The only script is the project picker's, which the menu does not need.
+    expect(
+      html.replace('<script src="/assets/project-filter.js" defer></script>', ""),
+    ).not.toContain("<script");
   });
 
   it("shows breadcrumbs above the page, the last one as text", () => {

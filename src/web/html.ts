@@ -1,6 +1,7 @@
 import { ICON_LINKS, LOGO_PATH } from "./brand.js";
 import type { DeployStatus } from "./deploys.js";
 import { LIVE_SCRIPT_PATH } from "./live.js";
+import { PROJECT_FILTER_SCRIPT_TAG } from "./project-filter.js";
 
 const ESCAPES: Record<string, string> = {
   "&": "&amp;",
@@ -176,7 +177,7 @@ function projectPicker(shell: Shell, back: string): string {
       return `<option value="${escapeHtml(repo)}"${repo === shell.project ? " selected" : ""}>${escapeHtml(unique ? short(repo) : repo)}</option>`;
     })
     .join("");
-  return `<form class="scope" method="post" action="${PROJECT_FILTER_PATH}">${hiddenFields({ back })}<label class="nav-label" for="shell-project">Project</label><div class="scope-row"><select id="shell-project" name="project"><option value="">All projects</option>${options}</select><button type="submit">Apply</button></div></form>`;
+  return `<form class="scope" method="post" action="${PROJECT_FILTER_PATH}">${hiddenFields({ back })}<label class="nav-label" for="shell-project">Project</label><select id="shell-project" name="project" data-submit-on-change><option value="">All projects</option>${options}</select><noscript><button type="submit">Apply</button></noscript></form>${PROJECT_FILTER_SCRIPT_TAG}`;
 }
 
 const PAUSE_DIALOG = "pause-dialog";

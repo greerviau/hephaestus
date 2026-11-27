@@ -65,7 +65,6 @@ aside.side::backdrop { display: none; }
 .nav-group { display: grid; gap: 2px; }
 .scope { display: grid; gap: 4px; padding: 0 8px; margin: 0; }
 .scope .nav-label { padding: 0; }
-.scope-row { display: grid; gap: 8px; }
 .scope select { width: 100%; min-width: 0; }
 .nav-label { color: var(--muted); font-size: 12px; padding: 0 8px 4px; }
 .nav-group a { display: flex; justify-content: space-between; align-items: center; gap: 8px; min-height: 32px; padding: 4px 8px; border-radius: var(--r); color: var(--ink-2); }
