@@ -302,6 +302,30 @@ export class T3Adapter {
     );
   }
 
+  /**
+   * Threads on an environment titled exactly `title`, in any status, newest first. T3 only
+   * filters by a substring, so "Task 2" would also find "Task 25"; the exact match is ours.
+   */
+  async threadsTitled(environmentId: string, title: string): Promise<string[]> {
+    const found: string[] = [];
+    let cursor: number | undefined;
+    for (let page = 0; page < 10; page += 1) {
+      const result = (await this.connection.call("t3_thread_list", {
+        environmentId,
+        allProjects: true,
+        titleContains: title,
+        limit: 100,
+        ...(cursor === undefined ? {} : { cursor }),
+      })) as { threads?: { threadId?: string; title?: string }[]; nextCursor?: number | null };
+      for (const thread of result.threads ?? []) {
+        if (thread.threadId !== undefined && thread.title === title) found.push(thread.threadId);
+      }
+      if (typeof result.nextCursor !== "number") break;
+      cursor = result.nextCursor;
+    }
+    return found;
+  }
+
   /** Projects on an environment with their workspace folders. */
   async projects(environmentId: string): Promise<{ projectId: string; workspaceRoot: string }[]> {
     const result = (await this.connection.call("t3_project_list", { environmentId })) as {

@@ -521,6 +521,25 @@ describe("the lead's queue", () => {
     ]);
   });
 
+  it("takes up the thread a lost launch started instead of launching a second one", async () => {
+    const h = harness();
+    const a = admitted(h, "A");
+    // T3 starts the thread but the reply is lost; after a sign-in change T3 would start
+    // another thread for the same request id, so the replay must not launch.
+    const launch = h.t3.launchThread.bind(h.t3);
+    h.t3.launchThread = async (options) => {
+      await launch(options);
+      throw new Error("socket hang up");
+    };
+    await h.pipeline.queue(a, "brief").catch(() => undefined);
+    h.t3.launchThread = launch;
+
+    await h.pipeline.tick();
+
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.tasks.get(a)).toMatchObject({ stage: "Implementing", implementThread: "t1" });
+  });
+
   it("keeps a queued task on the worker that refused its launch", async () => {
     const h = harness();
     const a = admitted(h, "A");
