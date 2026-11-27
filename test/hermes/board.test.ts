@@ -18,7 +18,7 @@ describe("kanbanStateFor", () => {
       "Reverting",
       "Escalated",
     ] as const) {
-      expect(kanbanStateFor(stage)).toBe("blocked");
+      expect(kanbanStateFor(stage)).toBe("scheduled");
     }
     expect(kanbanStateFor("Done")).toBe("done");
     expect(kanbanStateFor("Abandoned")).toBe("archived");
@@ -62,7 +62,7 @@ describe("FactoryBoard", () => {
     ]);
   });
 
-  it("blocks a card for a tracked stage once and records the stage as a comment", async () => {
+  it("parks a card for a tracked stage once, without a block Hermes counts, and records the stage", async () => {
     const { hermes, board: b } = board();
     let status = "ready";
     hermes.answer(
@@ -70,9 +70,9 @@ describe("FactoryBoard", () => {
       () => JSON.stringify({ task: { id: "t_1", status } }),
     );
     hermes.answer(
-      (args) => args.includes("block"),
+      (args) => args.includes("schedule"),
       () => {
-        status = "blocked";
+        status = "scheduled";
         return "";
       },
     );
@@ -81,7 +81,7 @@ describe("FactoryBoard", () => {
     await b.setStage("t_1", "Reviewing", "thread-10");
 
     expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
-      "kanban --board factory block -- t_1 stage=Implementing",
+      "kanban --board factory schedule -- t_1 stage=Implementing",
       "kanban --board factory comment --author=hephaestus -- t_1 stage=Implementing thread=thread-9",
       "kanban --board factory comment --author=hephaestus -- t_1 stage=Reviewing thread=thread-10",
     ]);
@@ -144,5 +144,108 @@ describe("FactoryBoard", () => {
 
     status = "done";
     await expect(b.setStage("t_1", "Admitted")).rejects.toThrow(/done/);
+  });
+
+  it("parks a card Hermes moved to triage through the plugin, which can move it from there", async () => {
+    const { hermes, board: b } = board();
+    let status = "triage";
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status } }),
+    );
+    hermes.answer(
+      (args) => args.includes("move-task"),
+      () => {
+        status = "scheduled";
+        return `noise\n${JSON.stringify({ ok: true, status })}\n`;
+      },
+    );
+
+    await b.setStage("t_1", "Reviewing", "thread-10");
+
+    expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
+      "hephaestus move-task --board=factory --to=scheduled -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 stage=Reviewing thread=thread-10",
+    ]);
+  });
+
+  it("hands a card in triage back to the lead's ready queue", async () => {
+    const { hermes, board: b } = board();
+    let status = "triage";
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status } }),
+    );
+    hermes.answer(
+      (args) => args.includes("move-task"),
+      () => {
+        status = "ready";
+        return JSON.stringify({ ok: true, status });
+      },
+    );
+
+    await b.handBack("t_1", "Escalated to the lead: the review thread ended failed");
+    status = "triage";
+    await b.setStage("t_1", "Admitted");
+
+    expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
+      "hephaestus move-task --board=factory --to=ready -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 Escalated to the lead: the review thread ended failed",
+      "hephaestus move-task --board=factory --to=ready -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 stage=Admitted",
+    ]);
+  });
+
+  it("fails a hand-back the plugin refuses or cannot run, after leaving the note", async () => {
+    const { hermes, board: b } = board();
+    hermes.answer(
+      (args) => args.includes("show"),
+      JSON.stringify({ task: { id: "t_1", status: "triage" } }),
+    );
+    hermes.answer(
+      (args) => args.includes("move-task"),
+      JSON.stringify({ refused: "Hermes did not move task t_1 to ready." }),
+    );
+
+    await expect(b.handBack("t_1", "note")).rejects.toThrow(/did not move task t_1/);
+    expect(hermes.lines()).toContain(
+      "kanban --board factory comment --author=hephaestus -- t_1 note",
+    );
+  });
+
+  it("completes a parked card through blocked, which Hermes completes and no worker claims", async () => {
+    const { hermes, board: b } = board();
+    let status = "scheduled";
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status } }),
+    );
+    hermes.answer(
+      (args) => args.includes("move-task"),
+      () => {
+        status = "blocked";
+        return JSON.stringify({ ok: true, status });
+      },
+    );
+    hermes.answer(
+      (args) => args.includes("complete"),
+      () => {
+        status = "done";
+        return "";
+      },
+    );
+
+    await b.setStage("t_1", "Done");
+    status = "triage";
+    await b.setStage("t_1", "Done");
+
+    expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
+      "hephaestus move-task --board=factory --to=blocked -- t_1",
+      "kanban --board factory complete --result=Validated and merged. -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 stage=Done",
+      "hephaestus move-task --board=factory --to=blocked -- t_1",
+      "kanban --board factory complete --result=Validated and merged. -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 stage=Done",
+    ]);
   });
 });

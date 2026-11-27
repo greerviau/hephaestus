@@ -340,6 +340,45 @@ describe("Pipeline", () => {
     expect(h.cards.get(id).reason).toMatch(/no longer has the thread/);
   });
 
+  it("parks the lead's task on the board when the lead restarts a card on its own thread", async () => {
+    const h = harness();
+    const id = admitted(h);
+    h.cards.update(id, { hermesCardId: "t_lead" });
+    await h.pipeline.startWork(id, "brief");
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    h.board.length = 0;
+
+    await h.pipeline.startWork(id, "try again");
+
+    expect(h.t3.sends).toHaveLength(1);
+    expect(h.board).toEqual(["t_lead Implementing t1"]);
+  });
+
+  it("counts cards with the lead and cards waiting on a usage limit apart in one message", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 2;
+      config.factory.limits.threadsPerWorker = 3;
+    });
+    const limited = admitted(h);
+    await h.pipeline.startWork(limited, "brief");
+    h.limit("t1");
+    await h.pipeline.tick();
+    const failed = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Second" }).id;
+    await h.pipeline.startWork(failed, "brief");
+    h.finish("t2", "", "failed");
+    await h.pipeline.tick();
+    expect(h.cards.get(failed)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+
+    const third = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Third" }).id;
+    await h.pipeline.startWork(third, "brief");
+
+    expect(h.cards.get(third).waiting).toBe(
+      "The limit of 2 running factory threads is reached, counting 1 task with the lead and 1 waiting for a usage limit to reset.",
+    );
+  });
+
   it("keeps the thread slot of a card waiting on a usage limit or on the lead", async () => {
     const h = harness((config) => {
       config.factory.limits.threads = 1;
@@ -351,7 +390,9 @@ describe("Pipeline", () => {
     const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     await h.pipeline.startWork(second, "brief");
     expect(h.t3.launches).toHaveLength(1);
-    expect(h.cards.get(second).waiting).toMatch(/limit of 1 running factory threads/);
+    expect(h.cards.get(second).waiting).toBe(
+      "The limit of 1 running factory threads is reached, counting 1 task waiting for a usage limit to reset.",
+    );
 
     // The first card's next run fails for another reason, so it goes to the lead and keeps its slot.
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
@@ -361,6 +402,10 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.cards.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     expect(h.t3.launches).toHaveLength(1);
+    await h.pipeline.tick();
+    expect(h.cards.get(second).waiting).toBe(
+      "The limit of 1 running factory threads is reached, counting 1 task with the lead.",
+    );
 
     // Once it is with the owner, it is blocked, and the next card may start.
     await h.pipeline.escalateToOwner(first, "needs a decision");

@@ -4,6 +4,7 @@ import type { FactoryConfig } from "../config/document.js";
 import type { ConfigStore } from "../config/store.js";
 import { getMeta, setMeta } from "../meta.js";
 import type { T3Adapter } from "../t3/adapter.js";
+import { utcMinute } from "../time.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import type { FactoryThreads } from "../t3/threads.js";
 import type { ConfigRepo } from "./config-repo.js";
@@ -207,8 +208,10 @@ const TIMEOUTS: Record<TaskKind, number> = {
 };
 /** A launch whose reply never came is replayed, with the same request id, after this. */
 const LAUNCH_GRACE_MS = 2 * MINUTE;
-/** How long after a check hit a usage limit it runs again. */
+/** How long after a check hit a usage limit it runs again, when T3 does not say when the limit resets. */
 const LIMIT_RECHECK_MS = 30 * MINUTE;
+/** How long after the reset T3 reports a check runs again, for clocks a little apart. */
+const LIMIT_GRACE_MS = MINUTE;
 const LAUNCH_ATTEMPTS = 3;
 /** A failed deploy is retried automatically after this. */
 const DEPLOY_RETRY_MS = 30 * MINUTE;
@@ -395,8 +398,9 @@ export class WorkerManager {
     ) {
       const name = claude === "limited" ? "Factory Claude" : "Factory Codex";
       const task = tasks[claude === "limited" ? "test-claude" : "test-codex"];
+      const when = task === undefined ? "soon" : `at ${utcMinute(limitRecheckAt(task))}`;
       blocker =
-        `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again every ${String(LIMIT_RECHECK_MS / MINUTE)} minutes. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
+        `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again ${when}. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
       automatic = true;
     } else if (claude !== "signed-in" && claude !== "limited") {
       automatic = claude === "checking" && tasks["claude-sign-in"]?.status !== "running";
@@ -755,10 +759,28 @@ export class WorkerManager {
    * again now.
    */
   private async failLimited(task: WorkerTask, limit: string): Promise<void> {
+    const now = this.now().getTime();
+    const fallback = new Date(now + LIMIT_RECHECK_MS).toISOString();
+    // Settled before T3 is read, so a pass that overlaps this one finds the check no longer running.
     this.update(task.id, {
       status: "failed",
-      detail: { ...task.detail, reason: `the provider's usage limit: ${limit}`, limited: true },
+      detail: {
+        ...task.detail,
+        reason: `the provider's usage limit: ${limit}`,
+        limited: true,
+        recheckAt: fallback,
+      },
     });
+    const reset = await this.limitReset(task);
+    const latest = this.task(task.id);
+    if (reset !== undefined && latest?.detail.recheckAt === fallback) {
+      this.update(task.id, {
+        detail: {
+          ...latest.detail,
+          recheckAt: new Date(Math.max(reset + LIMIT_GRACE_MS, now)).toISOString(),
+        },
+      });
+    }
     const signIn = task.kind === "test-claude" ? "claude-sign-in" : "codex-sign-in";
     const after = [
       this.latestTask(task.environmentId, "deploy", "succeeded"),
@@ -769,7 +791,20 @@ export class WorkerManager {
     }
   }
 
-  /** Runs a sign-in check again once a check that hit a usage limit is old enough for it to have reset. */
+  /** When the usage limit a check hit resets, as the time T3 wakes the snoozed thread; undefined when T3 has none. */
+  private async limitReset(task: WorkerTask): Promise<number | undefined> {
+    if (task.threadId === null) return undefined;
+    try {
+      const state = await this.options.t3.threadState(task.environmentId, task.threadId);
+      const reset = state.snoozedUntil === null ? Number.NaN : Date.parse(state.snoozedUntil);
+      return Number.isFinite(reset) ? reset : undefined;
+    } catch (error) {
+      console.error(`Reading check thread ${task.threadId} after its usage limit failed`, error);
+      return undefined;
+    }
+  }
+
+  /** Runs a sign-in check again once a check that hit a usage limit is due. */
   private async recheckLimited(): Promise<void> {
     const at = this.now().getTime();
     for (const view of this.views()) {
@@ -782,7 +817,7 @@ export class WorkerManager {
       for (const kind of ["test-claude", "test-codex"] as const) {
         const task = view.tasks[kind];
         if (task?.status !== "failed" || task.detail.limited !== true) continue;
-        if (at - Date.parse(task.updatedAt) < LIMIT_RECHECK_MS) continue;
+        if (at < limitRecheckAt(task)) continue;
         await this.startOnce(view.environmentId, kind, testTurnMessage());
       }
     }
@@ -989,4 +1024,10 @@ export function taskReason(task: WorkerTask | undefined, fallback = "unknown"): 
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** When a check that hit a usage limit runs again; a check recorded without a time waits LIMIT_RECHECK_MS. */
+function limitRecheckAt(task: WorkerTask): number {
+  const at = typeof task.detail.recheckAt === "string" ? Date.parse(task.detail.recheckAt) : NaN;
+  return Number.isFinite(at) ? at : Date.parse(task.updatedAt) + LIMIT_RECHECK_MS;
 }

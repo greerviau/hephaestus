@@ -12,7 +12,7 @@ import {
 } from "../../src/factory/github.js";
 import { ATTACHMENT_BRANCH, type Attachment } from "../../src/factory/attachments.js";
 import { Intake } from "../../src/factory/intake.js";
-import { Pipeline } from "../../src/factory/pipeline.js";
+import { Pipeline, type PipelineBoard } from "../../src/factory/pipeline.js";
 import { openStore } from "../../src/store.js";
 import type { LaunchOptions, T3Adapter } from "../../src/t3/adapter.js";
 import { T3ToolError } from "../../src/t3/connection.js";
@@ -218,6 +218,8 @@ export interface Harness {
   pipeline: Pipeline;
   config: FactoryConfig;
   ready: { environmentId: string; label: string; home: string | null }[];
+  /** Each board change the pipeline mirrors, in order, for cards with a Hermes card id. */
+  board: string[];
   setClock(ms: number): void;
   /** Ends a thread with a final assistant message. */
   finish(threadId: string, text: string, status?: string): void;
@@ -244,6 +246,17 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
   } as unknown as Pick<WorkerManager, "readyWorkers" | "worker">;
   const threads = new FactoryThreads(t3 as unknown as T3Adapter, events);
   const intake = new Intake({ db, cards, github, config: () => config, now });
+  const board: string[] = [];
+  const recordingBoard: PipelineBoard = {
+    setStage: (id, stage, threadId) => {
+      board.push(`${id} ${stage}${threadId === undefined ? "" : ` ${threadId}`}`);
+      return Promise.resolve();
+    },
+    handBack: (id, note) => {
+      board.push(`${id} hand back: ${note}`);
+      return Promise.resolve();
+    },
+  };
   const pipeline = new Pipeline({
     db,
     cards,
@@ -254,6 +267,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     events,
     config: () => ({ id: 3, document: config }),
     install: "0123abcd-ffff-4fff-8fff-ffffffffffff",
+    board: () => recordingBoard,
     now,
     checksSettleMs: 0,
   });
@@ -268,6 +282,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     pipeline,
     config,
     ready,
+    board,
     setClock: (ms) => {
       clock = ms;
     },
