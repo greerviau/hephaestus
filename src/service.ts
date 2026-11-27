@@ -62,7 +62,7 @@ export interface RunResult {
 
 export type Run = (command: string, args: string[]) => RunResult;
 
-const runCommand: Run = (command, args) => {
+export const runCommand: Run = (command, args) => {
   const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   if (result.error) throw result.error;
   return { status: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
