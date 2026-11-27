@@ -1,6 +1,15 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -13,6 +22,7 @@ import {
   NotRegularError,
   openRegularFile,
   readAttachments,
+  readBounded,
   type Attachment,
 } from "../../src/factory/attachments.js";
 import { chatCacheDirs } from "../../src/hermes/cache.js";
@@ -147,6 +157,47 @@ describe("file_issue attachments", () => {
     const exact = await file("exact.bin", Buffer.alloc(MAX_ATTACHMENT_BYTES));
     await fileIssue(h, [exact]);
     expect(h.github.writes).toEqual(["store", "issue"]);
+  });
+
+  it("refuses a file that grows past the limit after it was checked, reading no further than the limit", async () => {
+    const h = harness();
+    const grows = await file("grows.bin", Buffer.alloc(MAX_ATTACHMENT_BYTES - 10));
+    await expect(
+      readAttachments([grows], [cache], async (path) => {
+        await appendFile(path, Buffer.alloc(1024));
+      }),
+    ).rejects.toThrow(
+      `Attachment ${grows} is over the limit of ${String(MAX_ATTACHMENT_BYTES)} bytes`,
+    );
+    // Through filing, an oversize file leaves nothing on GitHub.
+    const big = await file("big2.bin", Buffer.alloc(MAX_ATTACHMENT_BYTES + 1));
+    await expect(fileIssue(h, [big])).rejects.toThrow("over the limit");
+    expect(h.github.writes).toEqual([]);
+    expect(h.github.issues.size).toBe(0);
+  });
+
+  it("reads no more than one byte past the limit from a file that never ends", async () => {
+    let requested = 0;
+    let returned = 0;
+    const endless = {
+      read(buffer: Buffer, _offset: number, length: number): Promise<{ bytesRead: number }> {
+        requested += length;
+        returned += length;
+        buffer.fill(1, 0, length);
+        return Promise.resolve({ bytesRead: length });
+      },
+    };
+    expect(await readBounded(endless, 100_000)).toBeUndefined();
+    expect(returned).toBe(100_001);
+    expect(requested).toBe(100_001);
+  });
+
+  it("reads a file exactly at the limit byte for byte", async () => {
+    const data = Buffer.alloc(MAX_ATTACHMENT_BYTES);
+    for (let i = 0; i < data.length; i += 4099) data[i] = i % 251;
+    const [stored] = await readAttachments([await file("exact.bin", data)], [cache]);
+    expect(stored?.data.equals(data)).toBe(true);
+    expect(stored?.sha256).toBe(createHash("sha256").update(data).digest("hex"));
   });
 
   it("refuses more files than one call takes", async () => {

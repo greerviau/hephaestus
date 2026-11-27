@@ -72,6 +72,32 @@ export async function openRegularFile(path: string): Promise<FileHandle> {
   return handle;
 }
 
+const CHUNK_BYTES = 64 * 1024;
+
+/**
+ * Reads a file to its end from an open descriptor, or returns undefined once it
+ * has more than `limit` bytes. A file can grow after it was checked, so the
+ * size seen earlier says nothing here: no more than `limit + 1` bytes are ever
+ * read or held, however much the file holds.
+ */
+export async function readBounded(
+  handle: {
+    read(buffer: Buffer, offset: number, length: number): Promise<{ bytesRead: number }>;
+  },
+  limit: number,
+): Promise<Buffer | undefined> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (total <= limit) {
+    const chunk = Buffer.allocUnsafe(Math.min(CHUNK_BYTES, limit + 1 - total));
+    const { bytesRead } = await handle.read(chunk, 0, chunk.length);
+    if (bytesRead === 0) return Buffer.concat(chunks, total);
+    chunks.push(chunk.subarray(0, bytesRead));
+    total += bytesRead;
+  }
+  return undefined;
+}
+
 /**
  * Reads and checks every attachment before anything is written to GitHub.
  * Each must be an absolute path to a regular file inside one of `roots`, the
@@ -86,6 +112,8 @@ export async function openRegularFile(path: string): Promise<FileHandle> {
 export async function readAttachments(
   files: readonly string[],
   roots: readonly string[],
+  /** Runs once a file has passed its checks and before it is read; tests use it to change the file there. */
+  afterCheck?: (path: string) => void | Promise<void>,
 ): Promise<Attachment[]> {
   if (files.length > MAX_ATTACHMENTS) {
     throw new AttachmentError(
@@ -161,18 +189,18 @@ export async function readAttachments(
           `is ${String(info.size)} bytes, over the limit of ${String(MAX_ATTACHMENT_BYTES)} bytes`,
         );
       }
-      data = await handle.readFile();
+      await afterCheck?.(current);
+      // From the descriptor that was checked, and never more than one byte past the limit.
+      const read = await readBounded(handle, MAX_ATTACHMENT_BYTES);
+      if (read === undefined) {
+        throw fail(`is over the limit of ${String(MAX_ATTACHMENT_BYTES)} bytes`);
+      }
+      data = read;
     } catch (error) {
       if (error instanceof AttachmentError) throw error;
       throw fail("cannot be read");
     } finally {
       await handle.close();
-    }
-    // The file may have grown between the check and the read.
-    if (data.length > MAX_ATTACHMENT_BYTES) {
-      throw fail(
-        `is ${String(data.length)} bytes, over the limit of ${String(MAX_ATTACHMENT_BYTES)} bytes`,
-      );
     }
     const sha256 = createHash("sha256").update(data).digest("hex");
     const name = storedName(file);
