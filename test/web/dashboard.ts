@@ -13,6 +13,7 @@ import type { WorkerView } from "../../src/workers/manager.js";
 import { workersRoutes, type EnvironmentSource } from "../../src/web/workers.js";
 import { dashboardRoutes } from "../../src/web/dashboard.js";
 import { shellSource } from "../../src/web/shell.js";
+import { BackgroundDeploys } from "../../src/web/deploys.js";
 import type { Deploy } from "../../src/web/settings.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { SHA, harness, pr, type Harness } from "../factory/harness.js";
@@ -47,6 +48,8 @@ export interface Dashboard {
   sessions: Database;
   get(path: string): Promise<{ status: number; html: string }>;
   post(path: string, fields?: Record<string, string>): Promise<Response>;
+  /** Resolves once every background deploy has ended. */
+  deploysSettled(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -84,6 +87,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   const sessions = openStore(":memory:");
   writePasswordHash(sessions, hashPassword(PASSWORD));
   const workers = options.workers;
+  const deploys = options.deploy === undefined ? undefined : new BackgroundDeploys(options.deploy);
   let configRepo = options.configRepo;
   const factory: FactoryPages = {
     tasks: h.tasks,
@@ -95,7 +99,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     analytics: (query) => analytics(h.db, { ...query, now: new Date(NOW) }),
     ...(workers === undefined ? {} : { workers: { views: () => workers } }),
     environments: options.environments ?? { environments: () => Promise.resolve(linked()) },
-    ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
+    ...(deploys === undefined ? {} : { deploys }),
     ...(options.github === undefined ? {} : { github: options.github }),
     configRepo: () => configRepo,
     setConfigRepo: (slug) => {
@@ -147,6 +151,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
         body: new URLSearchParams(fields).toString(),
         redirect: "manual",
       }),
+    deploysSettled: () => deploys?.settled() ?? Promise.resolve(),
     close: async () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

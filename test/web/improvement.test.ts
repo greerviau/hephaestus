@@ -11,6 +11,14 @@ afterEach(async () => {
   deployed.length = 0;
 });
 
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve: () => void = () => undefined;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
 const deploy: Deploy = (id) => {
   deployed.push(id);
   return Promise.resolve({});
@@ -161,7 +169,7 @@ describe("Proposals", () => {
     expect(dashboard.store.get(id).state).toBe("approved");
     expect(deployed).toEqual([id]);
     const list = (await dashboard.get("/proposals?notice=approved")).html;
-    expect(list).toContain("Proposal approved and deployed");
+    expect(list).toContain("Proposal approved");
     expect(list).toContain("No proposal is waiting.");
     expect(list).toContain('<h2>Past proposals<span class="n">1</span></h2>');
     expect(list).toContain(`<a class="row" href="/config/versions/${String(id)}">`);
@@ -181,17 +189,76 @@ describe("Proposals", () => {
     expect(html).not.toContain("/reject");
   });
 
-  it("says when approval worked but the deploy failed, without the error text", async () => {
+  it("answers an approval before the deploy finishes, and shows the deploy in the sidebar", async () => {
+    const release = deferred();
+    const { dashboard, id } = await withProposal({
+      deploy: (version) => {
+        deployed.push(version);
+        return release.promise.then(() => ({}));
+      },
+    });
+
+    const response = await dashboard.post(`/proposals/${String(id)}/approve`);
+
+    expect(response.headers.get("location")).toBe("/proposals?notice=approved");
+    expect(dashboard.store.get(id).state).toBe("approved");
+    const during = (await dashboard.get("/proposals")).html;
+    expect(during).toContain(`Deploying version ${String(id)}`);
+    expect(during).toContain('data-live-seconds="3"');
+
+    release.resolve();
+    await dashboard.deploysSettled();
+    expect((await dashboard.get("/proposals")).html).toContain(`Deployed version ${String(id)}`);
+  });
+
+  it("shows a failed background deploy in the sidebar, without the error text", async () => {
     const { dashboard, id } = await withProposal({
       deploy: () => Promise.reject(new Error("push failed: token ghp_secret")),
     });
 
-    const response = await dashboard.post(`/proposals/${String(id)}/approve`);
-    const { html } = await dashboard.get(response.headers.get("location") ?? "");
+    await dashboard.post(`/proposals/${String(id)}/approve`);
+    await dashboard.deploysSettled();
+    const { html } = await dashboard.get("/proposals");
 
-    expect(response.headers.get("location")).toBe("/proposals?notice=deploy-failed");
-    expect(html).toContain("Approved, but not deployed");
+    expect(html).toContain(`Deploying version ${String(id)} failed`);
     expect(html).not.toContain("ghp_secret");
+  });
+
+  it("approving twice deploys once and gives no error", async () => {
+    const release = deferred();
+    const { dashboard, id } = await withProposal({
+      deploy: (version) => {
+        deployed.push(version);
+        return release.promise.then(() => ({}));
+      },
+    });
+
+    const first = await dashboard.post(`/proposals/${String(id)}/approve`);
+    const second = await dashboard.post(`/proposals/${String(id)}/approve`);
+
+    expect(first.headers.get("location")).toBe("/proposals?notice=approved");
+    expect(second.headers.get("location")).toBe("/proposals?notice=approved");
+    release.resolve();
+    await dashboard.deploysSettled();
+    expect(deployed).toEqual([id]);
+  });
+
+  it("says so when an already deployed proposal is approved again", async () => {
+    const { dashboard, id } = await withProposal({
+      deploy: (version) => {
+        dashboard.store.markDeployed(version);
+        return Promise.resolve({});
+      },
+    });
+    await dashboard.post(`/proposals/${String(id)}/approve`);
+    await dashboard.deploysSettled();
+
+    const again = await dashboard.post(`/proposals/${String(id)}/approve`);
+
+    expect(again.headers.get("location")).toBe("/proposals?notice=already-deployed");
+    expect((await dashboard.get("/proposals?notice=already-deployed")).html).toContain(
+      "Already approved and deployed",
+    );
   });
 
   it("rejecting means it never deploys", async () => {

@@ -49,6 +49,7 @@ import { ThreadFollower } from "./t3/follower.js";
 import { cachedEnvironments, findExecutable, resolveT3Origin } from "./t3/origin.js";
 import { workersRoutes } from "./web/workers.js";
 import { dashboardRoutes } from "./web/dashboard.js";
+import { BackgroundDeploys } from "./web/deploys.js";
 import type { FactoryPages } from "./web/factory.js";
 import { shellSource } from "./web/shell.js";
 import { analytics } from "./factory/analytics.js";
@@ -704,7 +705,7 @@ async function main(argv: string[]): Promise<number> {
         analytics: (query) => analytics(db, query),
         workers,
         environments,
-        deploy: (id) => workers.deployVersion(id),
+        deploys: new BackgroundDeploys((id) => workers.deployVersion(id)),
         github: engine.github,
         configRepo: () => getMeta(db, CONFIG_REPO_KEY),
         setConfigRepo: (slug) => {

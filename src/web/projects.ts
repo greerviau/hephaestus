@@ -110,27 +110,17 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
   added: {
     kind: "info",
     title: "Project added",
-    text: "The new version is deployed; intake reads the repo's issues on its next poll.",
+    text: "The new version is deploying; intake reads the repo's issues on its next poll.",
   },
   saved: {
     kind: "info",
     title: "Policy saved",
-    text: "The new version is deployed; it applies to the next merge decision.",
+    text: "The new version is deploying; it applies to the next merge decision.",
   },
   removed: {
     kind: "info",
     title: "Project removed",
-    text: "The new version is deployed; no new work starts on the repo.",
-  },
-  "hermes-failed": {
-    kind: "err",
-    title: "The factory Hermes root was not updated",
-    text: "The version is deployed to the workers, but applying it to the factory Hermes root failed. The service log has the error.",
-  },
-  "deploy-failed": {
-    kind: "err",
-    title: "Approved, but not deployed",
-    text: "Deploying the version failed. Check that the config repo is named at the top of Config, then deploy the version from its Versions tab. The service log has the error.",
+    text: "The new version is deploying; no new work starts on the repo.",
   },
 };
 
@@ -385,7 +375,7 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
     await publish(context, form, document, base.id, `Remove the project ${repo}`, "removed", back);
   }
 
-  /** Creates a version from `document` on `parentId`, then approves and deploys it unless the owner kept it as a draft. */
+  /** Creates a version from `document` on `parentId`, then approves it and starts its deploy in the background unless the owner kept it as a draft. */
   async function publish(
     { response }: RouteContext,
     form: URLSearchParams,
@@ -397,25 +387,23 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
   ): Promise<void> {
     let published;
     try {
-      published = await publishVersion({
+      published = publishVersion({
         store: factory.store,
-        deploy: factory.deploy,
+        deploys: factory.deploys,
         document,
         message,
         parentId,
         deployNow: form.get("deploy") === "on",
       });
     } catch (error) {
-      if (error instanceof ConfigValidationError) return back(error.problems);
-      if (error instanceof Error) return back([error.message]);
+      if (error instanceof Error) {
+        await back(error instanceof ConfigValidationError ? error.problems : [error.message]);
+        return;
+      }
       throw error;
     }
     if (published.state === "draft") {
       redirect(response, `/config/versions/${String(published.id)}`);
-    } else if (published.state === "deploy-failed") {
-      redirect(response, "/projects?notice=deploy-failed");
-    } else if (published.state === "deployed" && published.hermesError !== undefined) {
-      redirect(response, "/projects?notice=hermes-failed");
     } else {
       redirect(response, `/projects?notice=${notice}`);
     }

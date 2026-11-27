@@ -14,6 +14,7 @@ import {
   when,
   type StatusTone,
 } from "./html.js";
+import { approveVersion } from "./versions.js";
 import { redirect, sendHtml, type Route, type RouteContext } from "./http.js";
 
 const STATES: Record<ConfigVersion["state"], readonly [StatusTone, string]> = {
@@ -269,7 +270,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
     {
       method: "POST",
       path: /^\/proposals\/(\d+)\/(approve|reject)$/,
-      handle: async (context) => {
+      handle: (context) => {
         const { response, params } = context;
         const id = Number(params[0]);
         if (proposal(id) === undefined) {
@@ -289,27 +290,21 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
           redirect(response, withNotice("/proposals", "proposal-rejected"));
           return;
         }
+        // The deploy runs in the background; the sidebar shows how it ends.
+        let approval;
         try {
-          store.approve(id);
+          approval = approveVersion(store, factory.deploys, id);
         } catch (error) {
           console.error(`Approving proposal ${String(id)} failed`, error);
           redirect(response, refused);
           return;
         }
-        if (factory.deploy === undefined) {
-          redirect(response, withNotice("/proposals", "deploy-failed"));
-          return;
-        }
-        try {
-          const { hermesError } = await factory.deploy(id);
-          redirect(
-            response,
-            withNotice("/proposals", hermesError === undefined ? "approved" : "hermes-failed"),
-          );
-        } catch (error) {
-          console.error(`Deploying proposal ${String(id)} failed`, error);
-          redirect(response, withNotice("/proposals", "deploy-failed"));
-        }
+        const notice = {
+          deploying: "approved",
+          approved: "not-deployed",
+          "already-deployed": "already-deployed",
+        }[approval];
+        redirect(response, withNotice("/proposals", notice));
       },
     },
   ];

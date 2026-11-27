@@ -421,7 +421,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       showSet(context, { errors: [TEXT_TOO_LARGE], form });
       return;
     }
-    const errors = await saveVersion(factory, context, {
+    const errors = saveVersion(factory, context, {
       document: withInstructionSet(base.document, name, {
         text: formText(form, "text"),
         skills: form.getAll("skills"),
@@ -573,7 +573,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const errors =
       "errors" in edited
         ? edited.errors
-        : await saveVersion(factory, context, {
+        : saveVersion(factory, context, {
             document: edited.config,
             message:
               form.get("message")?.trim() ||
@@ -624,7 +624,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const errors =
       "errors" in edited
         ? edited.errors
-        : await saveVersion(factory, context, {
+        : saveVersion(factory, context, {
             document: edited.config,
             message: form.get("message")?.trim() || `Add the skill ${name}`,
             base,
@@ -653,7 +653,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const errors =
       "errors" in edited
         ? edited.errors
-        : await saveVersion(factory, context, {
+        : saveVersion(factory, context, {
             document: edited.config,
             message:
               form.get("message")?.trim() ||

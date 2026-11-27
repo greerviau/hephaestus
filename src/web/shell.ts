@@ -71,6 +71,7 @@ export function shellSource(factory: FactoryPages): ShellSource {
         ? undefined
         : read("the update lock", locked);
     const updating = status?.ok === true ? status.value : undefined;
+    const deploys = factory.deploys?.status();
     return {
       paused: paused.ok ? paused.value : undefined,
       runningThreads: running.ok ? running.value : undefined,
@@ -87,6 +88,9 @@ export function shellSource(factory: FactoryPages): ShellSource {
               ...(updating === undefined ? {} : { updating }),
             },
           }),
+      ...(deploys === undefined || (deploys.running === undefined && deploys.last === undefined)
+        ? {}
+        : { deploys }),
       // A page a form posted to has no address to come back to.
       back: request.method === "GET" ? here(url) : undefined,
     };

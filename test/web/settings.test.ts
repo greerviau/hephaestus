@@ -189,7 +189,7 @@ describe("Factory tab", () => {
     expect(response.headers.get("location")).toBe("/config?saved=2");
     expect(deployed).toEqual([2]);
     const { html } = await dashboard.get("/config?saved=2");
-    expect(html).toContain("Version 2 is deployed.");
+    expect(html).toContain("Version 2 is saved and deploying.");
     expect(html).toContain('name="limits.threads" min="0" step="1" value="6"');
   });
 
@@ -544,11 +544,19 @@ describe("Version page", () => {
 
   it("answers 409 for a transition the version's state does not allow", async () => {
     await start();
+    const draft = dashboard.store.createVersion({
+      document: sampleConfig(),
+      author: "o",
+      message: "d",
+      parentId: 1,
+    });
+    dashboard.store.reject(draft.id);
+    const path = `/config/versions/${String(draft.id)}`;
 
-    const response = await dashboard.post("/config/versions/1/approve");
+    const response = await dashboard.post(`${path}/approve`);
 
     expect(response.status).toBe(409);
-    expect(await response.text()).toContain('href="/config/versions/1"');
+    expect(await response.text()).toContain(`href="${path}"`);
   });
 
   it("deploys an approved version through the deploy hook, and approval deploys too", async () => {
@@ -573,7 +581,7 @@ describe("Version page", () => {
     expect(deployed).toEqual([first.id, next.id]);
   });
 
-  it("reports a failed deploy after approval without the error text", async () => {
+  it("reports a failed deploy after approval in the sidebar, without the error text", async () => {
     dashboard = await startDashboard({
       deploy: () =>
         Promise.reject(
@@ -588,26 +596,63 @@ describe("Version page", () => {
     });
 
     const approved = await dashboard.post(`/config/versions/${String(draft.id)}/approve`);
+    await dashboard.deploysSettled();
     const location = approved.headers.get("location") ?? "";
     const page = (await dashboard.get(location)).html;
-    const retry = await dashboard.post(`/config/versions/${String(draft.id)}/deploy`);
-    const retryPage = await retry.text();
 
-    expect(location).toBe(`/config/versions/${String(draft.id)}?deploy=failed`);
-    expect(page).toContain("Approved, but not deployed");
-    expect(page).toContain('<a href="/config">Config</a>');
+    expect(location).toBe(`/config/versions/${String(draft.id)}`);
+    expect(page).toContain(`Deploying version ${String(draft.id)} failed`);
     expect(page).not.toContain("ghp_secret");
-    expect(retry.status).toBe(409);
-    expect(retryPage).toContain("T3 or GitHub failed");
-    expect(retryPage).not.toContain("ghp_secret");
   });
 
-  it("says when a deploy did not reach the factory's Hermes", async () => {
-    await start();
+  it("answers approving and deploying before the deploy finishes", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    const started: number[] = [];
+    dashboard = await startDashboard({
+      deploy: (id) => {
+        started.push(id);
+        return held.then(() => ({}));
+      },
+    });
+    const draft = dashboard.store.createVersion({
+      document: sampleConfig(),
+      author: "o",
+      message: "d",
+      parentId: 1,
+    });
 
-    expect((await dashboard.get("/config/versions/1?hermes=failed")).html).toContain(
-      "The factory Hermes root was not updated",
+    const approved = await dashboard.post(`/config/versions/${String(draft.id)}/approve`);
+    const twice = await dashboard.post(`/config/versions/${String(draft.id)}/approve`);
+    const deploy = await dashboard.post(`/config/versions/${String(draft.id)}/deploy`);
+
+    expect(approved.status).toBe(303);
+    expect(twice.status).toBe(303);
+    expect(deploy.status).toBe(303);
+    expect(dashboard.store.get(draft.id).state).toBe("approved");
+    expect((await dashboard.get(`/config/versions/${String(draft.id)}`)).html).toContain(
+      `Deploying version ${String(draft.id)}`,
     );
+    release();
+    await dashboard.deploysSettled();
+    expect(started).toEqual([draft.id]);
+  });
+
+  it("says in the sidebar when a deploy did not reach the factory's Hermes", async () => {
+    dashboard = await startDashboard({ deploy: () => Promise.resolve({ hermesError: "no sync" }) });
+    const draft = dashboard.store.createVersion({
+      document: sampleConfig(),
+      author: "o",
+      message: "d",
+      parentId: 1,
+    });
+
+    await dashboard.post(`/config/versions/${String(draft.id)}/approve`);
+    await dashboard.deploysSettled();
+
+    expect((await dashboard.get("/")).html).toContain("not applied to the factory Hermes root");
   });
 
   it("answers 404 for a version that does not exist", async () => {
