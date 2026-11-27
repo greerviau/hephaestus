@@ -1,0 +1,19 @@
+$ deploy.sh 1 <sha> <config repo> p-v1
+DEPLOYED version=1 head=99ed0d215d5aabbb240e3e78c90123d28670df50 home=~ instances=wrote
+
+$ git worktree add ~/.t3/worktrees/octo__app/task-1   (as T3 does for a factory thread)
+$ ls -l .claude/skills .agents/skills
+.agents/skills:
+link  migrations -> ~/.hephaestus/config/versions/99ed0d215d5aabbb240e3e78c90123d28670df50/projects/octo__app/skills/migrations
+
+.claude/skills:
+link  migrations -> ~/.hephaestus/config/versions/99ed0d215d5aabbb240e3e78c90123d28670df50/projects/octo__app/skills/migrations
+$ git status --porcelain
+(clean)
+
+$ git worktree add ~/.t3/worktrees/octo__lib/task-1   (as T3 does for a factory thread)
+$ ls -l .claude/skills .agents/skills
+ls: cannot access '.claude/skills': No such file or directory
+ls: cannot access '.agents/skills': No such file or directory
+$ git status --porcelain
+(clean)
