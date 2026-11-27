@@ -555,8 +555,20 @@ async function main(argv: string[]): Promise<number> {
       const config = readConfig(paths.config);
       const db = openStore(paths.state);
       const store = new ConfigStore(db);
-      // Before anything reads the role profiles or their tokens.
-      migratePlannerFiles({ hermesRoot: paths.hermes, secrets: new SecretsFile(paths.secrets) });
+      // Before anything reads the role profiles or their tokens. A failed move leaves the
+      // dashboard up to show what is wrong, rather than failing the service in a loop.
+      try {
+        await migratePlannerFiles({
+          hermesRoot: paths.hermes,
+          secrets: new SecretsFile(paths.secrets),
+          gateway: new SystemdUserService(join(dirname(config.unitPath), GATEWAY_SERVICE_NAME)),
+          ...(config.hermesPath === undefined
+            ? {}
+            : { run: hermesRunner(config.hermesPath, paths.hermes) }),
+        });
+      } catch (error) {
+        console.error("Moving the planner's Hermes profile to the communicator failed", error);
+      }
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
       const { connection, t3 } = t3Client(paths, config);

@@ -10,6 +10,7 @@ import { lstatSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { SecretsFile } from "./config/secrets.js";
+import type { HermesRun } from "./hermes/cli.js";
 
 export const LEGACY_ROLE = "planner";
 export const CHAT_ROLE_NAME = "communicator";
@@ -83,13 +84,33 @@ export function renamePlannerInStore(db: Database): void {
   );
 }
 
+/** The factory gateway's service, as the profile move needs it. */
+export interface GatewayControl {
+  stopped(): boolean;
+  stop(): void;
+  start(): void;
+}
+
+/** Rekeys the gateway's sessions and routes from the old profile name to the new one. */
+const MIGRATE_IDENTITY = ["profile", "migrate-identity", LEGACY_ROLE, CHAT_ROLE_NAME];
+
 /**
  * Moves the old role's Hermes profile, with its skills, memories, and sessions, and its MCP
  * token secret to the new name. A profile that already exists under the new name is not
  * overwritten: the old one stays, and the log says so. Safe to run again.
+ *
+ * A running factory gateway serves the profile by its old name and holds its files open, so a
+ * move under it leaves the gateway serving an empty profile at the old path and refusing the
+ * moved one. The gateway is stopped for the move and started again after. Hermes keys the
+ * Discord sessions and routes by profile name, so `run` rekeys them while the gateway is down.
  */
-export function migratePlannerFiles(options: { hermesRoot: string; secrets: SecretsFile }): void {
-  const { hermesRoot, secrets } = options;
+export async function migratePlannerFiles(options: {
+  hermesRoot: string;
+  secrets: SecretsFile;
+  gateway?: GatewayControl;
+  run?: HermesRun;
+}): Promise<void> {
+  const { hermesRoot, secrets, gateway, run } = options;
   const token = secrets.get(tokenSecret(LEGACY_ROLE));
   if (token !== undefined) {
     if (secrets.get(tokenSecret(CHAT_ROLE_NAME)) === undefined) {
@@ -115,5 +136,20 @@ export function migratePlannerFiles(options: { hermesRoot: string; secrets: Secr
     );
     return;
   }
-  renameSync(from, to);
+  const wasRunning = gateway !== undefined && !gateway.stopped();
+  if (wasRunning) gateway.stop();
+  try {
+    renameSync(from, to);
+    if (run !== undefined) {
+      try {
+        await run(MIGRATE_IDENTITY);
+      } catch (error) {
+        console.warn(
+          `The Hermes profile ${LEGACY_ROLE} moved to ${CHAT_ROLE_NAME}, but its Discord threads still route to the old name (${String(error)}). Run \`hermes ${MIGRATE_IDENTITY.join(" ")}\` with HERMES_HOME=${hermesRoot}.`,
+        );
+      }
+    }
+  } finally {
+    if (wasRunning) gateway.start();
+  }
 }

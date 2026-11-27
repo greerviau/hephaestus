@@ -12,7 +12,7 @@ import { installModelPlugin } from "./plugin.js";
 import { FactoryProfiles, shippedInstructionsChanged } from "./profiles.js";
 
 import { ROLE_NAMES, type RoleName } from "../config/document.js";
-import { migratePlannerFiles } from "../legacy-planner.js";
+import { migratePlannerFiles, type GatewayControl } from "../legacy-planner.js";
 import { join } from "node:path";
 
 /** Each factory profile's bearer token for Hephaestus's MCP server. */
@@ -30,7 +30,7 @@ export interface SyncOptions {
   /** Runs `hermes` against the factory root. */
   run: HermesRun;
   /** The factory gateway's unit, and the path its file lives at. */
-  service: ServiceManager;
+  service: ServiceManager & GatewayControl;
   gatewayUnitPath: string;
   /** Where the factory profiles reach Hephaestus's MCP server. */
   mcpUrl: string;
@@ -44,7 +44,12 @@ export interface SyncOptions {
 export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
   const { paths, run } = options;
   mkdirSync(paths.hermes, { recursive: true, mode: 0o700 });
-  migratePlannerFiles({ hermesRoot: paths.hermes, secrets: options.secrets });
+  await migratePlannerFiles({
+    hermesRoot: paths.hermes,
+    secrets: options.secrets,
+    gateway: options.service,
+    run,
+  });
   const hermes = { root: paths.hermes, run };
 
   // Tasks move only through Hephaestus: no model-driven triage, and no Hermes
@@ -72,7 +77,7 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
 
   if (existsSync(options.gatewayUnitPath)) {
     // A start that failed after the unit was written is retried here.
-    options.service.start?.();
+    options.service.start();
   } else {
     options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
   }

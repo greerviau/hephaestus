@@ -8,6 +8,7 @@ import { normalizeConfig } from "../src/config/document.js";
 import { currentRoleName, migratePlannerFiles, renameLegacyRole } from "../src/legacy-planner.js";
 import { openStore } from "../src/store.js";
 import { sampleConfig } from "./config/fixtures.js";
+import { FakeHermes } from "./hermes/fake-hermes.js";
 
 let dir: string;
 let warn: MockInstance;
@@ -42,11 +43,11 @@ function upgradedRoot(): string {
 }
 
 describe("moving the Hermes profile and its token", () => {
-  it("moves an upgraded install's profile, with its skills, memories, and sessions", () => {
+  it("moves an upgraded install's profile, with its skills, memories, and sessions", async () => {
     const root = upgradedRoot();
     secrets().set("hermes-mcp-token-planner", "tok");
 
-    migratePlannerFiles({ hermesRoot: root, secrets: secrets() });
+    await migratePlannerFiles({ hermesRoot: root, secrets: secrets() });
 
     const moved = join(root, "profiles", "communicator");
     expect(existsSync(join(root, "profiles", "planner"))).toBe(false);
@@ -61,16 +62,16 @@ describe("moving the Hermes profile and its token", () => {
     expect(secrets().get("hermes-mcp-token-planner")).toBeUndefined();
   });
 
-  it("does nothing on a fresh install and when run again", () => {
+  it("does nothing on a fresh install and when run again", async () => {
     const root = join(dir, "hermes");
-    migratePlannerFiles({ hermesRoot: root, secrets: secrets() });
+    await migratePlannerFiles({ hermesRoot: root, secrets: secrets() });
     expect(existsSync(join(root, "profiles"))).toBe(false);
     expect(secrets().names()).toEqual([]);
 
     const upgraded = upgradedRoot();
     secrets().set("hermes-mcp-token-planner", "tok");
-    migratePlannerFiles({ hermesRoot: upgraded, secrets: secrets() });
-    migratePlannerFiles({ hermesRoot: upgraded, secrets: secrets() });
+    await migratePlannerFiles({ hermesRoot: upgraded, secrets: secrets() });
+    await migratePlannerFiles({ hermesRoot: upgraded, secrets: secrets() });
     expect(readFileSync(join(upgraded, "profiles", "communicator", ".env"), "utf8")).toContain(
       "keep-me",
     );
@@ -78,18 +79,119 @@ describe("moving the Hermes profile and its token", () => {
     expect(warn).not.toHaveBeenCalled();
   });
 
-  it("leaves both profiles in place and says so when the new one already exists", () => {
+  it("leaves both profiles in place and says so when the new one already exists", async () => {
     const root = upgradedRoot();
     mkdirSync(join(root, "profiles", "communicator"), { recursive: true });
     secrets().set("hermes-mcp-token-planner", "old");
     secrets().set("hermes-mcp-token-communicator", "new");
 
-    migratePlannerFiles({ hermesRoot: root, secrets: secrets() });
+    await migratePlannerFiles({ hermesRoot: root, secrets: secrets() });
 
     expect(existsSync(join(root, "profiles", "planner", ".env"))).toBe(true);
     expect(existsSync(join(root, "profiles", "communicator", ".env"))).toBe(false);
     expect(secrets().get("hermes-mcp-token-communicator")).toBe("new");
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("already exists"));
+  });
+});
+
+/** A factory gateway that records what happened to it, and whether the old profile was there. */
+class FakeGateway {
+  readonly events: string[] = [];
+  constructor(
+    private running: boolean,
+    private readonly root: string,
+  ) {}
+  stopped(): boolean {
+    return !this.running;
+  }
+  stop(): void {
+    this.events.push(
+      `stop with planner ${existsSync(join(this.root, "profiles", "planner")) ? "present" : "gone"}`,
+    );
+    this.running = false;
+  }
+  start(): void {
+    this.events.push("start");
+    this.running = true;
+  }
+}
+
+describe("moving the profile while the factory gateway serves it", () => {
+  /** A hermes that notes each call in the gateway's log, so the order shows. */
+  function recordingHermes(gateway: FakeGateway, reply = ""): FakeHermes {
+    const hermes = new FakeHermes();
+    hermes.answer(
+      () => true,
+      (args) => {
+        gateway.events.push(`hermes ${args.join(" ")}`);
+        if (reply !== "") throw new Error(reply);
+        return "";
+      },
+    );
+    return hermes;
+  }
+
+  it("stops the gateway, moves the profile, rekeys its sessions, and starts the gateway again", async () => {
+    const root = upgradedRoot();
+    const gateway = new FakeGateway(true, root);
+
+    await migratePlannerFiles({
+      hermesRoot: root,
+      secrets: secrets(),
+      gateway,
+      run: recordingHermes(gateway).run,
+    });
+
+    expect(gateway.events).toEqual([
+      "stop with planner present",
+      "hermes profile migrate-identity planner communicator",
+      "start",
+    ]);
+    expect(existsSync(join(root, "profiles", "planner"))).toBe(false);
+    expect(existsSync(join(root, "profiles", "communicator", ".env"))).toBe(true);
+  });
+
+  it("leaves a stopped gateway stopped and still rekeys the sessions", async () => {
+    const root = upgradedRoot();
+    const gateway = new FakeGateway(false, root);
+
+    await migratePlannerFiles({
+      hermesRoot: root,
+      secrets: secrets(),
+      gateway,
+      run: recordingHermes(gateway).run,
+    });
+
+    expect(gateway.events).toEqual(["hermes profile migrate-identity planner communicator"]);
+  });
+
+  it("starts the gateway again and says how to finish when rekeying fails", async () => {
+    const root = upgradedRoot();
+    const gateway = new FakeGateway(true, root);
+
+    await migratePlannerFiles({
+      hermesRoot: root,
+      secrets: secrets(),
+      gateway,
+      run: recordingHermes(gateway, "database is locked").run,
+    });
+
+    expect(gateway.events.at(-1)).toBe("start");
+    expect(existsSync(join(root, "profiles", "communicator", ".env"))).toBe(true);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("hermes profile migrate-identity planner communicator"),
+    );
+  });
+
+  it("touches neither the gateway nor Hermes when there is nothing to move", async () => {
+    const root = join(dir, "hermes");
+    mkdirSync(join(root, "profiles", "communicator"), { recursive: true });
+    const gateway = new FakeGateway(true, root);
+    const hermes = recordingHermes(gateway);
+
+    await migratePlannerFiles({ hermesRoot: root, secrets: secrets(), gateway, run: hermes.run });
+
+    expect(gateway.events).toEqual([]);
   });
 });
 

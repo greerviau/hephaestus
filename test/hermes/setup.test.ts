@@ -15,6 +15,7 @@ import { ConfigStore } from "../../src/config/store.js";
 import { recordShippedInstructions } from "../../src/hermes/profiles.js";
 import { applyShippedInstructions, syncFactoryHermes } from "../../src/hermes/setup.js";
 import { resolvePaths, type Paths } from "../../src/paths.js";
+import type { GatewayControl } from "../../src/legacy-planner.js";
 import type { ServiceManager } from "../../src/service.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "../config/fixtures.js";
@@ -23,11 +24,21 @@ import { FakeHermes } from "./fake-hermes.js";
 let home: string;
 let paths: Paths;
 
-class FakeService implements ServiceManager {
+class FakeService implements ServiceManager, GatewayControl {
   units: string[] = [];
   starts = 0;
+  stops = 0;
+  constructor(private running = false) {}
+  stopped(): boolean {
+    return !this.running;
+  }
+  stop(): void {
+    this.stops += 1;
+    this.running = false;
+  }
   start(): void {
     this.starts += 1;
+    this.running = true;
   }
   install(unit: string): void {
     this.units.push(unit);
@@ -112,6 +123,8 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
     writeFileSync(join(old, "memories", "MEMORY.md"), "kept\n");
     const secrets = new SecretsFile(paths.secrets);
     secrets.set("hermes-mcp-token-planner", "old-token");
+    const hermes = new FakeHermes();
+    const gateway = new FakeService(true);
 
     await syncFactoryHermes({
       paths,
@@ -119,8 +132,8 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
       db,
       secrets,
       hermesPath: "/usr/local/bin/hermes",
-      run: new FakeHermes().run,
-      service: new FakeService(),
+      run: hermes.run,
+      service: gateway,
       mcpUrl: "http://127.0.0.1:7701/mcp",
       gatewayUnitPath: paths.gatewayUnit,
     });
@@ -131,6 +144,10 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
     ).toBe("kept\n");
     expect(secrets.get("hermes-mcp-token-communicator")).toBe("old-token");
     expect(secrets.get("hermes-mcp-token-planner")).toBeUndefined();
+    // The running gateway let go of the profile for the move and serves it again after.
+    expect(gateway.stops).toBe(1);
+    expect(gateway.stopped()).toBe(false);
+    expect(hermes.lines()).toContain("profile migrate-identity planner communicator");
     db.close();
   });
 });
