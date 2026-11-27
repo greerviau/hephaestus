@@ -62,7 +62,7 @@ beforeEach(() => {
     db,
     tasks,
     messaging: {
-      credentials: () => ({ token: "token", home: CHANNEL }),
+      credentials: () => ({ token: "token", request: CHANNEL }),
       sendTo: (_platform, chat, text, attachments) => {
         if (failPosts > 0) {
           failPosts -= 1;

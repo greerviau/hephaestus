@@ -2,6 +2,8 @@ import {
   MessagingError,
   PLATFORMS,
   RestartError,
+  statusTarget,
+  type ChannelInput,
   type PlatformName,
   type PlatformState,
 } from "../messaging.js";
@@ -9,6 +11,7 @@ import { STORE_ERROR, read, type FactoryPages } from "./factory.js";
 import {
   buttonLink,
   callout,
+  checkbox,
   dialog,
   empty,
   escapeHtml,
@@ -22,6 +25,7 @@ import {
   rowList,
   section,
   statusText,
+  textarea,
   type Row,
 } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
@@ -52,7 +56,11 @@ const NOTICES: Record<string, { title: string; text: string }> = {
     title: "Reconnected",
     text: "The messaging gateway restarted with the saved settings.",
   },
-  tested: { title: "Test message sent", text: "Check the chat for it." },
+  tested: { title: "Test message sent", text: "Check the status channel for it." },
+  channels: {
+    title: "Channels saved",
+    text: "Hephaestus restarted its messaging gateway with the new channels.",
+  },
   "alerts-on": {
     title: "Alerts on",
     text: "Each new item that needs you is posted to the chat, starting from now.",
@@ -75,6 +83,43 @@ interface Problem {
 interface Typed {
   users: string;
   channel: string;
+  reads: string;
+  readAll: boolean;
+  status: string;
+  alerts: string;
+}
+
+function typedFrom(form: URLSearchParams): Typed {
+  return {
+    users: form.get("users") ?? "",
+    channel: form.get("channel") ?? "",
+    reads: form.get("reads") ?? "",
+    readAll: form.get("read_all") === "1",
+    status: form.get("status") ?? "",
+    alerts: form.get("alerts") ?? "",
+  };
+}
+
+function channelInput(typed: Typed): ChannelInput {
+  return {
+    home: typed.channel,
+    reads: typed.reads,
+    readAll: typed.readAll,
+    status: typed.status,
+    alerts: typed.alerts,
+  };
+}
+
+/** What a connected platform has saved, in the form's terms. */
+function typedOf(state: PlatformState): Typed {
+  return {
+    users: state.users.join(", "),
+    channel: state.request ?? "",
+    reads: state.reads.join(", "),
+    readAll: state.readAll,
+    status: state.status ?? "",
+    alerts: state.alerts ?? "",
+  };
 }
 
 /** The Chat pages: connect Hephaestus to a chat, where you ask for work and get its alerts. */
@@ -107,6 +152,61 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
       method: "POST",
       path: /^\/chat\/(discord|telegram)\/(connect|disconnect|test)$/,
       handle: (context) => act(context),
+    },
+    {
+      method: "GET",
+      path: /^\/chat\/(discord|telegram)\/channels$/,
+      handle: (context) => {
+        const { response, params } = context;
+        const platform = params[0] as PlatformName;
+        const state = stateOf(platform);
+        // Only a connected bot has channels to change; connecting sets them first.
+        if (messaging?.ready() === true && state?.connected !== true) {
+          redirect(response, "/chat");
+          return;
+        }
+        sendHtml(
+          response,
+          200,
+          channelsPage(
+            context,
+            platform,
+            undefined,
+            state === undefined ? undefined : typedOf(state),
+          ),
+        );
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/chat\/(discord|telegram)\/channels$/,
+      handle: async (context) => {
+        const { request, response, params } = context;
+        const platform = params[0] as PlatformName;
+        const body = await readBody(request, MAX_FORM_BYTES);
+        if (messaging === undefined || body === undefined) {
+          redirect(response, "/chat");
+          return;
+        }
+        const typed = typedFrom(new URLSearchParams(body));
+        try {
+          await messaging.setChannels(platform, channelInput(typed));
+          redirect(response, "/chat?notice=channels");
+        } catch (error) {
+          const problem = {
+            label: PLATFORMS[platform].label,
+            text: messageOf(error),
+            restart: error instanceof RestartError,
+          };
+          sendHtml(
+            response,
+            400,
+            problem.restart
+              ? page(context, "", problem)
+              : channelsPage(context, platform, problem, typed),
+          );
+        }
+      },
     },
     {
       method: "POST",
@@ -154,13 +254,13 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
       return;
     }
     const form = new URLSearchParams(body);
-    const typed = { users: form.get("users") ?? "", channel: form.get("channel") ?? "" };
+    const typed = typedFrom(form);
     try {
       if (action === "connect") {
         await messaging.connect(platform, {
           token: form.get("token") ?? "",
           users: typed.users,
-          home: typed.channel,
+          ...channelInput(typed),
         });
         redirect(response, "/chat?notice=connected");
       } else if (action === "disconnect") {
@@ -224,7 +324,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
         : rowList([
             {
               title: "Post what needs you to the chat",
-              sub: `Escalations, reverts, proposals to approve, and workers that need a sign-in are posted to ${escapeHtml(connected.map((state) => state.label).join(" and "))}, each with a link to the dashboard.`,
+              sub: `Escalations, reverts, proposals to approve, and workers that need a sign-in are posted to the alerts channel on ${escapeHtml(connected.map((state) => state.label).join(" and "))}, each with a link to the dashboard.`,
               aside: `${statusText(alerts ? "done" : "off", alerts ? "On" : "Off")}${postButton(
                 `/chat/alerts/${alerts ? "off" : "on"}`,
                 alerts ? "Turn alerts off" : "Turn alerts on",
@@ -267,20 +367,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     const form = `<form class="form" method="post" action="/chat/${name}/connect" autocomplete="off">
 ${input("token", "Bot token", { type: "password", autocomplete: "off", hint: "Kept in a file only you can read on this host. It is never shown again." })}
 ${input("users", "Your user ID", { value: typed?.users, inputmode: "numeric", hint: "Only these users can use the bot. Separate several with commas." })}
-${
-  platform.needsChannel
-    ? input("channel", "Channel ID", {
-        value: typed?.channel,
-        inputmode: "numeric",
-        hint: "Ask for work here without mentioning the bot; each request gets its own thread. Alerts go here too.",
-      })
-    : input("channel", "Chat ID (optional)", {
-        value: typed?.channel,
-        inputmode: "numeric",
-        required: false,
-        hint: "Where alerts go. Empty uses your direct chat with the bot.",
-      })
-}
+${channelFields(name, typed)}
 <div class="savebar"><button type="submit" class="primary">${escapeHtml(title)}</button><a href="/chat">Cancel</a></div>
 </form>`;
     const steps = section({
@@ -297,6 +384,79 @@ ${
       },
     );
   }
+
+  /** The page that changes a connected bot's channels, without its token. */
+  function channelsPage(
+    context: RouteContext,
+    name: PlatformName,
+    problem: Problem | undefined,
+    typed: Typed | undefined,
+  ): string {
+    const platform = PLATFORMS[name];
+    const title = `${platform.label} channels`;
+    const head = pageHead({
+      title,
+      lede: "Which channels the bot reads, and where Hephaestus posts. The bot never reads a channel outside these.",
+    });
+    const error =
+      problem === undefined
+        ? ""
+        : callout("err", `${platform.label}: not changed`, escapeHtml(problem.text));
+    const form = `<form class="form" method="post" action="/chat/${name}/channels" autocomplete="off">
+${channelFields(name, typed)}
+<div class="savebar"><button type="submit" class="primary">Save channels</button><a href="/chat">Cancel</a></div>
+</form>`;
+    return layout(title, `${head}${unavailable() ?? `${error}${form}`}`, {
+      section: "/chat",
+      shell: context.shell,
+      crumbs: [["Chat", "/chat"], [title]],
+    });
+  }
+}
+
+/** The channel fields that the connect and channels forms share. */
+function channelFields(name: PlatformName, typed: Typed | undefined): string {
+  const platform = PLATFORMS[name];
+  const where = name === "discord" ? "channel" : "chat";
+  const request = platform.needsChannel
+    ? input("channel", "Request channel ID", {
+        value: typed?.channel,
+        inputmode: "numeric",
+        hint: "Ask for work here without mentioning the bot; each request gets its own thread.",
+      })
+    : input("channel", "Request chat ID (optional)", {
+        value: typed?.channel,
+        inputmode: "numeric",
+        required: false,
+        hint: "Ask for work here. Empty uses your direct chat with the bot.",
+      });
+  return [
+    request,
+    textarea("reads", `Other ${where}s the bot reads (optional)`, {
+      value: typed?.reads,
+      rows: 2,
+      required: false,
+      hint:
+        name === "discord"
+          ? "Channel IDs, separated by commas. The bot answers there when you mention it. Empty keeps it to the request channel."
+          : "Group chat IDs, separated by commas. Empty keeps it to the request chat and your direct chat.",
+    }),
+    checkbox("read_all", `Let the bot read every ${where} it can see`, {
+      checked: typed?.readAll === true,
+    }),
+    input("status", `Status ${where} ID (optional)`, {
+      value: typed?.status,
+      inputmode: "numeric",
+      required: false,
+      hint: `Where the factory's own notices go, such as scheduled job results and restarts. Empty uses the request ${where}.`,
+    }),
+    input("alerts", `Alerts ${where} ID (optional)`, {
+      value: typed?.alerts,
+      inputmode: "numeric",
+      required: false,
+      hint: `Where anything that needs you goes. Empty uses the status ${where}, or the request ${where} when that is empty too.`,
+    }),
+  ].join("\n");
 }
 
 function disconnectId(state: PlatformState): string {
@@ -311,19 +471,33 @@ function platformRow(state: PlatformState): Row {
       aside: buttonLink(`/chat/connect/${state.platform}`, "Connect"),
     };
   }
-  const where =
-    state.home === undefined
-      ? "no chat is set for alerts"
-      : `alerts go to ${state.platform === "discord" ? "channel" : "chat"} ${escapeHtml(state.home)}`;
+  const noun = state.platform === "discord" ? "channel" : "chat";
+  const at = (id: string | undefined, direct: string): string =>
+    id === undefined ? direct : `${noun} ${escapeHtml(id)}`;
+  const direct = "your direct chat";
+  const reads = state.readAll
+    ? `reads every ${noun} it can see`
+    : `reads ${[
+        state.request === undefined ? direct : `${noun} ${escapeHtml(state.request)}`,
+        ...state.reads.map(escapeHtml),
+      ].join(", ")}`;
+  const status = statusTarget(state);
   return {
     title: state.label,
     sub: [
       `Bot token ending <code>${escapeHtml(state.tokenEnd ?? "")}</code>`,
       `answers ${escapeHtml(state.users.join(", "))}`,
-      where,
+      reads,
+      status === undefined ? "no chat is set for status" : `status goes to ${at(status, direct)}`,
+      state.home === undefined
+        ? "no chat is set for alerts"
+        : `alerts go to ${at(state.home, direct)}`,
     ].join(SEP),
     aside: `${statusText("done", "Connected")}${postButton(`/chat/${state.platform}/test`, "Send test message")}${menu(
-      [{ label: "Disconnect", dialog: disconnectId(state), danger: true }],
+      [
+        { label: "Change channels", href: `/chat/${state.platform}/channels` },
+        { label: "Disconnect", dialog: disconnectId(state), danger: true },
+      ],
       `More actions for ${state.label}`,
     )}`,
   };

@@ -69,8 +69,8 @@ describe("Chat page", () => {
   });
 
   it.each([
-    ["discord", "Connect Discord", "Channel ID", true],
-    ["telegram", "Connect Telegram", "Chat ID (optional)", false],
+    ["discord", "Connect Discord", "Request channel ID", true],
+    ["telegram", "Connect Telegram", "Request chat ID (optional)", false],
   ] as const)(
     "gives %s a connect page of its own with the steps and the form",
     async (platform, title, channelLabel, channelRequired) => {
@@ -85,6 +85,10 @@ describe("Chat page", () => {
       expect(/<input type="text" id="channel" name="channel"[^>]* required/.test(html)).toBe(
         channelRequired,
       );
+      for (const name of ["reads", "status", "alerts"]) {
+        expect(html).toMatch(new RegExp(`name="${name}"(?![^>]* required)[^>]*>`));
+      }
+      expect(html).toContain('<input type="checkbox" name="read_all" value="1">');
       expect(html).toContain("Where to find these");
       expect(html.match(/<ol class="steps">.*?<\/ol>/s)?.[0].match(/<li>/g)).toHaveLength(3);
       expect(html).not.toContain('http-equiv="refresh"');
@@ -101,6 +105,8 @@ describe("Chat page", () => {
     expect(page).toContain("Connected");
     expect(page).toContain(`Bot token ending <code>${TOKEN.slice(-4)}</code>`);
     expect(page).toContain("answers 284102345871466496");
+    expect(page).toContain("reads channel 1234567890123456789");
+    expect(page).toContain("status goes to channel 1234567890123456789");
     expect(page).toContain("alerts go to channel 1234567890123456789");
     expect(page).not.toContain(TOKEN);
     expect(page).toContain('action="/chat/discord/test"');
@@ -117,6 +123,63 @@ describe("Chat page", () => {
     expect(on).toContain('action="/chat/alerts/off"');
     expect(on).toContain("Turn alerts off");
     expect(on).toMatch(/class="st t-done">.*?On<\/span>/);
+  });
+
+  it("connects with status and alerts channels and a read list, and shows where each goes", async () => {
+    const sent: string[] = [];
+    dashboard = await withMessaging(sent);
+    await dashboard.post("/chat/discord/connect", {
+      ...DISCORD,
+      reads: "2234567890123456789",
+      status: "3234567890123456789",
+      alerts: "4234567890123456789",
+    });
+    const page = (await dashboard.get("/chat")).html;
+    expect(page).toContain("reads channel 1234567890123456789, 2234567890123456789");
+    expect(page).toContain("status goes to channel 3234567890123456789");
+    expect(page).toContain("alerts go to channel 4234567890123456789");
+    expect(page).toContain('href="/chat/discord/channels"');
+  });
+
+  it("changes a connected bot's channels on a page of its own, and keeps what was typed when refused", async () => {
+    dashboard = await withMessaging();
+    const unconnected = await fetch(`${dashboard.base}/chat/discord/channels`, {
+      headers: { cookie: dashboard.cookie },
+      redirect: "manual",
+    });
+    expect(unconnected.headers.get("location")).toBe("/chat");
+    await dashboard.post("/chat/discord/connect", DISCORD);
+
+    const form = await dashboard.get("/chat/discord/channels");
+    expect(form.status).toBe(200);
+    expect(form.html).toContain('<h1 id="page-title">Discord channels</h1>');
+    expect(form.html).toContain('action="/chat/discord/channels"');
+    expect(form.html).toContain('name="channel" value="1234567890123456789"');
+    expect(form.html).not.toContain('name="token"');
+    expect(form.html).not.toContain(TOKEN);
+    expect(form.html).not.toMatch(/communicator|lead|improver/i);
+
+    const refused = await dashboard.post("/chat/discord/channels", {
+      channel: "1234567890123456789",
+      reads: "general",
+    });
+    const html = await refused.text();
+    expect(refused.status).toBe(400);
+    expect(html).toContain("Discord: not changed");
+    expect(html).toContain("general is not a Discord channel ID");
+    expect(html).toContain("general</textarea>");
+
+    const saved = await dashboard.post("/chat/discord/channels", {
+      channel: "1234567890123456789",
+      read_all: "1",
+    });
+    expect(saved.headers.get("location")).toBe("/chat?notice=channels");
+    const page = (await dashboard.get("/chat?notice=channels")).html;
+    expect(page).toContain("Channels saved");
+    expect(page).toContain("reads every channel it can see");
+    expect((await dashboard.get("/chat/discord/channels")).html).toContain(
+      '<input type="checkbox" name="read_all" value="1" checked>',
+    );
   });
 
   it("asks before it disconnects, from a menu", async () => {
