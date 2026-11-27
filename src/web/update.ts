@@ -74,6 +74,7 @@ export function updateRoutes(factory: FactoryPages): Route[] {
         })}${refusal}${state}${where}${button}${fallback}${log}`,
         {
           shell: context.shell,
+          updateNotice: false,
           ...(run.running ? { refreshSeconds: RELOAD_SECONDS } : {}),
         },
       ),

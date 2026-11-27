@@ -99,7 +99,14 @@ export interface Shell {
   /** The project the picker is set to. Undefined means all projects. */
   project: string | undefined;
   /** The commit the service runs, how far origin/main is ahead of it, and the command that updates it. */
-  version?: { commit: string; behind?: number; command: string; updatable?: boolean };
+  version?: {
+    commit: string;
+    behind?: number;
+    command: string;
+    updatable?: boolean;
+    /** Whether an update runs now. Read only while origin/main is ahead. */
+    updating?: boolean;
+  };
   /**
    * The page's own address without a result notice: where the picker and the
    * pause control return to, and what a reloading page reloads. Undefined on
@@ -123,6 +130,8 @@ export interface LayoutOptions {
    * and a result notice is shown once.
    */
   refreshSeconds?: number;
+  /** False on a page that has its own update control, so it shows no update notice. */
+  updateNotice?: boolean;
 }
 
 function hiddenFields(fields: Record<string, string> | undefined): string {
@@ -181,6 +190,32 @@ function versionLines(version: NonNullable<Shell["version"]>): string {
             : `To update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.`
         }</p>`;
   return `<div class="row-line"><span class="muted">Version <code>${escapeHtml(version.commit.slice(0, 7))}</code></span></div>${ahead}`;
+}
+
+/** The notice at the top of every page while origin/main has commits the service lacks. */
+function updateNotice(version: NonNullable<Shell["version"]>): string {
+  const behind = version.behind ?? 0;
+  if (behind === 0) return "";
+  const commits = `${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main.`;
+  const box = (title: string, html: string, actions?: string): string =>
+    callout("info", title, html, actions).replace(
+      'class="box info"',
+      'class="box info update-notice"',
+    );
+  if (version.updatable !== true) {
+    return box(
+      "Update available",
+      `${commits} To update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.`,
+    );
+  }
+  if (version.updating === true) {
+    return box("Updating", `${commits} <a href="/update">Follow the update</a>.`);
+  }
+  return box(
+    "Update available",
+    `${commits} Updating restarts the service.`,
+    `${postButton("/update", "Update now", { variant: "primary" })}<a href="/update">Details</a>`,
+  );
 }
 
 /** The running state with its Pause or Resume control, and the dialog Pause opens. */
@@ -253,7 +288,7 @@ ${groups}
 <div class="side-foot">${pause === undefined ? "" : `<div class="row-line">${pause.line}</div>`}${shell?.version === undefined ? "" : versionLines(shell.version)}<div class="row-line"><form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form></div></div>
 </aside>
 <main id="main" tabindex="-1"><div class="page">
-${crumbs}${body}
+${options.updateNotice === false || shell?.version === undefined ? "" : updateNotice(shell.version)}${crumbs}${body}
 </div></main>
 </div>
 ${pause?.dialog ?? ""}`,

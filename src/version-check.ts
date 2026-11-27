@@ -3,8 +3,6 @@ import { execFile } from "node:child_process";
 /** Runs git in the service's checkout and resolves with its output. */
 export type GitExec = (args: string[]) => Promise<string>;
 
-/** origin/main is fetched at most this often. */
-const FETCH_EVERY_MS = 60 * 60_000;
 const GIT_TIMEOUT_MS = 60_000;
 
 /** Runs git in `root` with no prompt for credentials, so a fetch that needs them fails at once. */
@@ -30,20 +28,16 @@ export function gitIn(root: string, git: string): GitExec {
 export class VersionCheck {
   private commit: string | undefined;
   private behind: number | undefined;
-  private fetchedAt: number | undefined;
+  constructor(private readonly options: { exec: GitExec }) {}
 
-  constructor(private readonly options: { exec: GitExec; now?: () => number }) {}
-
+  /** Fetches origin/main every time, so the caller's interval sets how soon a new commit shows. */
   async refresh(): Promise<void> {
-    const now = (this.options.now ?? Date.now)();
     try {
       // Read once: update moves the checkout before it restarts the service.
       this.commit ??= (await this.options.exec(["rev-parse", "HEAD"])).trim();
     } catch {
       return;
     }
-    if (this.fetchedAt !== undefined && now - this.fetchedAt < FETCH_EVERY_MS) return;
-    this.fetchedAt = now;
     try {
       await this.options.exec(["fetch", "--quiet", "origin", "main"]);
       const count = (

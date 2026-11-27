@@ -8,6 +8,8 @@ The pages follow the browser's light or dark setting. Links to GitHub open in a 
 
 Every page has the same sidebar. It lists the pages in two groups: Factory (Home, Work, Activity, Analytics) and Setup (Projects, Workers, Chat, Proposals, Config). Home carries a count of what needs you, and Proposals a count of the proposals that wait. The count on Home covers every project and leaves out T3 links that are about to expire, which only Home itself reads. At the foot, the sidebar says whether the factory is running or paused, with a Pause button that asks first and a Resume button that does not, the commit the service runs, how many new commits `origin/main` has and a link to the Update page that runs the update (see [Install](install.md#update)), and Sign out. On a narrow screen a Menu button opens the sidebar.
 
+While `origin/main` has new commits, every page except Update opens with an Update available notice, with an Update now button that starts the update.
+
 The Project picker at the top of the sidebar lists the factory's projects. Choosing one and pressing Apply stores the choice in a cookie for a year, and "All projects" clears it. A choice that names a repo that is no longer a factory project is ignored. The picker narrows Home, Work, Activity, and Analytics, and no other page.
 
 ## Pages

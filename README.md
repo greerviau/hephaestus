@@ -54,7 +54,7 @@ The policy decides what merges on its own. `standard` merges when checks pass an
 node dist/cli.js update
 ```
 
-Update fast-forwards the checkout the service runs from to `origin/main`, installs, builds, and restarts the service. It refuses when the checkout has uncommitted changes or cannot fast-forward, and rolls back when the build fails. The sidebar shows when `origin/main` has new commits, and the Update page runs the same update from the dashboard. See [Install and uninstall](docs/install.md#update).
+Update fast-forwards the checkout the service runs from to `origin/main`, installs, builds, and restarts the service. It refuses when the checkout has uncommitted changes or cannot fast-forward, and rolls back when the build fails. When `origin/main` has new commits, every dashboard page shows a notice with an Update now button that runs the same update. See [Install and uninstall](docs/install.md#update).
 
 ## Uninstall
 
