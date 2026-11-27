@@ -173,7 +173,7 @@ describe("T3Adapter", () => {
 });
 
 describe("T3Adapter.read", () => {
-  it("fetches the rest of a truncated item before returning it", async () => {
+  it("fetches the rest of a truncated item, and keeps the run that wrote it", async () => {
     fake.tools.set("t3_thread_read", (args) => {
       if (args.itemId === "long") {
         return {
@@ -203,6 +203,7 @@ describe("T3Adapter.read", () => {
             text: "first half, ",
             textTruncated: true,
             nextTextOffset: 12,
+            runId: "run:t1:ordinal:2",
           },
         ],
         nextPosition: 0,
@@ -212,7 +213,10 @@ describe("T3Adapter.read", () => {
 
     const page = await t3.read("w1", "t1", -1);
 
-    expect(page.items[0]?.text).toBe("first half, second half");
+    expect(page.items[0]).toMatchObject({
+      text: "first half, second half",
+      runId: "run:t1:ordinal:2",
+    });
     expect(fake.calls[1]?.args).toMatchObject({ itemId: "long", textOffset: 12 });
   });
 });

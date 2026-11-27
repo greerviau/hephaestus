@@ -267,6 +267,8 @@ const MIGRATIONS = [
   `ALTER TABLE factory_threads ADD COLUMN input_tokens INTEGER;
    ALTER TABLE factory_threads ADD COLUMN output_tokens INTEGER;
    ALTER TABLE factory_threads ADD COLUMN cost_usd REAL;`,
+  // The run that wrote each item, so a thread's result is read from its latest run alone.
+  `ALTER TABLE thread_items ADD COLUMN run_id TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

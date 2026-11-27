@@ -45,6 +45,8 @@ export interface ThreadItem {
   type: string;
   status: string;
   text: string;
+  /** The T3 run that wrote the item, when T3 reports one. */
+  runId?: string | null;
 }
 
 export interface ThreadPage {
@@ -74,6 +76,7 @@ interface RawItem {
   title?: string | null;
   textTruncated?: boolean;
   nextTextOffset?: number | null;
+  runId?: string | null;
 }
 
 /** Stored for an item whose text could not be read to the end; not final, so it is read again. */
@@ -185,6 +188,7 @@ export class T3Adapter {
         type: item.type,
         status: complete ? (item.status ?? "completed") : TEXT_INCOMPLETE,
         text,
+        runId: typeof item.runId === "string" ? item.runId : null,
       });
     }
     return {

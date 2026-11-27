@@ -8,7 +8,7 @@ import { T3ToolError } from "../t3/connection.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import type { FactoryThreads } from "../t3/threads.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/manager.js";
-import { finalMessage, limitText } from "../workers/scripts.js";
+import { finalMessage } from "../workers/scripts.js";
 import { THREAD_RULES, branchRule } from "../config/shipped.js";
 import { utcMinute } from "../time.js";
 import {
@@ -261,8 +261,9 @@ export class Pipeline {
 
   /**
    * Cards that hold a thread slot with no thread running: a card with the lead, whose work is
-   * not finished, and a card whose thread stopped on a usage limit and waits for it to reset.
-   * A card with the owner is blocked on the owner, so it holds none.
+   * not finished, a card whose thread stopped on a usage limit and waits for it to reset, and
+   * a card whose thread ended with a result not acted on yet. A card with the owner is blocked
+   * on the owner, so it holds none.
    */
   private heldCards(environmentId?: string): Held {
     const ended = [...ENDED_STATUSES, ...IDLE_STATUSES];
@@ -286,7 +287,27 @@ export class Pipeline {
       lead: number;
       limited: number;
     };
-    return { lead: row.lead, limited: row.limited, total: row.lead + row.limited };
+    const finished = this.unhandledCards(environmentId);
+    return {
+      lead: row.lead,
+      limited: row.limited,
+      finished,
+      total: row.lead + row.limited + finished,
+    };
+  }
+
+  /**
+   * Cards whose thread ended with a result the pipeline has not acted on yet. The follower
+   * records the end before a pass reads the result, and that pass may hold the slot for a
+   * usage limit or the lead, so no new start takes the slot in between.
+   */
+  private unhandledCards(environmentId?: string): number {
+    return this.cards.list(["Implementing", "Reviewing", "Reverting"]).filter((card) => {
+      if (card.limitUntil !== null) return false;
+      if (environmentId !== undefined && card.workerEnv !== environmentId) return false;
+      const thread = card.stage === "Implementing" ? card.implementThread : card.reviewThread;
+      return thread !== null && this.newResult(card, thread) !== undefined;
+    }).length;
   }
 
   /** The worker a launch went to whose reply never came, if any. */
@@ -894,7 +915,9 @@ export class Pipeline {
     if (thread.status === "waiting") {
       result = { status: "waiting", text: "", itemId: `waiting-${thread.updatedAt}` };
     } else if (ENDED_STATUSES.has(thread.status)) {
-      const items = this.options.events.items(card.workerEnv, threadId);
+      // Only the latest run counts, so a run that ends with no output of its own is a new
+      // result, not the earlier run's handled one.
+      const items = latestRun(this.options.events.items(card.workerEnv, threadId));
       // An error counts, so a run that fails after an earlier one replied is a new result.
       const last = items
         .filter((item) => item.type === "assistant_message" || item.type === "error")
@@ -902,7 +925,7 @@ export class Pipeline {
       result = {
         status: thread.status,
         text: finalMessage(items) ?? "",
-        itemId: last?.itemId ?? `ended-${thread.updatedAt}`,
+        itemId: last?.itemId ?? `ended-${items.at(-1)?.runId ?? thread.updatedAt}`,
       };
     }
     if (result === undefined || card.handled[threadId] === result.itemId) return undefined;
@@ -922,10 +945,8 @@ export class Pipeline {
     done: { handled: Record<string, string> },
   ): Promise<boolean> {
     if (card.workerEnv === null) return false;
-    const limit =
-      result.status === "completed"
-        ? replyLimit(result.text)
-        : runLimit(this.options.events.items(card.workerEnv, threadId));
+    const items = latestRun(this.options.events.items(card.workerEnv, threadId));
+    const limit = result.status === "completed" ? replyLimit(result.text) : runLimit(items);
     if (limit === undefined) return false;
     let state: ThreadState | undefined;
     try {
@@ -943,7 +964,9 @@ export class Pipeline {
     const updated = this.cards.update(card.id, {
       ...done,
       limitUntil: new Date(known ? reset + LIMIT_GRACE_MS : now + LIMIT_RECHECK_MS).toISOString(),
-      limitRun: state?.latestRunId ?? null,
+      // The run comes from the items that reported the limit, so a read that failed, or one
+      // made after T3 resumed the thread, cannot take a later run for the limited one.
+      limitRun: items.at(-1)?.runId ?? state?.latestRunId ?? null,
     });
     this.wait(updated, `${why} ${limit}`);
     return true;
@@ -972,14 +995,8 @@ export class Pipeline {
       });
       return;
     }
-    const stopped =
-      ENDED_STATUSES.has(state.status) &&
-      (card.limitRun === null || state.latestRunId === card.limitRun);
-    if (!stopped) {
-      // The follower stops at a failed run, so the thread goes back on its list to pick up T3's.
-      this.options.events.setStatus(env, threadId, "starting");
-      this.cards.update(card.id, { limitUntil: null, limitRun: null, waiting: null });
-      this.cards.event(card.id, "limit:resumed", threadId);
+    if (!stoppedOnLimit(state, card.limitRun)) {
+      this.followResumed(card.id, env, threadId);
       return;
     }
     const snooze = state.snoozedUntil === null ? Number.NaN : Date.parse(state.snoozedUntil);
@@ -1006,6 +1023,22 @@ export class Pipeline {
         );
         return;
       }
+      // T3 may have resumed the thread while the send waited in the queue.
+      let latest: ThreadState;
+      try {
+        latest = await this.options.t3.threadState(env, threadId);
+      } catch (error) {
+        console.error(`Reading thread ${threadId} after its usage limit failed`, error);
+        this.cards.update(card.id, {
+          limitUntil: new Date(now + LIMIT_READ_RETRY_MS).toISOString(),
+        });
+        return;
+      }
+      if (this.cards.get(card.id).limitUntil !== due) return;
+      if (!stoppedOnLimit(latest, current.limitRun)) {
+        this.followResumed(card.id, env, threadId);
+        return;
+      }
       const digest = createHash("sha256")
         .update(`${threadId}\n${String(current.limitRun)}\n${due}`)
         .digest("hex")
@@ -1024,6 +1057,14 @@ export class Pipeline {
       this.cards.update(card.id, { limitUntil: null, limitRun: null, waiting: null });
       this.cards.event(card.id, "limit:continued", threadId);
     });
+  }
+
+  /** Follows a thread T3 resumed after its usage limit, instead of continuing it. */
+  private followResumed(cardId: number, env: string, threadId: string): void {
+    // The follower stops at a failed run, so the thread goes back on its list to pick up T3's.
+    this.options.events.setStatus(env, threadId, "starting");
+    this.cards.update(cardId, { limitUntil: null, limitRun: null, waiting: null });
+    this.cards.event(cardId, "limit:resumed", threadId);
   }
 
   /** Marks a thread's result handled, as part of the change it caused. */
@@ -1533,7 +1574,10 @@ export class Pipeline {
       card = this.cards.update(card.id, {
         headSha: pr.headSha,
         headAt: this.now().toISOString(),
+        // A usage limit belongs to the dropped review thread, so it holds no slot past it.
         reviewThread: null,
+        limitUntil: null,
+        limitRun: null,
       });
     }
     // Before the review, so the owner hears of the conflict without waiting on a review of it.
@@ -1670,6 +1714,8 @@ export class Pipeline {
         brief: `${card.brief ?? ""}\n\nYour earlier PR #${String(reverted)} was merged and then reverted, because checks failed on the default branch after the merge. Find out why and fix it in a new PR.`,
         implementThread: null,
         reviewThread: null,
+        limitUntil: null,
+        limitRun: null,
         branch: null,
         prNumber: null,
         headSha: null,
@@ -2026,6 +2072,24 @@ ${check}
 ${reviewBlock(headSha)}`;
 }
 
+/** Whether T3 still has the thread stopped in the run that hit the usage limit. */
+function stoppedOnLimit(state: ThreadState, limitRun: string | null): boolean {
+  return ENDED_STATUSES.has(state.status) && (limitRun === null || state.latestRunId === limitRun);
+}
+
+/** The items of the thread's latest run, or every item when T3 reported no runs. */
+function latestRun(items: ThreadItem[]): ThreadItem[] {
+  const run = items.at(-1)?.runId;
+  return run === undefined || run === null ? items : items.filter((item) => item.runId === run);
+}
+
+/**
+ * The providers' own usage-limit wording: Claude Code's "You've hit your limit" and "5-hour
+ * limit reached", and Codex's "You've hit your usage limit". Wording about other rate limits
+ * or quotas, such as GitHub's, is the agent's report and goes to the lead.
+ */
+const PROVIDER_LIMIT = /usage limit|hit your (\w+ )?limit|limit reached/i;
+
 /**
  * The provider's message when the thread's latest run stopped on a usage limit: its last
  * message or error is an error reporting one. A message after the error starts a new run.
@@ -2034,41 +2098,43 @@ function runLimit(items: ThreadItem[]): string | undefined {
   const last = items
     .filter((item) => ["user_message", "assistant_message", "error"].includes(item.type))
     .at(-1);
-  return last?.type === "error" ? limitText(last.text) : undefined;
+  const text = last?.text.trim() ?? "";
+  return last?.type === "error" && PROVIDER_LIMIT.test(text) ? text.slice(0, 300) : undefined;
 }
 
-/**
- * The reply when it is the provider's own short usage-limit notice. Wording about other rate
- * limits or quotas, such as GitHub's, is the agent's report and goes to the lead.
- */
+/** The reply when it is the provider's own short usage-limit notice. */
 function replyLimit(text: string): string | undefined {
   const trimmed = text.trim();
-  return trimmed.length <= LIMIT_REPLY_CHARS &&
-    /usage limit|hit your (\w+ )?limit|limit reached|\blimit\b[^\n]{0,40}\bresets?\b/i.test(trimmed)
-    ? trimmed
-    : undefined;
+  return trimmed.length <= LIMIT_REPLY_CHARS && PROVIDER_LIMIT.test(trimmed) ? trimmed : undefined;
 }
 
 /** Cards that hold a thread slot with no thread running, by why they hold it. */
 interface Held {
   lead: number;
   limited: number;
+  /** Cards whose thread ended with a result not acted on yet. */
+  finished: number;
   total: number;
 }
 
-const NONE_HELD: Held = { lead: 0, limited: 0, total: 0 };
+const NONE_HELD: Held = { lead: 0, limited: 0, finished: 0, total: 0 };
 
 /** Says how many of the slots a thread cap counts are held by cards with no thread running, and why. */
 function heldNote(held: Held): string {
-  if (held.total === 0) return "";
-  const tasks = (n: number): string => (n === 1 ? "1 task" : `${String(n)} tasks`);
-  const parts = [
-    held.lead > 0 ? `${tasks(held.lead)} with the lead` : "",
-    held.limited > 0
-      ? `${held.lead > 0 ? String(held.limited) : tasks(held.limited)} waiting for a usage limit to reset`
-      : "",
-  ].filter((part) => part !== "");
-  return `, counting ${parts.join(" and ")}`;
+  const reasons = [
+    [held.lead, "with the lead"],
+    [held.limited, "waiting for a usage limit to reset"],
+    [held.finished, "whose thread just ended"],
+  ] as const;
+  const parts = reasons
+    .filter(([n]) => n > 0)
+    .map(([n, why], index) => {
+      const count = index > 0 ? String(n) : n === 1 ? "1 task" : `${String(n)} tasks`;
+      return `${count} ${why}`;
+    });
+  if (parts.length === 0) return "";
+  const last = parts.pop() ?? "";
+  return `, counting ${parts.length > 0 ? `${parts.join(", ")} and ${last}` : last}`;
 }
 
 /** A card whose merge is in flight: merging, validating, or reverting it. */
