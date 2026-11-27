@@ -243,3 +243,20 @@ describe("SystemdUserService.stopped", () => {
     }
   });
 });
+
+describe("SystemdUserService.active", () => {
+  it("is true while systemd runs the service or brings it up, and false while it stops", () => {
+    for (const [stdout, active] of [
+      ["active\n", true],
+      ["activating\n", true],
+      ["reloading\n", true],
+      ["deactivating\n", false],
+      ["inactive\n", false],
+      ["failed\n", false],
+      ["", false],
+    ] as const) {
+      responses["systemctl --user is-active hephaestus.service"] = { status: 0, stdout };
+      expect(service().active()).toBe(active);
+    }
+  });
+});

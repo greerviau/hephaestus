@@ -6,8 +6,8 @@
  * the accepted old names one release after this ships; keep the one-time renames for installs
  * that skip releases.
  */
-import { lstatSync, renameSync } from "node:fs";
-import { join } from "node:path";
+import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { SecretsFile } from "./config/secrets.js";
 import type { HermesRun } from "./hermes/cli.js";
@@ -86,6 +86,8 @@ export function renamePlannerInStore(db: Database): void {
 
 /** The factory gateway's service, as the profile move needs it. */
 export interface GatewayControl {
+  /** Running or starting, as opposed to stopped or stopping. */
+  active(): boolean;
   stopped(): boolean;
   stop(): void;
   start(): void;
@@ -93,6 +95,12 @@ export interface GatewayControl {
 
 /** Rekeys the gateway's sessions and routes from the old profile name to the new one. */
 const MIGRATE_IDENTITY = ["profile", "migrate-identity", LEGACY_ROLE, CHAT_ROLE_NAME];
+
+/** What is left to do after the profile moved; kept until it is done, so a later run finishes. */
+interface PendingMove {
+  startGateway: boolean;
+  rekey: boolean;
+}
 
 /**
  * Moves the old role's Hermes profile, with its skills, memories, and sessions, and its MCP
@@ -102,7 +110,10 @@ const MIGRATE_IDENTITY = ["profile", "migrate-identity", LEGACY_ROLE, CHAT_ROLE_
  * A running factory gateway serves the profile by its old name and holds its files open, so a
  * move under it leaves the gateway serving an empty profile at the old path and refusing the
  * moved one. The gateway is stopped for the move and started again after. Hermes keys the
- * Discord sessions and routes by profile name, so `run` rekeys them while the gateway is down.
+ * Discord sessions and routes by profile name, so `run` then rekeys them; Hermes does that with
+ * the gateway running too. A start or rekey that fails is noted next to the Hermes root and
+ * tried again on the next run, since by then the old profile is gone. Without `run` the profile
+ * is not moved, so its threads are never left on the old name.
  */
 export async function migratePlannerFiles(options: {
   hermesRoot: string;
@@ -120,6 +131,7 @@ export async function migratePlannerFiles(options: {
   }
   const from = join(hermesRoot, "profiles", LEGACY_ROLE);
   const to = join(hermesRoot, "profiles", CHAT_ROLE_NAME);
+  const pendingPath = join(dirname(hermesRoot), "hermes-profile-move.json");
   // lstat, so a dangling link is still seen and moved as it is.
   const present = (path: string): boolean => {
     try {
@@ -129,27 +141,66 @@ export async function migratePlannerFiles(options: {
       return false;
     }
   };
-  if (!present(from)) return;
-  if (present(to)) {
-    console.warn(
-      `The Hermes profile ${LEGACY_ROLE} was not moved to ${CHAT_ROLE_NAME}, which already exists. Move its skills, memories, and sessions by hand.`,
-    );
-    return;
-  }
-  const wasRunning = gateway !== undefined && !gateway.stopped();
-  if (wasRunning) gateway.stop();
-  try {
-    renameSync(from, to);
-    if (run !== undefined) {
-      try {
-        await run(MIGRATE_IDENTITY);
-      } catch (error) {
-        console.warn(
-          `The Hermes profile ${LEGACY_ROLE} moved to ${CHAT_ROLE_NAME}, but its Discord threads still route to the old name (${String(error)}). Run \`hermes ${MIGRATE_IDENTITY.join(" ")}\` with HERMES_HOME=${hermesRoot}.`,
-        );
-      }
+  if (present(from)) {
+    if (present(to)) {
+      console.warn(
+        `The Hermes profile ${LEGACY_ROLE} was not moved to ${CHAT_ROLE_NAME}, which already exists. Move its skills, memories, and sessions by hand.`,
+      );
+      return;
     }
-  } finally {
-    if (wasRunning) gateway.start();
+    if (run === undefined) {
+      console.warn(
+        `The Hermes profile ${LEGACY_ROLE} was not moved to ${CHAT_ROLE_NAME}: Hephaestus does not know where hermes is. Run \`hephaestus hermes sync --hermes <path>\` to move it.`,
+      );
+      return;
+    }
+    const wasActive = gateway?.active() ?? false;
+    // Noted first, so a crash after the move still finishes on the next run.
+    writePending(pendingPath, { startGateway: wasActive, rekey: true });
+    try {
+      if (gateway !== undefined && !gateway.stopped()) gateway.stop();
+      renameSync(from, to);
+    } catch (error) {
+      rmSync(pendingPath, { force: true });
+      if (wasActive) gateway?.start();
+      throw error;
+    }
+  }
+  const pending = readPending(pendingPath);
+  if (pending === undefined) return;
+  if (pending.startGateway && gateway !== undefined) {
+    try {
+      gateway.start();
+      pending.startGateway = false;
+    } catch (error) {
+      console.warn(
+        `The Hermes profile moved to ${CHAT_ROLE_NAME}, but the factory gateway did not start again (${String(error)}). The next start of Hephaestus tries again.`,
+      );
+    }
+  }
+  if (pending.rekey && run !== undefined) {
+    try {
+      await run(MIGRATE_IDENTITY);
+      pending.rekey = false;
+    } catch (error) {
+      console.warn(
+        `The Hermes profile moved to ${CHAT_ROLE_NAME}, but its Discord threads still route to ${LEGACY_ROLE} (${String(error)}). The next start of Hephaestus tries again, or run \`hermes ${MIGRATE_IDENTITY.join(" ")}\` with HERMES_HOME=${hermesRoot}.`,
+      );
+    }
+  }
+  if (pending.startGateway || pending.rekey) writePending(pendingPath, pending);
+  else rmSync(pendingPath, { force: true });
+}
+
+function writePending(path: string, pending: PendingMove): void {
+  writeFileSync(path, `${JSON.stringify(pending)}\n`, { mode: 0o600 });
+}
+
+function readPending(path: string): PendingMove | undefined {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as PendingMove;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
   }
 }

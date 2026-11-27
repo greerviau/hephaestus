@@ -29,6 +29,9 @@ class FakeService implements ServiceManager, GatewayControl {
   starts = 0;
   stops = 0;
   constructor(private running = false) {}
+  active(): boolean {
+    return this.running;
+  }
   stopped(): boolean {
     return !this.running;
   }
