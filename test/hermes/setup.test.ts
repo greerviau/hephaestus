@@ -14,7 +14,9 @@ import { SecretsFile } from "../../src/config/secrets.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { recordShippedInstructions } from "../../src/hermes/profiles.js";
 import { applyShippedInstructions, syncFactoryHermes } from "../../src/hermes/setup.js";
+import { withProfileMoveLock } from "../../src/legacy-planner.js";
 import { resolvePaths, type Paths } from "../../src/paths.js";
+import type { GatewayControl } from "../../src/legacy-planner.js";
 import type { ServiceManager } from "../../src/service.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "../config/fixtures.js";
@@ -23,11 +25,24 @@ import { FakeHermes } from "./fake-hermes.js";
 let home: string;
 let paths: Paths;
 
-class FakeService implements ServiceManager {
+class FakeService implements ServiceManager, GatewayControl {
   units: string[] = [];
   starts = 0;
+  stops = 0;
+  constructor(private running = false) {}
+  active(): boolean {
+    return this.running;
+  }
+  stopped(): boolean {
+    return !this.running;
+  }
+  stop(): void {
+    this.stops += 1;
+    this.running = false;
+  }
   start(): void {
     this.starts += 1;
+    this.running = true;
   }
   install(unit: string): void {
     this.units.push(unit);
@@ -112,6 +127,8 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
     writeFileSync(join(old, "memories", "MEMORY.md"), "kept\n");
     const secrets = new SecretsFile(paths.secrets);
     secrets.set("hermes-mcp-token-planner", "old-token");
+    const hermes = new FakeHermes();
+    const gateway = new FakeService(true);
 
     await syncFactoryHermes({
       paths,
@@ -119,8 +136,8 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
       db,
       secrets,
       hermesPath: "/usr/local/bin/hermes",
-      run: new FakeHermes().run,
-      service: new FakeService(),
+      run: hermes.run,
+      service: gateway,
       mcpUrl: "http://127.0.0.1:7701/mcp",
       gatewayUnitPath: paths.gatewayUnit,
     });
@@ -131,6 +148,78 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
     ).toBe("kept\n");
     expect(secrets.get("hermes-mcp-token-communicator")).toBe("old-token");
     expect(secrets.get("hermes-mcp-token-planner")).toBeUndefined();
+    // The running gateway let go of the profile for the move and serves it again after.
+    expect(gateway.stops).toBe(1);
+    expect(gateway.stopped()).toBe(false);
+    expect(hermes.lines()).toContain("profile migrate-identity planner communicator");
+    db.close();
+  });
+});
+
+describe("syncFactoryHermes when the planner profile move is not finished", () => {
+  it("syncs the rest and then fails, so the caller knows the threads still need a rekey", async () => {
+    const db = openStore(join(paths.root, "state.db"));
+    const store = new ConfigStore(db);
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    mkdirSync(join(paths.hermes, "profiles", "planner"), { recursive: true });
+    const hermes = new FakeHermes();
+    hermes.answer(
+      (args) => args[1] === "migrate-identity",
+      () => {
+        throw new Error("invalid choice: 'migrate-identity'");
+      },
+    );
+    const gateway = new FakeService(true);
+
+    await expect(
+      syncFactoryHermes({
+        paths,
+        store,
+        db,
+        secrets: new SecretsFile(paths.secrets),
+        hermesPath: "/usr/local/bin/hermes",
+        run: hermes.run,
+        service: gateway,
+        mcpUrl: "http://127.0.0.1:7701/mcp",
+        gatewayUnitPath: paths.gatewayUnit,
+      }),
+    ).rejects.toThrow("not fully moved");
+    expect(existsSync(join(paths.hermes, "profiles", "lead"))).toBe(true);
+    expect(gateway.stopped()).toBe(false);
+    db.close();
+  });
+});
+
+describe("syncFactoryHermes while another caller moves the planner profile", () => {
+  it("waits for a move in progress before it syncs and starts the gateway", async () => {
+    const db = openStore(join(paths.root, "state.db"));
+    const store = new ConfigStore(db);
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    const gateway = new FakeService();
+    const options = {
+      paths,
+      store,
+      db,
+      secrets: new SecretsFile(paths.secrets),
+      hermesPath: "/usr/local/bin/hermes",
+      run: new FakeHermes().run,
+      service: gateway,
+      mcpUrl: "http://127.0.0.1:7701/mcp",
+      gatewayUnitPath: paths.gatewayUnit,
+    };
+    await syncFactoryHermes(options);
+    gateway.starts = 0;
+
+    let syncing: Promise<void> | undefined;
+    await withProfileMoveLock(paths.hermes, async () => {
+      syncing = syncFactoryHermes(options);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(gateway.starts).toBe(0);
+    });
+    await syncing;
+    expect(gateway.starts).toBe(1);
     db.close();
   });
 });

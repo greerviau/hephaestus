@@ -71,6 +71,9 @@ export const runCommand: Run = (command, args) => {
 /** `systemctl is-active` answers that confirm no service process is running. */
 const STOPPED_STATES = new Set(["inactive", "failed", "unknown"]);
 
+/** `systemctl is-active` answers for a service that runs or is on its way to running. */
+const ACTIVE_STATES = new Set(["active", "activating", "reloading", "refreshing"]);
+
 /** Runs Hephaestus as a systemd user service. */
 export class SystemdUserService implements ServiceManager {
   /** The unit's name, taken from its file name, such as `hephaestus.service`. */
@@ -132,6 +135,12 @@ export class SystemdUserService implements ServiceManager {
   stopped(): boolean {
     const state = this.run("systemctl", ["--user", "is-active", this.name]).stdout.trim();
     return state === "inactive" || state === "failed";
+  }
+
+  /** Whether systemd reports the service running, or starting or reloading on its way there. */
+  active(): boolean {
+    const state = this.run("systemctl", ["--user", "is-active", this.name]).stdout.trim();
+    return ACTIVE_STATES.has(state);
   }
 
   stop(): void {
