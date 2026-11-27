@@ -64,6 +64,7 @@ export function shellSource(factory: FactoryPages): ShellSource {
     );
     const proposals = drafts.ok ? drafts.value.length : 0;
     const projects = factoryProjects(factory);
+    const version = factory.version?.();
     return {
       paused: paused.ok ? paused.value : undefined,
       runningThreads: running.ok ? running.value : undefined,
@@ -71,6 +72,7 @@ export function shellSource(factory: FactoryPages): ShellSource {
       proposals,
       projects,
       project: chosen(cookie(request, PROJECT_COOKIE), projects),
+      ...(version === undefined ? {} : { version }),
       // A page a form posted to has no address to come back to.
       back: request.method === "GET" ? here(url) : undefined,
     };
