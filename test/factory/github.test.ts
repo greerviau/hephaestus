@@ -7,6 +7,7 @@ import {
   MergeConflictError,
   MergeRefusedError,
   GitHub,
+  GH_TIMEOUT_MS,
   INTAKE_READ_TIMEOUT_MS,
   foldChecks,
 } from "../../src/factory/github.js";
@@ -305,6 +306,8 @@ describe("GitHub", () => {
       if (args[1] === "repos/octo/app/commits/ours") {
         return Promise.resolve("Fix it (#5)\n\nMerged by Hephaestus for task 1.\n");
       }
+      if (args[1] === "repos/octo/app/pulls/5") return Promise.resolve("owner\n");
+      if (args[1] === "user") return Promise.resolve("owner\n");
       return Promise.resolve("");
     };
     expect(
@@ -494,7 +497,7 @@ describe("GitHub", () => {
     expect(await new GitHub("gh", exec).createIssue("octo/app", "t", "b")).toBe(42);
   });
 
-  it("times out the intake reads, and never a write whose outcome a timeout would hide", async () => {
+  it("times out the intake reads, and bounds every other call, writes included", async () => {
     const timeouts: (number | undefined)[] = [];
     const exec: CommandRun = (_file, args, _cwd, timeoutMs) => {
       timeouts.push(timeoutMs);
@@ -509,12 +512,34 @@ describe("GitHub", () => {
     await github.issue("octo/app", 7, INTAKE_READ_TIMEOUT_MS);
     await github.issue("octo/app", 7);
     await github.createIssue("octo/app", "t", "b");
+    await github.reopenIssue("octo/app", 7, "again");
     expect(timeouts).toEqual([
       INTAKE_READ_TIMEOUT_MS,
       INTAKE_READ_TIMEOUT_MS,
-      undefined,
-      undefined,
+      GH_TIMEOUT_MS,
+      GH_TIMEOUT_MS,
+      GH_TIMEOUT_MS,
     ]);
+  });
+
+  it("bounds the merge, the revert, and the comment calls", async () => {
+    const timeouts: (number | undefined)[] = [];
+    const exec: CommandRun = (_file, args, _cwd, timeoutMs) => {
+      timeouts.push(timeoutMs);
+      if (args.includes("PUT")) return Promise.resolve('{"merged":true,"sha":"m"}');
+      if (args[0] === "pr" && args[1] === "list") return Promise.resolve("[]");
+      if (args[0] === "pr") return Promise.resolve('{"id":"PR_1"}');
+      if (args[1] === "graphql") {
+        return Promise.resolve('{"data":{"revertPullRequest":{"revertPullRequest":{"number":9}}}}');
+      }
+      if (args.includes("POST")) return Promise.resolve("https://github.com/octo/app/issues/7#c\n");
+      return Promise.resolve('{"number":7}');
+    };
+    const github = new GitHub("gh", exec);
+    await github.merge("octo/app", 5, "h", "m");
+    await github.revertPullRequest("octo/app", 5);
+    await github.commentOnIssue("octo/app", 7, "hi");
+    expect(timeouts.every((t) => t !== undefined && t > 0)).toBe(true);
   });
 });
 
@@ -562,5 +587,122 @@ describe("GitHub.commentOnIssue", () => {
       "is a pull request",
     );
     expect(gh.inputs).toEqual([]);
+  });
+});
+
+/** A PR view as `gh pr view --json` answers it. */
+function prView(fields: Record<string, unknown> = {}): string {
+  return JSON.stringify({
+    number: 5,
+    url: "u",
+    state: "MERGED",
+    headRefOid: "h",
+    headRefName: "b",
+    baseRefName: "main",
+    isCrossRepository: false,
+    mergeCommit: { oid: "m" },
+    ...fields,
+  });
+}
+
+describe("GitHub merges it did not make", () => {
+  /** A gh whose merge reply is lost after the PR merged as `mergeCommit`, by `mergedBy`. */
+  function merged(mergedBy: string, fields: Record<string, unknown> = {}): CommandRun {
+    return (_file, args) => {
+      if (args.includes("PUT")) return Promise.reject(new Error("gh: connection reset"));
+      if (args[0] === "pr") return Promise.resolve(prView(fields));
+      if (args[1] === "repos/octo/app/commits/m") {
+        return Promise.resolve("Fix it (#5)\n\nMerged by Hephaestus for task 1.\n");
+      }
+      if (args[1] === "repos/octo/app/pulls/5") return Promise.resolve(`${mergedBy}\n`);
+      if (args[1] === "user") return Promise.resolve("owner\n");
+      return Promise.resolve("");
+    };
+  }
+
+  it("takes a merge with its marker as someone else's when another account merged it", async () => {
+    const github = new GitHub("gh", merged("stranger"));
+    await expect(
+      github.merge("octo/app", 5, "h", "Merged by Hephaestus for task 1."),
+    ).rejects.toThrow(AlreadyMergedError);
+    expect(await github.mergedWith("octo/app", "m", "Merged by Hephaestus for task 1.", 5)).toBe(
+      false,
+    );
+  });
+
+  it("takes a merge with its marker as its own when the gh account merged it", async () => {
+    const github = new GitHub("gh", merged("owner"));
+    expect(await github.mergedWith("octo/app", "m", "Merged by Hephaestus for task 1.", 5)).toBe(
+      true,
+    );
+  });
+
+  it("names the head that merged when someone else merged a newer one", async () => {
+    const github = new GitHub("gh", merged("stranger", { headRefOid: "newer" }));
+    const error = await github
+      .merge("octo/app", 5, "h", "Merged by Hephaestus for task 1.")
+      .catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(AlreadyMergedError);
+    expect(error).toMatchObject({ mergeSha: "m", headSha: "newer" });
+  });
+});
+
+describe("GitHub revert PRs", () => {
+  /** GitHub's open PRs, and a revert mutation that opens one and may lose its reply. */
+  function fake(loseReply: boolean): { exec: CommandRun; mutations: number } {
+    const open: object[] = [
+      { number: 3, headRefName: "feature", body: "Reverts octo/app#5", isCrossRepository: false },
+      {
+        number: 4,
+        headRefName: "revert-5-factory/x",
+        body: "Reverts octo/app#5",
+        isCrossRepository: true,
+      },
+    ];
+    const state = { mutations: 0, exec: undefined as unknown as CommandRun };
+    state.exec = (_file, args) => {
+      if (args[0] === "pr" && args[1] === "list") return Promise.resolve(JSON.stringify(open));
+      if (args[0] === "pr") return Promise.resolve('{"id":"PR_5"}');
+      if (args[1] === "graphql") {
+        state.mutations += 1;
+        open.push({
+          number: 12,
+          headRefName: "revert-5-factory/x",
+          body: "Reverts octo/app#5",
+          isCrossRepository: false,
+        });
+        return loseReply
+          ? Promise.reject(new Error("gh api graphql failed: timed out"))
+          : Promise.resolve('{"data":{"revertPullRequest":{"revertPullRequest":{"number":12}}}}');
+      }
+      return Promise.resolve("");
+    };
+    return state;
+  }
+
+  it("opens a revert PR and returns its number", async () => {
+    const gh = fake(false);
+    expect(await new GitHub("gh", gh.exec).revertPullRequest("octo/app", 5)).toBe(12);
+    expect(gh.mutations).toBe(1);
+  });
+
+  it("finds the revert PR GitHub opened when the reply was lost, and opens no second one", async () => {
+    const gh = fake(true);
+    const github = new GitHub("gh", gh.exec);
+    expect(await github.revertPullRequest("octo/app", 5)).toBe(12);
+    expect(await github.revertPullRequest("octo/app", 5)).toBe(12);
+    expect(gh.mutations).toBe(1);
+  });
+});
+
+describe("GitHub comments whose reply was lost", () => {
+  it("says the comment may have been posted", async () => {
+    const exec: CommandRun = (_file, args) =>
+      args.includes("POST")
+        ? Promise.reject(new Error("gh api failed: timed out"))
+        : Promise.resolve('{"number":7}');
+    await expect(new GitHub("gh", exec).commentOnIssue("octo/app", 7, "Hi")).rejects.toThrow(
+      /may have posted/,
+    );
   });
 });

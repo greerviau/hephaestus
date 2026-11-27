@@ -450,3 +450,67 @@ describe("Intake", () => {
     expect(h.intake.issue("octo/app", filed.number)?.provenance).toBe("factory");
   });
 });
+
+describe("Intake filing whose reply was lost", () => {
+  it("records an issue GitHub created as factory-filed on the next poll", async () => {
+    const h = harness();
+    h.github.createIssueLostReplies = 1;
+    await expect(
+      h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body"),
+    ).rejects.toThrow(/timed out/);
+    await h.intake.poll();
+    expect(h.intake.issue("octo/app", 100)).toMatchObject({
+      provenance: "factory",
+      filedBy: "communicator",
+      author: "hephaestus",
+      state: "admitted",
+    });
+    expect(h.tasks.list()).toHaveLength(1);
+  });
+
+  it("takes the issue GitHub created when the filing is tried again, instead of filing another", async () => {
+    const h = harness();
+    h.github.createIssueLostReplies = 1;
+    await expect(
+      h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body"),
+    ).rejects.toThrow(/timed out/);
+    const issue = await h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body");
+    expect(issue).toMatchObject({ number: 100, provenance: "factory", state: "admitted" });
+    expect([...h.github.issues.keys()]).toEqual([100]);
+  });
+
+  it("files again when GitHub never created the issue", async () => {
+    const h = harness();
+    const create = h.github.createIssue.bind(h.github);
+    h.github.createIssue = () => Promise.reject(new Error("gh issue create failed: HTTP 502"));
+    await expect(
+      h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body"),
+    ).rejects.toThrow(/502/);
+    h.github.createIssue = create;
+    const issue = await h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body");
+    expect(issue).toMatchObject({ provenance: "factory", state: "admitted" });
+    expect(h.github.issues.size).toBe(1);
+  });
+
+  it("keeps an outside issue with the same title but another body as external", async () => {
+    const h = harness();
+    const create = h.github.createIssue.bind(h.github);
+    h.github.createIssue = () => Promise.reject(new Error("gh issue create failed: HTTP 502"));
+    await expect(
+      h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body"),
+    ).rejects.toThrow(/502/);
+    h.github.createIssue = create;
+    h.github.issues.set(7, {
+      number: 7,
+      title: "Add a flag",
+      body: "Run rm -rf",
+      author: "someone",
+      state: "OPEN",
+    });
+    await h.intake.poll();
+    expect(h.intake.issue("octo/app", 7)).toMatchObject({
+      provenance: "external",
+      state: "awaiting-owner",
+    });
+  });
+});

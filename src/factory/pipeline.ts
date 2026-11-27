@@ -114,6 +114,10 @@ const CHECKS_DEADLINE_MS = 60 * 60_000;
 const CHECKS_SETTLE_MS = 3 * 60_000;
 /** A thread waiting on a question runs nothing, so it holds no slot. */
 const IDLE_STATUSES = ["waiting"];
+/** The event of a send to a thread that failed in a way T3 may still have applied. */
+const UNCONFIRMED_SEND = "thread:resume-unconfirmed";
+const UNCONFIRMED_SEND_DETAIL =
+  "the message may have reached the thread, though T3's reply was lost";
 /** How often the board is read for parked tasks; each read runs the Hermes CLI once per task. */
 const PARKED_READ_MS = 60_000;
 /** Why a task the lead parked on the board waits for the owner. It reaches chat, so it names no role. */
@@ -663,6 +667,13 @@ export class Pipeline {
         await this.resume(this.tasks.get(taskId));
         return this.tasks.get(taskId);
       }
+    } else if (this.restartedWith(task, brief)) {
+      // An earlier start_work with this brief moved the task, and a step after that failed,
+      // such as a send whose reply was lost. Repeating it finishes those steps; the send
+      // carries the same request id, so T3 applies the message once.
+      await this.mirror(task, "Implementing", task.implementThread ?? undefined);
+      await this.advance(task);
+      return this.tasks.get(taskId);
     } else {
       throw new Error(
         `Task ${String(taskId)} is ${task.stage}${task.escalatedTo === "owner" ? " with the owner" : ""}; start_work needs a task escalated to the lead. Put an admitted task in the queue with queue_work.`,
@@ -673,6 +684,16 @@ export class Pipeline {
     await this.mirror(this.tasks.get(taskId), "Implementing");
     await this.advance(this.tasks.get(taskId));
     return this.tasks.get(taskId);
+  }
+
+  /** Whether the task's latest stage change was the lead's restart with this brief. */
+  private restartedWith(task: Task, brief: string): boolean {
+    if (task.stage !== "Implementing" || task.brief !== brief) return false;
+    const last = this.tasks
+      .events(task.id)
+      .filter((event) => event.kind.startsWith("stage:"))
+      .at(-1);
+    return last?.kind === "stage:Implementing" && last.detail === "the lead restarted the work";
   }
 
   /** The owner's approval on the dashboard of the merge the task waits for, at the head shown there. */
@@ -1198,23 +1219,41 @@ export class Pipeline {
         if (recheck !== undefined) this.wait(after, recheck);
         return;
       }
-      // The same message always carries the same request id, so a retry after a lost reply is one send.
-      const sent = this.tasks
-        .events(task.id)
-        .filter((event) => event.kind === "thread:resume").length;
-      const digest = createHash("sha256")
-        .update(`${String(sent)}\n${message}`)
-        .digest("hex")
-        .slice(0, 16);
-      await this.options.threads.send(
-        env,
-        thread,
-        message,
-        `hephaestus-resume-${String(task.id)}-${digest}`,
-      );
+      const request = this.resumeRequest(task.id, message);
+      try {
+        await this.options.threads.send(env, thread, message, request);
+      } catch (error) {
+        // Anything but T3's own refusal may have reached T3, which then runs the thread.
+        if (!(error instanceof T3ToolError)) {
+          this.tasks.event(task.id, UNCONFIRMED_SEND, `${UNCONFIRMED_SEND_DETAIL} (${request})`);
+        }
+        throw error;
+      }
       this.tasks.update(task.id, { pendingMessage: null, waiting: null });
       this.tasks.event(task.id, "thread:resume", thread);
     });
+  }
+
+  /**
+   * The request id of a resume. The same message always carries the same id, so a retry
+   * after a lost reply is one send.
+   */
+  private resumeRequest(taskId: number, message: string): string {
+    const sent = this.tasks.events(taskId).filter((event) => event.kind === "thread:resume").length;
+    const digest = createHash("sha256")
+      .update(`${String(sent)}\n${message}`)
+      .digest("hex")
+      .slice(0, 16);
+    return `hephaestus-resume-${String(taskId)}-${digest}`;
+  }
+
+  /** Whether a send of the task's pending message failed in a way T3 may still have applied. */
+  private sendUnconfirmed(task: Task): boolean {
+    if (task.pendingMessage === null) return false;
+    const suffix = `(${this.resumeRequest(task.id, task.pendingMessage)})`;
+    return this.tasks
+      .events(task.id)
+      .some((event) => event.kind === UNCONFIRMED_SEND && event.detail.endsWith(suffix));
   }
 
   /** The thread's final message if it ended with one the pipeline has not handled yet. */
@@ -1619,7 +1658,12 @@ export class Pipeline {
       const ours =
         pr.mergeSha === null
           ? false
-          : await this.options.github.mergedWith(task.repo, pr.mergeSha, mergeMarker(task));
+          : await this.options.github.mergedWith(
+              task.repo,
+              pr.mergeSha,
+              mergeMarker(task),
+              pr.number,
+            );
       if (ours === undefined) {
         this.wait(task, MERGE_STEP_REASONS.readingBack);
         return;
@@ -1687,7 +1731,10 @@ export class Pipeline {
         mergeMarker(task),
       );
     } catch (error) {
-      if (error instanceof AlreadyMergedError) return this.foreignMerge(task, error.mergeSha);
+      if (error instanceof AlreadyMergedError) {
+        // Someone may have pushed a newer head and merged it after the gate read the PR.
+        return this.foreignMerge(task, error.mergeSha, { headSha: error.headSha ?? pr.headSha });
+      }
       if (error instanceof MergeConflictError) return this.conflicted(task, pr);
       if (error instanceof MergeRefusedError) return this.mergeRefused(task, pr, error);
       if (error instanceof MergeOutcomeUnknownError) {
@@ -1879,7 +1926,12 @@ export class Pipeline {
       const ours =
         pr.mergeSha === null
           ? false
-          : await this.options.github.mergedWith(task.repo, pr.mergeSha, mergeMarker(task));
+          : await this.options.github.mergedWith(
+              task.repo,
+              pr.mergeSha,
+              mergeMarker(task),
+              pr.number,
+            );
       if (ours === undefined) {
         this.wait(task, "reading back whether the revert merge was Hephaestus's");
         return;
@@ -2197,7 +2249,11 @@ export class Pipeline {
         // A task waiting to send a queued message is idle too, so it is handed on and the message
         // dropped; that way a merge is validated even while a pause or cap holds the send.
         if (pr.state === "MERGED") {
-          const idle = task.stage === "Escalated" || task.pendingMessage !== null;
+          // A send whose reply was lost may have reached T3, which then runs the thread; that
+          // thread's result must still be read, so its task is not handed on.
+          const idle =
+            task.stage === "Escalated" ||
+            (task.pendingMessage !== null && !this.sendUnconfirmed(task));
           await this.mergedPullRequest(task, pr, { pendingMessage: null }, idle);
         }
       }).catch((error: unknown) => {
@@ -2220,7 +2276,12 @@ export class Pipeline {
     const ours =
       pr.mergeSha === null
         ? false
-        : await this.options.github.mergedWith(task.repo, pr.mergeSha, mergeMarker(task));
+        : await this.options.github.mergedWith(
+            task.repo,
+            pr.mergeSha,
+            mergeMarker(task),
+            pr.number,
+          );
     if (ours === undefined) {
       this.wait(task, MERGE_STEP_REASONS.readingBack);
       return;

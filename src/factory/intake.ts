@@ -8,10 +8,36 @@ import {
   withAttachments,
   type StoredAttachment,
 } from "./attachments.js";
-import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
+import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub, type Issue } from "./github.js";
 
 /** Issues missing from the open lists that one poll reads on their own, split among the projects; each gets at least one. */
 const LOOKUPS_PER_POLL = 10;
+
+/** How long a filing whose outcome is unknown is looked for among the open issues. */
+const PENDING_FILING_MS = 7 * 24 * 60 * 60 * 1000;
+
+interface PendingRow {
+  title: string;
+  body: string;
+  filed_by: string;
+  attachments: string;
+  created_at: string;
+}
+
+/** What one stored attachment's upload returned, as a pending filing keeps it. */
+interface PendingAttachment {
+  path: string;
+  name: string;
+  commit: string;
+  sha256: string;
+  bytes: number;
+}
+
+/** Issue text as GitHub may hand it back: line endings and the trailing space can change. */
+function sameText(a: string, b: string): boolean {
+  const norm = (text: string): string => text.replace(/\r\n/g, "\n").trim();
+  return norm(a) === norm(b);
+}
 
 interface Candidate {
   number: number;
@@ -178,17 +204,52 @@ export class Intake {
         stored = files.map((attachment, index) => ({ attachment, commit: commits[index] ?? "" }));
         body = withAttachments(repo, body, stored);
       }
+      // An earlier filing of this title whose reply was lost may have created the issue already.
+      if (this.pendingTitle(repo, title)) {
+        const open = await this.options.github.openIssues(repo);
+        const found = await this.settlePending(repo, open, title);
+        if (found !== undefined) {
+          const earlier = this.issue(repo, found);
+          if (earlier !== undefined) return earlier;
+        }
+      }
+      // Kept until the issue is recorded, so one GitHub creates though its reply is lost is
+      // still found as factory-filed on the next poll.
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO pending_issues (repo, title, body, filed_by, attachments, created_at)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          repo,
+          title,
+          body,
+          role,
+          JSON.stringify(
+            stored.map(({ attachment, commit }): PendingAttachment => ({
+              path: attachment.path,
+              name: attachment.name,
+              commit,
+              sha256: attachment.sha256,
+              bytes: attachment.data.length,
+            })),
+          ),
+          this.now().toISOString(),
+        );
       const number = await this.options.github.createIssue(repo, title, body);
-      this.record({
-        repo,
-        number,
-        title,
-        author: "hephaestus",
-        provenance: "factory",
-        filedBy: role,
-      });
-      // Before admission gives the issue a task, so no engineer starts without them.
-      recordAttachments(this.db, repo, number, stored);
+      this.db.transaction(() => {
+        this.record({
+          repo,
+          number,
+          title,
+          author: "hephaestus",
+          provenance: "factory",
+          filedBy: role,
+        });
+        // Before admission gives the issue a task, so no engineer starts without them.
+        recordAttachments(this.db, repo, number, stored);
+        this.dropPending(repo, title);
+      })();
       await this.admitIfRoom(repo, number);
       const issue = this.issue(repo, number);
       if (issue === undefined) throw new Error(`Issue ${repo}#${String(number)} was not recorded.`);
@@ -229,6 +290,8 @@ export class Intake {
 
   private async pollRepo(repo: string, reads: number): Promise<void> {
     const open = await this.options.github.openIssues(repo);
+    // Before anything is recorded as external, so a filing whose reply was lost is found as ours.
+    await this.settlePending(repo, open);
     for (const issue of open) {
       if (this.issue(repo, issue.number) !== undefined) continue;
       this.record({
@@ -241,6 +304,82 @@ export class Intake {
       });
     }
     await this.reconcile(repo, new Set(open.map((issue) => issue.number)), reads);
+  }
+
+  private pendingTitle(repo: string, title: string): boolean {
+    return (
+      this.db
+        .prepare("SELECT 1 FROM pending_issues WHERE repo = ? COLLATE NOCASE AND title = ?")
+        .get(repo, title) !== undefined
+    );
+  }
+
+  private dropPending(repo: string, title: string): void {
+    this.db
+      .prepare("DELETE FROM pending_issues WHERE repo = ? COLLATE NOCASE AND title = ?")
+      .run(repo, title);
+  }
+
+  /**
+   * Records as factory-filed each open issue that matches a pending filing by title and
+   * body, the oldest such issue first, and admits it as filing would have. A filing that
+   * stays unmatched for a week is dropped. Returns the issue found for `title`, if any.
+   */
+  private async settlePending(
+    repo: string,
+    open: readonly Issue[],
+    title?: string,
+  ): Promise<number | undefined> {
+    const rows = this.db
+      .prepare("SELECT * FROM pending_issues WHERE repo = ? COLLATE NOCASE")
+      .all(repo) as PendingRow[];
+    let found: number | undefined;
+    for (const row of rows) {
+      const match = open
+        .filter(
+          (issue) =>
+            issue.title === row.title &&
+            sameText(issue.body, row.body) &&
+            this.issue(repo, issue.number) === undefined,
+        )
+        .sort((a, b) => a.number - b.number)[0];
+      if (match === undefined) {
+        if (this.now().getTime() - Date.parse(row.created_at) > PENDING_FILING_MS) {
+          this.dropPending(repo, row.title);
+        }
+        continue;
+      }
+      const attachments = JSON.parse(row.attachments) as PendingAttachment[];
+      this.db.transaction(() => {
+        this.record({
+          repo,
+          number: match.number,
+          title: row.title,
+          author: "hephaestus",
+          provenance: "factory",
+          filedBy: row.filed_by,
+        });
+        const insert = this.db.prepare(
+          `INSERT OR IGNORE INTO issue_attachments (repo, number, path, name, commit_sha, sha256, bytes)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        );
+        for (const file of attachments) {
+          insert.run(
+            repo,
+            match.number,
+            file.path,
+            file.name,
+            file.commit,
+            file.sha256,
+            file.bytes,
+          );
+        }
+        this.dropPending(repo, row.title);
+      })();
+      await this.admitIfRoom(repo, match.number);
+      if (row.title === title) found = match.number;
+    }
+    return found;
   }
 
   /**

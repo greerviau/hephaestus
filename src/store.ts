@@ -367,6 +367,17 @@ const MIGRATIONS: Migration[] = [
      FROM queued_on_upgrade;
    DROP TABLE queued_on_upgrade;
    ALTER TABLE tasks DROP COLUMN queued_at;`,
+  // A filing sent to GitHub that no issue is recorded for yet, so an issue GitHub created though
+  // its reply was lost is still taken as factory-filed. The attachments are what the upload returned.
+  `CREATE TABLE pending_issues (
+     repo TEXT NOT NULL COLLATE NOCASE,
+     title TEXT NOT NULL,
+     body TEXT NOT NULL,
+     filed_by TEXT NOT NULL,
+     attachments TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     PRIMARY KEY (repo, title)
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

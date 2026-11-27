@@ -2332,3 +2332,88 @@ describe("Pipeline task limit", () => {
     expect(workerAtLaunch).toBe("w1");
   });
 });
+
+describe("Pipeline lost replies and races", () => {
+  it("finishes start_work called again after the send's reply was lost, and sends the brief once", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.queue(id, "brief");
+    h.finish("t1", "stuck", "completed");
+    await h.pipeline.tick();
+    expect(h.tasks.get(id).stage).toBe("Escalated");
+
+    h.t3.sendLostReplies = 1;
+    await expect(h.pipeline.startWork(id, "Try the other parser.")).rejects.toThrow(/lost/);
+    expect(h.tasks.get(id).stage).toBe("Implementing");
+    const task = await h.pipeline.startWork(id, "Try the other parser.");
+    expect(task).toMatchObject({ stage: "Implementing", pendingMessage: null });
+    expect(
+      h.t3.sends.filter((send) => send.message.includes("Try the other parser.")),
+    ).toHaveLength(1);
+    // A different brief is still refused while the task is already implementing.
+    await expect(h.pipeline.startWork(id, "Something else.")).rejects.toThrow(/start_work needs/);
+  });
+
+  it("reads the result of a thread T3 resumed after a lost reply, though the scan finds its merge", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.queue(id, "brief");
+    h.tasks.update(id, { prNumber: 5, headSha: SHA });
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", "", "waiting");
+    await h.pipeline.tick();
+    expect(h.tasks.get(id).stage).toBe("Escalated");
+
+    h.t3.sendLostReplies = 1;
+    await expect(h.pipeline.startWork(id, "Use the v2 API.")).rejects.toThrow(/lost/);
+    // T3 took the message, so the thread runs; a pause holds the retry of the send.
+    h.pipeline.setPaused(true);
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.github.ownMerges.add(MERGE);
+    h.setClock(Date.parse("2026-11-25T12:06:00Z"));
+    await h.pipeline.tick();
+    expect(h.tasks.get(id).stage).toBe("Implementing");
+
+    h.pipeline.setPaused(false);
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.tasks.get(id).stage).toBe("Validating");
+    expect(h.tasks.get(id).handled.t1).toBeDefined();
+  });
+
+  it("does not resume the implementer on a changes verdict for a PR merged since", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    const sends = h.t3.sends.length;
+    h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
+    h.finish("t2", reviewResult("changes", SHA, "rename the flag"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(sends);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Done", foreignMerge: true });
+  });
+
+  it("records the head someone pushed and merged between the gate's read and its merge", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    const merge = h.github.merge.bind(h.github);
+    h.github.merge = (repo, number, headSha) => {
+      const current = h.github.prs.get(number);
+      if (current !== undefined) {
+        current.headSha = SHA2;
+        current.state = "MERGED";
+        current.mergeSha = "7".repeat(40);
+      }
+      return merge(repo, number, headSha);
+    };
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.tasks.get(id)).toMatchObject({
+      foreignMerge: true,
+      mergeSha: "7".repeat(40),
+      headSha: SHA2,
+    });
+  });
+});
