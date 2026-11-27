@@ -7,10 +7,12 @@
  * that skip releases.
  */
 import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { setTimeout as sleep } from "node:timers/promises";
 import { dirname, join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { SecretsFile } from "./config/secrets.js";
 import type { HermesRun } from "./hermes/cli.js";
+import { tryLock } from "./update.js";
 
 export const LEGACY_ROLE = "planner";
 export const CHAT_ROLE_NAME = "communicator";
@@ -102,6 +104,9 @@ interface PendingMove {
   rekey: boolean;
 }
 
+/** How long a run waits for another process's move to finish before giving up. */
+const LOCK_WAIT_MS = 120_000;
+
 /**
  * Moves the old role's Hermes profile, with its skills, memories, and sessions, and its MCP
  * token secret to the new name. A profile that already exists under the new name is not
@@ -111,11 +116,26 @@ interface PendingMove {
  * move under it leaves the gateway serving an empty profile at the old path and refusing the
  * moved one. The gateway is stopped for the move and started again after. Hermes keys the
  * Discord sessions and routes by profile name, so `run` then rekeys them; Hermes does that with
- * the gateway running too. A start or rekey that fails is noted next to the Hermes root and
- * tried again on the next run, since by then the old profile is gone. Without `run` the profile
- * is not moved, so its threads are never left on the old name.
+ * the gateway running too. What is left to do is noted beside the Hermes root before the
+ * gateway stops, and a later run finishes it, since by then the old profile is gone. The service
+ * and `hermes sync` can both run this, so a lock beside the Hermes root keeps them apart. Without
+ * `run` the profile is not moved, so its threads are never left on the old name.
  */
 export async function migratePlannerFiles(options: {
+  hermesRoot: string;
+  secrets: SecretsFile;
+  gateway?: GatewayControl;
+  run?: HermesRun;
+}): Promise<void> {
+  const release = await waitForLock(join(dirname(options.hermesRoot), "hermes-profile-move.lock"));
+  try {
+    await movePlannerFiles(options);
+  } finally {
+    release();
+  }
+}
+
+async function movePlannerFiles(options: {
   hermesRoot: string;
   secrets: SecretsFile;
   gateway?: GatewayControl;
@@ -154,15 +174,23 @@ export async function migratePlannerFiles(options: {
       );
       return;
     }
-    const wasActive = gateway?.active() ?? false;
-    // Noted first, so a crash after the move still finishes on the next run.
-    writePending(pendingPath, { startGateway: wasActive, rekey: true });
+    // A run that stopped the gateway and was cut off before the move left it to be started.
+    const earlier = readPending(pendingPath);
+    const startGateway = (gateway?.active() ?? false) || earlier?.startGateway === true;
+    // Noted first, so a crash after the gateway stops or the profile moves still finishes later.
+    writePending(pendingPath, { startGateway, rekey: true });
+    let stoppedHere = false;
     try {
-      if (gateway !== undefined && !gateway.stopped()) gateway.stop();
+      if (gateway !== undefined && !gateway.stopped()) {
+        gateway.stop();
+        stoppedHere = true;
+      }
       renameSync(from, to);
     } catch (error) {
-      rmSync(pendingPath, { force: true });
-      if (wasActive) gateway?.start();
+      // Nothing moved, so nothing new is left to do. Only a gateway this run stopped is started
+      // again; one it could not stop is left alone.
+      if (earlier === undefined) rmSync(pendingPath, { force: true });
+      if (startGateway && stoppedHere) gateway?.start();
       throw error;
     }
   }
@@ -192,15 +220,45 @@ export async function migratePlannerFiles(options: {
   else rmSync(pendingPath, { force: true });
 }
 
-function writePending(path: string, pending: PendingMove): void {
-  writeFileSync(path, `${JSON.stringify(pending)}\n`, { mode: 0o600 });
+async function waitForLock(path: string): Promise<() => void> {
+  const deadline = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    const release = tryLock(path);
+    if (release !== undefined) return release;
+    if (Date.now() > deadline) {
+      throw new Error(`Another process is moving the Hermes profile. If none is, delete ${path}.`);
+    }
+    await sleep(200);
+  }
 }
 
+/** Replaced in one step, so a crash never leaves half a file. */
+function writePending(path: string, pending: PendingMove): void {
+  const partial = `${path}.partial`;
+  writeFileSync(partial, `${JSON.stringify(pending)}\n`, { mode: 0o600 });
+  renameSync(partial, path);
+}
+
+/**
+ * The work left from an earlier run. A file that does not read as one still means the profile
+ * moved, so the rekey, which is safe to repeat, is done again; the gateway is left as it is.
+ */
 function readPending(path: string): PendingMove | undefined {
+  let text: string;
   try {
-    return JSON.parse(readFileSync(path, "utf8")) as PendingMove;
+    text = readFileSync(path, "utf8");
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
+  try {
+    const value = JSON.parse(text) as Partial<PendingMove>;
+    if (typeof value.startGateway === "boolean" && typeof value.rekey === "boolean") {
+      return { startGateway: value.startGateway, rekey: value.rekey };
+    }
+  } catch {
+    // Read below as unknown.
+  }
+  console.warn(`${path} could not be read; the Discord threads are rekeyed again.`);
+  return { startGateway: false, rekey: true };
 }

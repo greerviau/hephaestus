@@ -156,6 +156,18 @@ export async function update(options: UpdateOptions): Promise<number> {
  * as after a reboot, is taken over. Returns the function that releases it.
  */
 export function lockUpdate(path: string): () => void {
+  const release = tryLock(path);
+  if (release !== undefined) return release;
+  throw new Error(
+    `Another update is running (process ${String(lockHolder(path))}). If none is, delete ${path}.`,
+  );
+}
+
+/**
+ * Takes the lock file at `path` for this process, taking over one whose process is gone.
+ * Returns the function that releases it, or undefined while a live process holds it.
+ */
+export function tryLock(path: string): (() => void) | undefined {
   for (;;) {
     try {
       writeFileSync(path, `${String(process.pid)}\n`, { flag: "wx", mode: 0o600 });
@@ -165,12 +177,7 @@ export function lockUpdate(path: string): () => void {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    const holder = lockHolder(path);
-    if (holder !== undefined) {
-      throw new Error(
-        `Another update is running (process ${String(holder)}). If none is, delete ${path}.`,
-      );
-    }
+    if (lockHolder(path) !== undefined) return undefined;
     rmSync(path, { force: true });
   }
 }

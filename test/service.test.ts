@@ -250,6 +250,7 @@ describe("SystemdUserService.active", () => {
       ["active\n", true],
       ["activating\n", true],
       ["reloading\n", true],
+      ["refreshing\n", true],
       ["deactivating\n", false],
       ["inactive\n", false],
       ["failed\n", false],
