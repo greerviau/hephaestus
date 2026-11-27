@@ -65,6 +65,12 @@ export function shellSource(factory: FactoryPages): ShellSource {
     const proposals = drafts.ok ? drafts.value.length : 0;
     const projects = factoryProjects(factory);
     const version = factory.version?.();
+    const { updating: locked } = factory;
+    const status =
+      locked === undefined || (version?.behind ?? 0) === 0
+        ? undefined
+        : read("the update lock", locked);
+    const updating = status?.ok === true ? status.value : undefined;
     return {
       paused: paused.ok ? paused.value : undefined,
       runningThreads: running.ok ? running.value : undefined,
@@ -74,7 +80,13 @@ export function shellSource(factory: FactoryPages): ShellSource {
       project: chosen(cookie(request, PROJECT_COOKIE), projects),
       ...(version === undefined
         ? {}
-        : { version: { ...version, updatable: factory.updater !== undefined } }),
+        : {
+            version: {
+              ...version,
+              updatable: factory.updater !== undefined,
+              ...(updating === undefined ? {} : { updating }),
+            },
+          }),
       // A page a form posted to has no address to come back to.
       back: request.method === "GET" ? here(url) : undefined,
     };

@@ -1,7 +1,14 @@
 #!/usr/bin/env node
 import { SelfUpdate } from "./self-update.js";
 import { spawnSync } from "node:child_process";
-import { checkoutOf, lockUpdate, serviceProgram, shellCommand, update } from "./update.js";
+import {
+  checkoutOf,
+  lockUpdate,
+  serviceProgram,
+  shellCommand,
+  update,
+  updateLocked,
+} from "./update.js";
 import { VersionCheck, gitIn } from "./version-check.js";
 import { offerStarterSkills } from "./config/starter-skills.js";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
@@ -492,7 +499,7 @@ async function main(argv: string[]): Promise<number> {
       const env = pathWith(program.node);
       let release: () => void;
       try {
-        release = lockUpdate(join(paths.root, "update.lock"));
+        release = lockUpdate(paths.updateLock);
       } catch (error) {
         console.log(`Not updated: ${error instanceof Error ? error.message : String(error)}`);
         return 1;
@@ -683,6 +690,7 @@ async function main(argv: string[]): Promise<number> {
           logPath: join(paths.root, "update.log"),
           path: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
         }),
+        updating: () => updateLocked(paths.updateLock),
         version: () => {
           const state = versionCheck.state();
           return state === undefined ? undefined : { ...state, command: updateCommand };

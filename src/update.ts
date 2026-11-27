@@ -165,14 +165,32 @@ export function lockUpdate(path: string): () => void {
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
     }
-    const holder = Number(readFileSync(path, "utf8").trim());
-    if (Number.isInteger(holder) && holder > 0 && alive(holder)) {
+    const holder = lockHolder(path);
+    if (holder !== undefined) {
       throw new Error(
         `Another update is running (process ${String(holder)}). If none is, delete ${path}.`,
       );
     }
     rmSync(path, { force: true });
   }
+}
+
+/** Whether an update holds the lock at `path` now, from the dashboard or a shell. */
+export function updateLocked(path: string): boolean {
+  return lockHolder(path) !== undefined;
+}
+
+/** The live process that holds the lock at `path`, or undefined when none does. */
+function lockHolder(path: string): number | undefined {
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  const holder = Number(text.trim());
+  return Number.isInteger(holder) && holder > 0 && alive(holder) ? holder : undefined;
 }
 
 function alive(pid: number): boolean {

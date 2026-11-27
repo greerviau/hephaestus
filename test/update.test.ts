@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { lockUpdate, serviceProgram, update, type UpdateRun } from "../src/update.js";
+import { lockUpdate, serviceProgram, update, updateLocked, type UpdateRun } from "../src/update.js";
 
 const OLD = "a".repeat(40);
 const NEW = "b".repeat(40);
@@ -218,13 +218,17 @@ describe("lockUpdate", () => {
     const dir = mkdtempSync(join(tmpdir(), "hephaestus-lock-"));
     const path = join(dir, "update.lock");
     try {
+      expect(updateLocked(path)).toBe(false);
       const release = lockUpdate(path);
+      expect(updateLocked(path)).toBe(true);
       expect(() => lockUpdate(path)).toThrow(/Another update is running/);
       release();
       expect(existsSync(path)).toBe(false);
+      expect(updateLocked(path)).toBe(false);
 
       // A lock whose process is gone, such as after a reboot, does not block the next update.
       writeFileSync(path, "999999999\n");
+      expect(updateLocked(path)).toBe(false);
       const again = lockUpdate(path);
       again();
     } finally {
