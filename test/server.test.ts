@@ -102,6 +102,16 @@ describe("dashboard without a session", () => {
     expect(await response.text()).toContain("--accent");
   });
 
+  it("serves the live refresh script without a session and allows only that script", async () => {
+    const response = await fetch(`${base}/assets/live.js`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toBe("text/javascript; charset=utf-8");
+    expect(response.headers.get("content-security-policy")).toContain("script-src 'self'");
+    expect(response.headers.get("content-security-policy")).toContain("connect-src 'self'");
+    expect(await response.text()).toContain("data-live-seconds");
+  });
+
   it.each([
     ["/favicon.ico", "image/x-icon"],
     ["/assets/brand/favicon-32.png", "image/png"],

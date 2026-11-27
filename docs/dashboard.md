@@ -1,6 +1,6 @@
 # Dashboard
 
-The dashboard is a set of server-rendered pages behind the dashboard password. It needs no JavaScript: every owner action is a plain form that posts and returns to the page, dialogs and the "..." menus are HTML popovers and `details` elements, and live pages reload themselves with a meta refresh.
+The dashboard is a set of server-rendered pages behind the dashboard password. It works without JavaScript: every owner action is a plain form that posts and returns to the page, and dialogs and the "..." menus are HTML popovers and `details` elements. The one script, which keeps live pages current, is optional.
 
 The pages follow the browser's light or dark setting. Links to GitHub open in a new tab. The pages call a card a task; "card" remains in internal names such as the `card_id` argument of an agent's tool call.
 
@@ -28,9 +28,11 @@ The Project picker at the top of the sidebar lists the factory's projects. Choos
 
 ## Reloading
 
-Pages that show live status reload themselves. A reload loads the page's own address, so the tab, view, filters, and an open Workers row stay. The address is loaded without the `notice` parameter, so the banner that reports an action's result shows once.
+Pages that show live status refresh themselves. A small script, served at `/assets/live.js`, fetches the page's own address again, so the tab, view, filters, and an open Workers row stay, and swaps in only the main region and the sidebar when their content changed. The page and the sidebar keep their scroll positions, and open `details` menus stay open. The script waits while a field has focus, a dialog or popover is open, or the tab is hidden, and tries again after a failed fetch. It reloads the page when the session has ended. A browser that runs no scripts reloads the whole page with a meta refresh instead, and that reload discards typed text and closes an open dialog. Either way the address is loaded without the `notice` parameter, so the banner that reports an action's result shows once.
 
-| Page                                                 | Reloads                                                       |
+The table below gives how often each page refreshes.
+
+| Page                                                 | Refreshes                                                     |
 | ---------------------------------------------------- | ------------------------------------------------------------- |
 | Home (`/`)                                           | Every 10 seconds; every 5 while T3 has not answered           |
 | Work (`/work`), every tab, as a list or a board      | Every 10 seconds                                              |

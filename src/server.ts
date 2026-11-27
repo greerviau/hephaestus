@@ -14,6 +14,7 @@ import {
   type RouteContext,
   type ShellSource,
 } from "./web/http.js";
+import { LIVE_SCRIPT, LIVE_SCRIPT_PATH } from "./web/live.js";
 import { STYLESHEET } from "./web/style.js";
 import { LOGO_PATH, brandFile } from "./web/brand.js";
 
@@ -80,6 +81,10 @@ export function createDashboardServer({
     // The stylesheet holds nothing private, and the login page needs it before a session exists.
     if (path === STYLESHEET_PATH && (method === "GET" || method === "HEAD")) {
       send(response, 200, "text/css; charset=utf-8", STYLESHEET);
+      return;
+    }
+    if (path === LIVE_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
+      send(response, 200, "text/javascript; charset=utf-8", LIVE_SCRIPT);
       return;
     }
     const brand = method === "GET" || method === "HEAD" ? brandFile(path) : undefined;

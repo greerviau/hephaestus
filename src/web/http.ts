@@ -15,7 +15,7 @@ export function send(
     "x-content-type-options": "nosniff",
     "x-frame-options": "DENY",
     "content-security-policy":
-      "default-src 'none'; style-src 'self' 'unsafe-inline'; img-src 'self'; form-action 'self'",
+      "default-src 'none'; script-src 'self'; connect-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self'; form-action 'self'",
   });
   response.end(body);
 }
