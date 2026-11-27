@@ -1,16 +1,17 @@
-# Settings and config versions
+# Config and config versions
 
 ## Sub-features
 
-- Lists config versions with state, author, creation time, and message.
+- The Versions tab lists config versions with state, author, creation time, and message.
 - Shows one version's diff against its parent and its whole config.
-- Saves an edit of the config JSON as a draft built from the current version; an invalid edit answers 400 and keeps the text.
+- The Factory, Models, and Agents tabs each save a form as a new version, deployed unless Deploy now is unticked.
+- The JSON tab saves an edit of the config JSON as a draft built from the current version; an invalid edit answers 400 and keeps the text.
 - Approves and rejects drafts, and reverts a deployed or superseded version into a new draft.
 - `GET /api/config/versions` and `GET /api/config/versions/<id>` serve the same data as JSON.
 
 ## How to reach it
 
-Sign in, then follow Settings in the navigation bar (`/settings`).
+Sign in, then follow Config in the sidebar (`/config`). The tabs are `/config`, `/config/models`, `/config/agents`, `/config/versions`, and `/config/json`.
 
 ## Driving it
 
@@ -32,15 +33,15 @@ test -n "$cookie" && echo "signed in"
 Then drive the page:
 
 ```sh
-test/container/as-owner.sh "$name" curl -s -H "cookie: $cookie" http://127.0.0.1:7700/settings
+test/container/as-owner.sh "$name" curl -s -H "cookie: $cookie" http://127.0.0.1:7700/config/versions
 test/container/as-owner.sh "$name" curl -s -H "cookie: $cookie" http://127.0.0.1:7700/api/config/versions/1
 test/container/as-owner.sh "$name" sh -c "curl -s -H 'cookie: $cookie' http://127.0.0.1:7700/api/config/versions/1 | node -e 'let s=\"\";process.stdin.on(\"data\",d=>s+=d).on(\"end\",()=>{const v=JSON.parse(s).version.document;v.roles.lead.persona=\"Lead carefully.\";process.stdout.write(JSON.stringify(v))})' > /tmp/edit.json"
-test/container/as-owner.sh "$name" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' -H 'cookie: $cookie' --data-urlencode document@/tmp/edit.json --data-urlencode 'message=Tune the lead' --data-urlencode parentId=1 http://127.0.0.1:7700/settings/versions"
-test/container/as-owner.sh "$name" sh -c "curl -s -o /dev/null -w '%{http_code}\n' -H 'cookie: $cookie' -X POST http://127.0.0.1:7700/settings/versions/2/approve"
+test/container/as-owner.sh "$name" sh -c "curl -s -o /dev/null -w '%{http_code} %{redirect_url}\n' -H 'cookie: $cookie' --data-urlencode document@/tmp/edit.json --data-urlencode 'message=Tune the lead' --data-urlencode parentId=1 http://127.0.0.1:7700/config/json"
+test/container/as-owner.sh "$name" sh -c "curl -s -o /dev/null -w '%{http_code}\n' -H 'cookie: $cookie' -X POST http://127.0.0.1:7700/config/versions/2/approve"
 ```
 
-The edit answers `303` with a redirect to `/settings/versions/2`, and the approve answers `303`.
+The edit answers `303` with a redirect to `/config/versions/2`, and the approve answers `303`.
 
 ## Gotchas
 
-- No version reaches `deployed` until worker deploys exist, so the Revert button does not appear yet. The unit tests in `test/web/settings.test.ts` cover revert.
+- No version reaches `deployed` until worker deploys exist, so the Revert button does not appear yet. The unit tests in `test/web/settings.test.ts` cover revert, and `test/web/agents.test.ts` covers the Agents tab.

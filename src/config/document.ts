@@ -100,7 +100,7 @@ export class ConfigValidationError extends Error {
 
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-/** The largest config, in UTF-8 bytes of JSON, that a version may hold; the Settings editor can save any config up to this size. */
+/** The largest config, in UTF-8 bytes of JSON, that a version may hold; the JSON editor on Config can save any config up to this size. */
 export const MAX_CONFIG_BYTES = 2 * 1024 * 1024;
 
 // eslint-disable-next-line no-control-regex
@@ -114,6 +114,29 @@ export function isSafeRelativePath(path: string): boolean {
       (segment) =>
         segment !== "" && segment !== "." && segment !== ".." && !UNSAFE_SEGMENT.test(segment),
     );
+}
+
+/**
+ * Each path in `paths` that lies inside another path of the list, with that
+ * other path. A skill is written to disk as a folder, where one name cannot
+ * be both a file and a folder.
+ */
+export function pathsInsideFiles(paths: readonly string[]): [path: string, file: string][] {
+  const all = new Set(paths);
+  const found: [string, string][] = [];
+  for (const path of paths) {
+    const segments = path.split("/");
+    for (let depth = 1; depth < segments.length; depth += 1) {
+      const above = segments.slice(0, depth).join("/");
+      if (all.has(above)) found.push([path, above]);
+    }
+  }
+  return found;
+}
+
+/** What the config says about a skill file that lies inside another file. */
+export function insideFileProblem(skill: string, path: string, file: string): string {
+  return `skills.${skill}.${JSON.stringify(path)} is inside ${JSON.stringify(file)}, which is a file, not a folder`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -296,6 +319,9 @@ export function validateConfig(value: unknown): FactoryConfig {
         problems.push(`skills.${name}.${JSON.stringify(path)} must be a relative path`);
       }
       string(`skills.${name}.${path}`, text);
+    }
+    for (const [path, file] of pathsInsideFiles(Object.keys(contents))) {
+      problems.push(insideFileProblem(name, path, file));
     }
   }
   const threadSkills = (factory as { threadSkills?: unknown } | undefined)?.threadSkills;

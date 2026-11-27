@@ -399,7 +399,7 @@ describe("RequestThreads, catch-up text", () => {
       "Following octo/app#22: it is waiting for a decision: blocked on a key. Progress shows up here.",
     );
     expect(texts[2]).toMatch(
-      /^Following octo\/app#23: it needs you: y{300} \(cut short; the card has it all\)\. http:\/\/host:7700\/work\/\d+ Progress/,
+      /^Following octo\/app#23: it needs you: y{300} \(cut short; the task page has it all\)\. http:\/\/host:7700\/work\/\d+ Progress/,
     );
 
     const reverting = card(24);

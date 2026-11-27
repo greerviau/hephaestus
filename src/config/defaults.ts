@@ -13,7 +13,8 @@ import {
 
 /** `templates/` in the repo; the same relative path works from `src/` and `dist/`. */
 const TEMPLATES = fileURLToPath(new URL("../../templates/", import.meta.url));
-const MAX_SKILL_FILE_BYTES = 256 * 1024;
+/** The most text one skill file holds, in UTF-8 bytes, imported from a folder or typed on the Agents tab. */
+export const MAX_SKILL_FILE_BYTES = 256 * 1024;
 
 export interface ImportedSkill {
   name: string;

@@ -146,39 +146,55 @@ function fakeModel(
   };
 }
 
-describe("Model page", () => {
+describe("Planning model page", () => {
   it("shows the current provider and model, and never names the factory's roles", async () => {
     dashboard = await startDashboard({ model: fakeModel() });
 
-    const { status, html } = await dashboard.get("/model");
+    const { status, html } = await dashboard.get("/config/models/planning");
 
     expect(status).toBe(200);
     expect(html).toContain("Anthropic");
     expect(html).toContain("claude-sonnet-5");
     expect(html).toContain('<option value="deepseek"');
     expect(html).not.toMatch(/planner|improver|\blead\b/i);
+    expect(html).toContain("Planning and chat model</h1>");
+    expect(html).toContain('<a href="/config/models">Models</a>');
+    expect(html).not.toContain('http-equiv="refresh"');
+  });
+
+  it("links to Config when the factory Hermes is not set up", async () => {
+    dashboard = await startDashboard({ model: fakeModel({ ready: false }) });
+
+    expect((await dashboard.get("/config/models/planning")).html).toContain(
+      '<a href="/config/versions">Config</a>',
+    );
   });
 
   it("asks to deploy first when the factory Hermes is not set up", async () => {
     dashboard = await startDashboard({ model: fakeModel({ ready: false }) });
 
-    const { html } = await dashboard.get("/model");
+    const { html } = await dashboard.get("/config/models/planning");
 
     expect(html).toContain("Deploy a config version");
-    expect(html).not.toContain('action="/model/set"');
+    expect(html).not.toContain('action="/config/models/planning/set"');
   });
 
   it("offers a key field for a provider that takes an API key, and saves the key", async () => {
     const model = fakeModel();
     dashboard = await startDashboard({ model });
 
-    const page = (await dashboard.get("/model?provider=deepseek")).html;
-    expect(page).toContain('action="/model/key"');
+    const page = (await dashboard.get("/config/models/planning?provider=deepseek")).html;
+    expect(page).toContain('action="/config/models/planning/key"');
     expect(page).toContain('type="password"');
     expect(page).toContain("DEEPSEEK_API_KEY");
 
-    const saved = await dashboard.post("/model/key", { provider: "deepseek", key: "sk-test" });
-    expect(saved.headers.get("location")).toBe("/model?provider=deepseek&notice=key");
+    const saved = await dashboard.post("/config/models/planning/key", {
+      provider: "deepseek",
+      key: "sk-test",
+    });
+    expect(saved.headers.get("location")).toBe(
+      "/config/models/planning?provider=deepseek&notice=key",
+    );
     expect(model.keys).toEqual([["deepseek", "sk-test"]]);
   });
 
@@ -186,14 +202,16 @@ describe("Model page", () => {
     const model = fakeModel();
     dashboard = await startDashboard({ model });
 
-    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
-      'action="/model/login"',
+    expect((await dashboard.get("/config/models/planning?provider=openai-codex")).html).toContain(
+      'action="/config/models/planning/login"',
     );
-    const started = await dashboard.post("/model/login", { provider: "openai-codex" });
-    expect(started.headers.get("location")).toBe("/model?provider=openai-codex");
+    const started = await dashboard.post("/config/models/planning/login", {
+      provider: "openai-codex",
+    });
+    expect(started.headers.get("location")).toBe("/config/models/planning?provider=openai-codex");
     expect(model.logins).toEqual(["openai-codex"]);
 
-    const page = (await dashboard.get("/model?provider=openai-codex")).html;
+    const page = (await dashboard.get("/config/models/planning?provider=openai-codex")).html;
     expect(page).toContain("https://auth.example/device");
     expect(page).toContain("ABCD-1234");
     expect(page).toContain('http-equiv="refresh"');
@@ -202,24 +220,26 @@ describe("Model page", () => {
   it("says which host command signs in a provider the dashboard cannot", async () => {
     dashboard = await startDashboard({ model: fakeModel() });
 
-    const page = (await dashboard.get("/model?provider=bedrock")).html;
+    const page = (await dashboard.get("/config/models/planning?provider=bedrock")).html;
 
     expect(page).toContain("HERMES_HOME=~/.hephaestus/hermes hermes model");
-    expect(page).not.toContain('action="/model/key"');
+    expect(page).not.toContain('action="/config/models/planning/key"');
   });
 
   it("saves a model for the chosen provider", async () => {
     const model = fakeModel();
     dashboard = await startDashboard({ model });
 
-    const page = (await dashboard.get("/model?provider=anthropic")).html;
+    const page = (await dashboard.get("/config/models/planning?provider=anthropic")).html;
     expect(page).toContain('<option value="claude-opus-5-5">');
 
-    const saved = await dashboard.post("/model/set", {
+    const saved = await dashboard.post("/config/models/planning/set", {
       provider: "anthropic",
       model: "claude-opus-5-5",
     });
-    expect(saved.headers.get("location")).toBe("/model?provider=anthropic&notice=saved");
+    expect(saved.headers.get("location")).toBe(
+      "/config/models/planning?provider=anthropic&notice=saved",
+    );
     expect(model.choices).toEqual([{ provider: "anthropic", model: "claude-opus-5-5" }]);
   });
 
@@ -227,8 +247,10 @@ describe("Model page", () => {
     const model = fakeModel();
     dashboard = await startDashboard({ model });
 
-    expect((await dashboard.get("/model?provider=custom")).html).toContain('name="base_url"');
-    await dashboard.post("/model/set", {
+    expect((await dashboard.get("/config/models/planning?provider=custom")).html).toContain(
+      'name="base_url"',
+    );
+    await dashboard.post("/config/models/planning/set", {
       provider: "custom",
       model: "llama-3",
       base_url: "http://localhost:8080/v1",
@@ -245,7 +267,10 @@ describe("Model page", () => {
       model: fakeModel({ refuse: "Hermes refused the model: unknown model nope" }),
     });
 
-    const response = await dashboard.post("/model/set", { provider: "anthropic", model: "nope" });
+    const response = await dashboard.post("/config/models/planning/set", {
+      provider: "anthropic",
+      model: "nope",
+    });
 
     expect(response.status).toBe(400);
     const html = await response.text();
@@ -259,7 +284,7 @@ describe("Model page", () => {
     });
     dashboard = await startDashboard({ model });
 
-    const warned = await dashboard.post("/model/set", {
+    const warned = await dashboard.post("/config/models/planning/set", {
       provider: "anthropic",
       model: "clade-opus",
     });
@@ -270,13 +295,71 @@ describe("Model page", () => {
     expect(html).toContain('name="force"');
     expect(model.choices).toEqual([]);
 
-    const forced = await dashboard.post("/model/set", {
+    const forced = await dashboard.post("/config/models/planning/set", {
       provider: "anthropic",
       model: "clade-opus",
       force: "on",
     });
-    expect(forced.headers.get("location")).toBe("/model?provider=anthropic&notice=saved");
+    expect(forced.headers.get("location")).toBe(
+      "/config/models/planning?provider=anthropic&notice=saved",
+    );
     expect(model.choices).toEqual([{ provider: "anthropic", model: "clade-opus", force: true }]);
+  });
+
+  it("never shows the user name and password of an endpoint URL again", async () => {
+    const url = "https://bob:s3cr%40t@llm.example/v1";
+    const model = fakeModel({
+      warn: "Could not reach https://bob:s3cr%40t@llm.example/v1/models (key sk-local-1, password s3cr@t).",
+    });
+    dashboard = await startDashboard({ model });
+
+    const warned = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: url,
+      key: "sk-local-1",
+    });
+    const html = await warned.text();
+
+    expect(warned.status).toBe(400);
+    expect(html).toContain("Hermes warned");
+    expect(html).toContain('value="llama-3"');
+    for (const secret of ["s3cr", "bob", "sk-local-1"]) expect(html).not.toContain(secret);
+    expect(html).not.toContain('value="https://');
+    expect(html).toContain("Could not reach https://[hidden]@llm.example/v1/models");
+    expect(html).toContain("The URL you sent held a user name or password, so it is not shown");
+    expect(model.choices).toEqual([]);
+  });
+
+  it("keeps an endpoint URL without a user name or password when Hermes warns", async () => {
+    dashboard = await startDashboard({ model: fakeModel({ warn: "Not listed." }) });
+
+    const warned = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: "http://localhost:8080/v1",
+    });
+
+    expect(await warned.text()).toContain('value="http://localhost:8080/v1"');
+  });
+
+  it("hides an endpoint URL's password in Hermes's refusal too", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        refuse: "Hermes refused the model: 401 from https://bob:hunter22@x.example",
+      }),
+    });
+
+    const refused = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: "https://bob:hunter22@x.example/v1",
+    });
+    const html = await refused.text();
+
+    expect(refused.status).toBe(400);
+    expect(html).toContain("Hermes refused the model: 401 from");
+    expect(html).not.toContain("hunter22");
   });
 
   it("warns when parts of the factory use another model", async () => {
@@ -292,13 +375,15 @@ describe("Model page", () => {
       }),
     });
 
-    expect((await dashboard.get("/model")).html).toContain("not all on this model");
+    expect((await dashboard.get("/config/models/planning")).html).toContain(
+      "not all on this model",
+    );
   });
 
   it("says a save took when only the gateway restart failed", async () => {
     dashboard = await startDashboard({ model: fakeModel({ restartFails: true }) });
 
-    const response = await dashboard.post("/model/set", {
+    const response = await dashboard.post("/config/models/planning/set", {
       provider: "anthropic",
       model: "claude-opus-5-5",
     });
@@ -306,6 +391,7 @@ describe("Model page", () => {
     expect(response.status).toBe(400);
     const html = await response.text();
     expect(html).toContain("Saved, but the chat did not restart");
+    expect(html).toContain('<a href="/chat">Chat</a>');
     expect(html).not.toContain("Not changed");
   });
 
@@ -313,7 +399,9 @@ describe("Model page", () => {
     const model = fakeModel();
     dashboard = await startDashboard({ model });
 
-    const response = await dashboard.post("/model/set", { model: "claude-opus-5-5" });
+    const response = await dashboard.post("/config/models/planning/set", {
+      model: "claude-opus-5-5",
+    });
 
     expect(response.status).toBe(400);
     expect(await response.text()).toContain("Pick a provider first.");
@@ -324,7 +412,7 @@ describe("Model page", () => {
     dashboard = await startDashboard({ model: fakeModel() });
 
     for (const notice of ["constructor", "__proto__", "toString"]) {
-      expect((await dashboard.get(`/model?notice=${notice}`)).status).toBe(200);
+      expect((await dashboard.get(`/config/models/planning?notice=${notice}`)).status).toBe(200);
     }
   });
 
@@ -358,7 +446,7 @@ describe("Model page", () => {
       }),
     });
 
-    const html = (await dashboard.get("/model?provider=evil")).html;
+    const html = (await dashboard.get("/config/models/planning?provider=evil")).html;
 
     expect(html).not.toContain(hostile);
     expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
@@ -372,7 +460,10 @@ describe("Model page", () => {
       }),
     });
 
-    const response = await dashboard.post("/model/set", { provider: "custom", model: "llama" });
+    const response = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama",
+    });
 
     const html = await response.text();
     expect(html).toContain("Partly saved");
@@ -387,10 +478,13 @@ describe("Model page", () => {
       }),
     });
 
-    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+    expect((await dashboard.get("/config/models/planning?provider=openai-codex")).html).toContain(
       'http-equiv="refresh"',
     );
-    const response = await dashboard.post("/model/set", { provider: "openai-codex", model: "x" });
+    const response = await dashboard.post("/config/models/planning/set", {
+      provider: "openai-codex",
+      model: "x",
+    });
 
     expect(response.status).toBe(400);
     expect(await response.text()).not.toContain('http-equiv="refresh"');
@@ -407,7 +501,7 @@ describe("Model page", () => {
       }),
     });
 
-    expect((await dashboard.get("/model?provider=openai-codex")).html).toContain(
+    expect((await dashboard.get("/config/models/planning?provider=openai-codex")).html).toContain(
       "Signed in, but the factory&#39;s chat did not restart.",
     );
   });
@@ -453,8 +547,89 @@ describe("Model page", () => {
     });
 
     for (const slug of ["keyed", "outside", "device"]) {
-      const html = (await dashboard.get(`/model?provider=${slug}`)).html;
+      const html = (await dashboard.get(`/config/models/planning?provider=${slug}`)).html;
       expect(html).not.toContain(hostile);
     }
+  });
+});
+
+describe("Models tab: planning and chat", () => {
+  it("shows the model in use, that its provider is signed in, and a link to change it", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    const { status, html } = await dashboard.get("/config/models");
+
+    expect(status).toBe(200);
+    expect(html).toContain("<strong>claude-sonnet-5</strong>");
+    expect(html).toContain("Anthropic");
+    expect(html).toContain("Signed in");
+    expect(html).toContain('<a class="btn" href="/config/models/planning">Change</a>');
+    expect(html).not.toContain('http-equiv="refresh"');
+  });
+
+  it("says the provider is not signed in", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({ catalog: catalog({ provider: "deepseek", model: "deepseek-chat" }) }),
+    });
+
+    const { html } = await dashboard.get("/config/models");
+
+    expect(html).toContain("<strong>deepseek-chat</strong>");
+    expect(html).toContain("Not signed in");
+  });
+
+  it("says Not set with a Set up button when no model is set", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({ catalog: catalog({ provider: "", model: "" }) }),
+    });
+
+    const { html } = await dashboard.get("/config/models");
+
+    expect(html).toContain("Not set");
+    expect(html).toContain('<a class="btn primary" href="/config/models/planning">Set up</a>');
+  });
+
+  it("escapes what Hermes reports", async () => {
+    const hostile = "<img src=x onerror=alert(1)>";
+    dashboard = await startDashboard({
+      model: fakeModel({
+        catalog: catalog({
+          provider: "evil",
+          model: hostile,
+          providers: [
+            {
+              slug: "evil",
+              name: hostile,
+              auth_type: "api_key",
+              key_env: "",
+              authenticated: true,
+              models: [],
+            },
+          ],
+        }),
+      }),
+    });
+
+    expect((await dashboard.get("/config/models")).html).not.toContain(hostile);
+  });
+
+  it("still shows the coding models when Hermes does not answer, is not ready, or is absent", async () => {
+    const down = fakeModel();
+    down.catalog = () => Promise.reject(new Error("spawn failed: /secret/path"));
+    dashboard = await startDashboard({ model: down });
+    const failed = (await dashboard.get("/config/models")).html;
+    expect(failed).toContain("Hermes did not answer");
+    expect(failed).not.toContain("/secret/path");
+    expect(failed).toContain('name="claude.model"');
+    await dashboard.close();
+
+    dashboard = await startDashboard({ model: fakeModel({ ready: false }) });
+    expect((await dashboard.get("/config/models")).html).toContain("Not ready yet");
+    await dashboard.close();
+
+    dashboard = await startDashboard();
+    const absent = (await dashboard.get("/config/models")).html;
+    expect(absent).toContain("This install has no factory Hermes");
+    expect(absent).toContain('name="claude.model"');
   });
 });

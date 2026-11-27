@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { DiscordApi, type Fetch } from "./discord.js";
 import {
+  CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
   type Card,
   type CardEvent,
@@ -281,7 +282,7 @@ export class RequestThreads {
 /** A reason as a clause: trimmed, kept short, and without its final stop, which the caller adds. */
 function sentence(reason: string): string {
   const text = reason.trim().replace(/[.!?]+$/, "");
-  return text.length > 300 ? `${text.slice(0, 300)} (cut short; the card has it all)` : text;
+  return text.length > 300 ? `${text.slice(0, 300)} (cut short; the task page has it all)` : text;
 }
 
 /** What the card is doing now, in a few words, for a thread that starts following it late. */
@@ -329,7 +330,7 @@ export function milestone(
       if (detail === "work started" || detail === "the lead restarted the work") {
         return "Work started.";
       }
-      if (detail === "the reviewer asked for changes") {
+      if (detail === CHANGES_REQUESTED_DETAIL) {
         return "The review asked for changes. The engineer is on them.";
       }
       if (detail === MERGE_CONFLICT_DETAIL) {

@@ -55,56 +55,77 @@ function normalize(text: string): string {
 export interface UpgradeOptions {
   db: Database;
   store: ConfigStore;
-  /** Publishes an approved version to the workers and the factory Hermes root. */
-  deploy: (id: number) => Promise<unknown>;
+  /**
+   * Publishes an approved version, or applies an already deployed one again, to the workers
+   * and the factory Hermes root. It resolves with a `hermesError` when the version went out
+   * but the factory Hermes root did not take it.
+   */
+  deploy: (id: number) => Promise<{ hermesError?: string }>;
+}
+
+/** Runs the deploy and says whether it went all the way, logging why when it did not. */
+async function deployed(deploy: UpgradeOptions["deploy"], id: number): Promise<boolean> {
+  try {
+    const { hermesError } = await deploy(id);
+    if (hermesError === undefined) return true;
+    console.error(
+      `Upgrade version ${String(id)} is deployed, but the factory Hermes root did not take it; it will be tried again`,
+      hermesError,
+    );
+  } catch (error) {
+    console.error(`Deploying upgrade version ${String(id)} failed; it will be tried again`, error);
+  }
+  return false;
 }
 
 /**
  * Replaces a role's persona with the shipped one when the current config still
  * has the stock persona an earlier release shipped. A persona the owner edited
  * is left alone. Each upgrade runs once, as a new version built on the current
- * one, so it can be reviewed and reverted like any other change. A deploy that
- * fails is retried on the next start instead of making another version.
+ * one, so it can be reviewed and reverted like any other change. The version
+ * and the markers are written together, so a crash cannot leave a version with
+ * no marker or a marker with no version. A deploy that fails, or one that
+ * leaves the factory Hermes root behind, is tried again at the next start
+ * instead of making another version.
  */
 export async function applyUpgrades({ db, store, deploy }: UpgradeOptions): Promise<void> {
   const pending = getMeta(db, PENDING_KEY);
   if (pending !== undefined && pending !== "") {
     const id = Number(pending);
+    const version = store.get(id);
     let retry = false;
-    try {
-      store.assertDeployable(id);
+    if (version.state === "deployed") {
+      // Deployed, but the factory Hermes root may not have taken it. Deploying a deployed
+      // version again applies it to that root.
       retry = true;
-    } catch {
-      // Deployed already, or built on a version that is no longer the deployed one.
-    }
-    if (!retry) {
-      setMeta(db, PENDING_KEY, "");
-    } else {
+    } else if (version.state === "approved") {
       try {
-        await deploy(id);
-        setMeta(db, PENDING_KEY, "");
-      } catch (error) {
-        console.error(
-          `Deploying upgrade version ${String(id)} failed; it will be tried again`,
-          error,
-        );
-        return;
+        store.assertDeployable(id);
+        retry = true;
+      } catch {
+        // Built on a version that is no longer the deployed one.
       }
     }
+    // A later version that is deployed has been applied to the factory Hermes root itself.
+    if (retry && !(await deployed(deploy, id))) return;
+    setMeta(db, PENDING_KEY, "");
   }
 
-  let applied = Number(getMeta(db, APPLIED_KEY) ?? "0");
   for (const upgrade of PERSONA_UPGRADES) {
-    if (upgrade.id <= applied) continue;
+    if (upgrade.id <= Number(getMeta(db, APPLIED_KEY) ?? "0")) continue;
     const current = store.current();
     if (current === undefined) return;
     const persona = current.document.roles[upgrade.role].persona;
     const stock = (LEGACY_PERSONAS[upgrade.role] ?? []).some(
       (legacy) => normalize(legacy) === normalize(persona),
     );
-    if (stock) {
-      const document = structuredClone(current.document);
-      document.roles[upgrade.role].persona = shippedPersona(upgrade.role);
+    if (!stock) {
+      setMeta(db, APPLIED_KEY, String(upgrade.id));
+      continue;
+    }
+    const document = structuredClone(current.document);
+    document.roles[upgrade.role].persona = shippedPersona(upgrade.role);
+    const created = db.transaction(() => {
       const version = store.createVersion({
         document,
         author: "upgrade",
@@ -112,25 +133,13 @@ export async function applyUpgrades({ db, store, deploy }: UpgradeOptions): Prom
         parentId: current.id,
       });
       store.approve(version.id);
-      // The marker is set with the version, so a restart cannot make a second one.
-      applied = upgrade.id;
-      setMeta(db, APPLIED_KEY, String(applied));
-      if (current.state === "deployed") {
-        setMeta(db, PENDING_KEY, String(version.id));
-        try {
-          await deploy(version.id);
-          setMeta(db, PENDING_KEY, "");
-        } catch (error) {
-          console.error(
-            `Deploying upgrade version ${String(version.id)} failed; it will be tried again`,
-            error,
-          );
-          return;
-        }
-      }
-    } else {
-      applied = upgrade.id;
-      setMeta(db, APPLIED_KEY, String(applied));
+      setMeta(db, APPLIED_KEY, String(upgrade.id));
+      if (current.state === "deployed") setMeta(db, PENDING_KEY, String(version.id));
+      return version.id;
+    })();
+    if (current.state === "deployed") {
+      if (!(await deployed(deploy, created))) return;
+      setMeta(db, PENDING_KEY, "");
     }
   }
 }

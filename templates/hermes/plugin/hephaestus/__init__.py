@@ -134,7 +134,7 @@ def _check_scopes(args):
         except Exception as error:
             if scope is None:
                 raise Refused(f"Hermes could not open the factory root: {_detail(error)} Deploy a config version.") from None
-            # Hermes's reason names the profile, and the Model page never names the factory's roles.
+            # Hermes's reason names the profile, and the planning model page never names the factory's roles.
             raise Refused("Hermes could not open one of the factory's profiles. Deploy a config version.") from None
 
 
@@ -255,7 +255,7 @@ def _setup(parser):
 
 
 def _neutral(text, args):
-    """Hermes's reasons can name a profile; the Model page shows them and never names the factory's roles."""
+    """Hermes's reasons can name a profile; the planning model page shows them and never names the factory's roles."""
     names = [name for name in (getattr(args, "profiles", "") or "").split(",") if name]
     for name in names:
         text = re.sub(rf"\b[Pp]rofile '{re.escape(name)}'", "A factory profile", text)

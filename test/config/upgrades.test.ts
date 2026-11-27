@@ -33,12 +33,15 @@ function oldInstall(persona: string = LEGACY_PERSONAS.planner[0] ?? ""): number 
   return first.id;
 }
 
-function deployer(): { deploy: (id: number) => Promise<unknown>; deployed: number[] } {
+function deployer(): {
+  deploy: (id: number) => Promise<{ hermesError?: string }>;
+  deployed: number[];
+} {
   const deployed: number[] = [];
   return {
     deployed,
     deploy: (id) => {
-      store.markDeployed(id);
+      if (store.get(id).state === "approved") store.markDeployed(id);
       deployed.push(id);
       return Promise.resolve({});
     },
@@ -142,7 +145,42 @@ describe("applyUpgrades", () => {
     expect(store.current()?.state).toBe("deployed");
   });
 
-  it("does not deploy a pending upgrade that the owner has since deployed", async () => {
+  it("keeps the upgrade pending when the factory Hermes root did not take it, and applies it again", async () => {
+    const first = oldInstall();
+    await applyUpgrades({
+      db,
+      store,
+      deploy: (id) => {
+        store.markDeployed(id);
+        return Promise.resolve({ hermesError: "hermes is not reachable" });
+      },
+    });
+    expect(store.current()?.state).toBe("deployed");
+    expect(getMeta(db, "template_upgrade_pending")).toBe(String(first + 1));
+
+    const { deploy, deployed } = deployer();
+    await applyUpgrades({ db, store, deploy });
+
+    expect(deployed).toEqual([first + 1]);
+    expect(getMeta(db, "template_upgrade_pending")).toBe("");
+    expect(store.count()).toBe(2);
+  });
+
+  it("makes the version and both markers together, so a failed write leaves none of them", async () => {
+    const first = oldInstall();
+    db.exec(`CREATE TRIGGER no_pending BEFORE INSERT ON meta WHEN NEW.key = 'template_upgrade_pending'
+             BEGIN SELECT RAISE(ABORT, 'disk full'); END;`);
+
+    await expect(applyUpgrades({ db, store, deploy: deployer().deploy })).rejects.toThrow(
+      /disk full/,
+    );
+
+    expect(store.count()).toBe(1);
+    expect(store.current()?.id).toBe(first);
+    expect(getMeta(db, "template_upgrades_applied")).toBeUndefined();
+  });
+
+  it("drops a pending upgrade once the owner has deployed a later version", async () => {
     const first = oldInstall();
     await applyUpgrades({
       db,
@@ -150,6 +188,14 @@ describe("applyUpgrades", () => {
       deploy: () => Promise.reject(new Error("the config repo is unreachable")),
     });
     store.markDeployed(first + 1);
+    const later = store.createVersion({
+      document: structuredClone(store.get(first + 1).document),
+      author: "owner",
+      message: "A later edit",
+      parentId: first + 1,
+    });
+    store.approve(later.id);
+    store.markDeployed(later.id);
     const { deploy, deployed } = deployer();
 
     await applyUpgrades({ db, store, deploy });
