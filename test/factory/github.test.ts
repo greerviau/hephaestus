@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   AlreadyMergedError,
@@ -116,6 +119,54 @@ class FakeBranch {
     return Promise.reject(new Error(`unexpected call: ${joined}`));
   };
 }
+
+describe("GitHub attachments through the real command runner", () => {
+  it("delivers the exact upload payload to the gh process on stdin", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "hephaestus-gh-"));
+    try {
+      // A stand-in for gh that answers the calls storeAttachments makes and keeps what it was sent to write.
+      const gh = join(dir, "gh");
+      writeFileSync(
+        gh,
+        `#!${process.execPath}
+const fs = require("fs");
+const args = process.argv.slice(2);
+if (args.includes("PUT")) {
+  fs.writeFileSync(${JSON.stringify(join(dir, "received.json"))}, fs.readFileSync(0));
+  console.log("commit1");
+} else if (args.some((arg) => arg.includes("/contents/"))) {
+  console.error("gh: Not Found (HTTP 404)");
+  process.exit(1);
+} else {
+  console.log("{}");
+}
+`,
+        { mode: 0o755 },
+      );
+      const bytes = Buffer.alloc(2 * 1024 * 1024);
+      for (let i = 0; i < bytes.length; i++) bytes[i] = (i * 17 + 3) % 256;
+      const file = {
+        name: "b.png",
+        path: "attachments/0123456789abcdef/b.png",
+        data: bytes,
+        sha256: "x",
+      };
+      expect(await new GitHub(gh).storeAttachments("octo/app", [file])).toEqual(["commit1"]);
+      const received = readFileSync(join(dir, "received.json"));
+      expect(received.toString()).toBe(
+        JSON.stringify({
+          message: "Attach b.png",
+          content: bytes.toString("base64"),
+          branch: "hephaestus/attachments",
+        }),
+      );
+      const sent = JSON.parse(received.toString()) as { content: string };
+      expect(Buffer.from(sent.content, "base64").equals(bytes)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
 
 describe("GitHub attachments", () => {
   const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe]);
