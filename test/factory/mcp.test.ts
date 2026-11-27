@@ -12,7 +12,11 @@ import { FactoryMcp, ROLE_TOOLS } from "../../src/factory/mcp.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { harness, type Harness } from "./harness.js";
 
-const TOKENS = { planner: "planner-token", lead: "lead-token", improver: "improver-token" };
+const TOKENS = {
+  communicator: "communicator-token",
+  lead: "lead-token",
+  improver: "improver-token",
+};
 
 let server: Server | undefined;
 /** The folder holding each role's chat cache, set by a test that attaches files. */
@@ -160,9 +164,9 @@ describe("FactoryMcp", () => {
     expect(mcp.calls()[0]).toMatchObject({ role: "lead", tool: "get_status", ok: false });
   });
 
-  it("files an issue for the planner and records the call with the role", async () => {
+  it("files an issue for the communicator and records the call with the role", async () => {
     const { h, url, mcp } = await start();
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
     const result = json(
       await c.callTool({
         name: "file_issue",
@@ -175,7 +179,7 @@ describe("FactoryMcp", () => {
       tracking: `Tracking octo/app#${String(result.issue as number)}`,
     });
     expect(h.github.issues.get(result.issue as number)?.title).toBe("Add a flag");
-    expect(mcp.calls()[0]).toMatchObject({ role: "planner", tool: "file_issue", ok: true });
+    expect(mcp.calls()[0]).toMatchObject({ role: "communicator", tool: "file_issue", ok: true });
     await c.close();
   });
 
@@ -186,12 +190,12 @@ describe("FactoryMcp", () => {
     try {
       const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
       // An install that predates the cache folder keeps its images in the legacy one.
-      await mkdir(join(dir, "planner", "image_cache"), { recursive: true });
-      const path = join(dir, "planner", "image_cache", "banner.png");
+      await mkdir(join(dir, "communicator", "image_cache"), { recursive: true });
+      const path = join(dir, "communicator", "image_cache", "banner.png");
       await writeFile(path, bytes);
       const outside = join(dir, "secret.txt");
       await writeFile(outside, "secret");
-      const c = await client(url, TOKENS.planner);
+      const c = await client(url, TOKENS.communicator);
       const tool = (await c.listTools()).tools.find((candidate) => candidate.name === "file_issue");
       expect(tool?.description).toMatch(/10 files, 10 MB each/);
       expect(Object.keys(tool?.inputSchema.properties ?? {})).toContain("attachments");
@@ -202,7 +206,7 @@ describe("FactoryMcp", () => {
           repo: "octo/app",
           title: "x",
           body: "",
-          attachments: [join(dir, "planner", "image_cache", "nope.png")],
+          attachments: [join(dir, "communicator", "image_cache", "nope.png")],
         },
       });
       expect(missing.isError).toBe(true);
@@ -235,7 +239,7 @@ describe("FactoryMcp", () => {
     }
   });
 
-  it("gives the planner each task's recorded merge time, which can differ from its last update", async () => {
+  it("gives the communicator each task's recorded merge time, which can differ from its last update", async () => {
     const { h, url } = await start();
     const merged = h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "merged" });
     h.tasks.update(merged.id, { prNumber: 7 });
@@ -243,7 +247,7 @@ describe("FactoryMcp", () => {
     const open = h.tasks.create({ repo: "octo/app", issueNumber: 2, title: "open" });
     // A later change to a task that already merged moves its updated_at, not its merge time.
     h.tasks.event(merged.id, "note", "later");
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
     const listed = JSON.parse(
       ((await c.callTool({ name: "list_tasks", arguments: {} })) as { content: { text: string }[] })
         .content[0]?.text ?? "[]",
@@ -325,7 +329,7 @@ describe("FactoryMcp", () => {
   it("lets only the chat agent change the factory's own config, through a proposal and an approval", async () => {
     const { url, store, mcp, h } = await start();
     const chat = "discord:thread-9";
-    const planner = await client(url, TOKENS.planner);
+    const communicator = await client(url, TOKENS.communicator);
     for (const role of ["lead", "improver"] as const) {
       const other = await client(url, TOKENS[role]);
       const names = (await other.listTools()).tools.map((tool) => tool.name);
@@ -335,7 +339,7 @@ describe("FactoryMcp", () => {
     }
 
     const read = json(
-      await planner.callTool({
+      await communicator.callTool({
         name: "read_target",
         arguments: { target: "skill:triage/SKILL.md" },
       }),
@@ -343,7 +347,7 @@ describe("FactoryMcp", () => {
     expect(read.content).toBe("# Triage\n");
 
     const proposed = json(
-      await planner.callTool({
+      await communicator.callTool({
         name: "propose_change",
         arguments: {
           target: "skill:triage/SKILL.md",
@@ -358,13 +362,13 @@ describe("FactoryMcp", () => {
 
     // The call log keeps the size of the proposed text, not the text.
     const logged = mcp.calls()[0];
-    expect(logged).toMatchObject({ role: "planner", tool: "propose_change", ok: true });
+    expect(logged).toMatchObject({ role: "communicator", tool: "propose_change", ok: true });
     expect(logged?.arguments).toContain("<23 characters>");
     expect(logged?.arguments).not.toContain("Ask for logs.");
 
     clock.now += 60_000;
     const applied = json(
-      await planner.callTool({
+      await communicator.callTool({
         name: "apply_change",
         arguments: { change_id: proposed.change_id, conversation: chat, approval: "yes, apply it" },
       }),
@@ -372,12 +376,15 @@ describe("FactoryMcp", () => {
     expect(applied).toMatchObject({ state: "applied", version: 2, conversation: chat });
     expect(store.get(2).document.skills.triage?.["SKILL.md"]).toBe("# Triage\nAsk for logs.\n");
 
-    const listed = (await planner.callTool({ name: "list_changes", arguments: {} })) as unknown;
+    const listed = (await communicator.callTool({
+      name: "list_changes",
+      arguments: {},
+    })) as unknown;
     expect(JSON.stringify(listed)).toContain("Ask for logs");
 
     clock.now += 60_000;
     const reverted = json(
-      await planner.callTool({
+      await communicator.callTool({
         name: "revert_change",
         arguments: { change_id: proposed.change_id, conversation: chat, request: "undo that" },
       }),
@@ -385,19 +392,19 @@ describe("FactoryMcp", () => {
     expect(reverted).toMatchObject({ state: "reverted", revert_version: 3 });
     expect(store.get(3).document.skills.triage?.["SKILL.md"]).toBe("# Triage\n");
     expect(h.db.prepare("SELECT COUNT(*) AS n FROM chat_changes").get()).toEqual({ n: 1 });
-    await planner.close();
+    await communicator.close();
   });
 
   it("refuses a disallowed target and a secret without keeping the secret", async () => {
     const { url, store, mcp } = await start();
-    const planner = await client(url, TOKENS.planner);
-    const refused = await planner.callTool({
+    const communicator = await client(url, TOKENS.communicator);
+    const refused = await communicator.callTool({
       name: "propose_change",
       arguments: { target: "projects:octo/app", content: "{}", summary: "s", conversation: "c" },
     });
     expect(refused.isError).toBe(true);
     const secret = "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789";
-    const leaked = await planner.callTool({
+    const leaked = await communicator.callTool({
       name: "propose_change",
       arguments: {
         target: "instruction:factory",
@@ -411,14 +418,14 @@ describe("FactoryMcp", () => {
     expect(mcp.calls().map((call) => call.ok)).toEqual([false, false]);
     expect(JSON.stringify(mcp.calls())).not.toContain("ghp_");
     expect(store.count()).toBe(1);
-    await planner.close();
+    await communicator.close();
   });
 
   it("changes nothing for a declined proposal", async () => {
     const { url, store } = await start();
-    const planner = await client(url, TOKENS.planner);
+    const communicator = await client(url, TOKENS.communicator);
     const proposed = json(
-      await planner.callTool({
+      await communicator.callTool({
         name: "propose_change",
         arguments: {
           target: "persona:lead",
@@ -429,20 +436,20 @@ describe("FactoryMcp", () => {
       }),
     );
     const declined = json(
-      await planner.callTool({
+      await communicator.callTool({
         name: "decline_change",
         arguments: { change_id: proposed.change_id, conversation: "c" },
       }),
     );
     expect(declined.state).toBe("declined");
     clock.now += 60_000;
-    const late = await planner.callTool({
+    const late = await communicator.callTool({
       name: "apply_change",
       arguments: { change_id: proposed.change_id, conversation: "c", approval: "yes" },
     });
     expect(late.isError).toBe(true);
     expect(store.count()).toBe(1);
-    await planner.close();
+    await communicator.close();
   });
 
   it("refuses a change tool to the lead and the improver, records the call, and writes nothing", async () => {
@@ -462,7 +469,7 @@ describe("FactoryMcp", () => {
     expect(store.count()).toBe(1);
   });
 
-  it("gives the planner read-only stats tools that return a report and change nothing", async () => {
+  it("gives the communicator read-only stats tools that return a report and change nothing", async () => {
     const { h, url, mcp } = await start();
     const task = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "t" });
     const before = JSON.stringify([
@@ -471,7 +478,7 @@ describe("FactoryMcp", () => {
       h.db.prepare("SELECT * FROM factory_threads").all(),
       h.db.prepare("SELECT * FROM issues").all(),
     ]);
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
 
     const factory = json(
       await c.callTool({
@@ -532,7 +539,7 @@ describe("FactoryMcp", () => {
     });
 
     // "How did the factory do this week?" The chat agent calls each stats tool and relays the report.
-    const chat = await client(url, TOKENS.planner);
+    const chat = await client(url, TOKENS.communicator);
     const reports: string[] = [];
     for (const name of ["get_factory_stats", "get_usage_stats", "get_host_health"]) {
       const result = json(await chat.callTool({ name, arguments: { window: "7d" } }));
@@ -551,7 +558,7 @@ describe("FactoryMcp", () => {
     // Chat formatting: bullets and labeled lines, no tables.
     expect(reply).not.toMatch(/\|/);
     expect(reply.split("\n").some((line) => line.startsWith("- "))).toBe(true);
-    expect(mcp.calls().every((call) => call.role === "planner" && call.ok)).toBe(true);
+    expect(mcp.calls().every((call) => call.role === "communicator" && call.ok)).toBe(true);
     await chat.close();
   });
 
@@ -589,7 +596,7 @@ describe("get_factory_chart", () => {
     return { ...started, dir: join(dir, "charts") };
   }
 
-  it("gives the planner a PNG of recorded merges, with the left-out tasks in the caption", async () => {
+  it("gives the communicator a PNG of recorded merges, with the left-out tasks in the caption", async () => {
     const { h, url, dir, mcp } = await startWithCharts();
     const merged = h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "a" });
     h.tasks.update(merged.id, { prNumber: 11 });
@@ -600,7 +607,7 @@ describe("get_factory_chart", () => {
     h.tasks.transition(bare.id, "Implementing", "work started");
     h.tasks.transition(bare.id, "Done", "merged outside Hephaestus");
 
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
     const result = json(
       await c.callTool({
         name: "get_factory_chart",
@@ -614,13 +621,17 @@ describe("get_factory_chart", () => {
     expect(result.report).toContain(`MEDIA:${String(result.path)}`);
     const file = await readFile(String(result.path));
     expect([...file.subarray(0, 8)]).toEqual(PNG_SIGNATURE);
-    expect(mcp.calls()[0]).toMatchObject({ role: "planner", tool: "get_factory_chart", ok: true });
+    expect(mcp.calls()[0]).toMatchObject({
+      role: "communicator",
+      tool: "get_factory_chart",
+      ok: true,
+    });
     await c.close();
   });
 
   it("returns a no-data result and writes no file when the window is empty", async () => {
     const { url, dir } = await startWithCharts();
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
     for (const metric of ["merges_per_day", "tasks_by_stage", "review_rounds"]) {
       const result = json(
         await c.callTool({ name: "get_factory_chart", arguments: { metric, window: "24h" } }),
@@ -636,7 +647,7 @@ describe("get_factory_chart", () => {
 
   it("refuses a bad window or metric", async () => {
     const { url } = await startWithCharts();
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
     const bad = await c.callTool({
       name: "get_factory_chart",
       arguments: { metric: "merges_per_day", window: "soon" },
@@ -660,7 +671,7 @@ describe("get_factory_chart", () => {
       const when = new Date(Date.now() - (60 - i) * 60_000);
       await utimes(name, when, when);
     }
-    const c = await client(url, TOKENS.planner);
+    const c = await client(url, TOKENS.communicator);
     json(await c.callTool({ name: "get_factory_chart", arguments: { metric: "tasks_by_stage" } }));
     const left = await readdir(dir);
     expect(left.length).toBeLessThanOrEqual(20);
@@ -669,7 +680,7 @@ describe("get_factory_chart", () => {
     await c.close();
   });
 
-  it("is offered to the planner only", async () => {
+  it("is offered to the communicator only", async () => {
     const { url } = await startWithCharts();
     for (const token of [TOKENS.lead, TOKENS.improver]) {
       const c = await client(url, token);
@@ -678,6 +689,6 @@ describe("get_factory_chart", () => {
       );
       await c.close();
     }
-    expect(ROLE_TOOLS.planner).toContain("get_factory_chart");
+    expect(ROLE_TOOLS.communicator).toContain("get_factory_chart");
   });
 });

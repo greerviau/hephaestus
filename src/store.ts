@@ -1,4 +1,5 @@
 import BetterSqlite3, { type Database } from "better-sqlite3";
+import { renamePlannerInStore } from "./legacy-planner.js";
 
 /**
  * Rewrites the word "card" to "task" in text an earlier build stored, with the casing kept: the
@@ -333,6 +334,8 @@ const MIGRATIONS: Migration[] = [
   // A start asked for while paused, before queues existed, keeps its place from when it was asked.
   `ALTER TABLE tasks ADD COLUMN queued_at TEXT;
    UPDATE tasks SET queued_at = updated_at WHERE stage = 'Admitted' AND brief IS NOT NULL;`,
+  // "Planner" became "Communicator". The files move when the factory Hermes root is next synced.
+  renamePlannerInStore,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

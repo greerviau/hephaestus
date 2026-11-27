@@ -129,7 +129,7 @@ const TOOL_SHAPES = {
 
 /** The tools each role may call. Factory threads never call this server. */
 export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
-  planner: [
+  communicator: [
     "file_issue",
     "get_status",
     "list_tasks",

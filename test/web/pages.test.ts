@@ -55,7 +55,7 @@ const CATALOG: ModelCatalog = {
     },
   ],
   profiles: {
-    planner: { provider: "anthropic", model: "claude-sonnet-5" },
+    communicator: { provider: "anthropic", model: "claude-sonnet-5" },
     lead: { provider: "anthropic", model: "claude-sonnet-5" },
     improver: { provider: "anthropic", model: "claude-sonnet-5" },
   },
@@ -84,7 +84,7 @@ function model(waitingFor?: string): NonNullable<FactoryPages["model"]> {
 /** A dashboard with every optional part present, so each page renders its full form. */
 async function fullDashboard(waitingFor?: string): Promise<Dashboard> {
   root = mkdtempSync(join(tmpdir(), "hephaestus-pages-"));
-  mkdirSync(join(root, "profiles", "planner"), { recursive: true });
+  mkdirSync(join(root, "profiles", "communicator"), { recursive: true });
   const holder: { dashboard?: Dashboard } = {};
   const messaging = new Messaging({
     root,

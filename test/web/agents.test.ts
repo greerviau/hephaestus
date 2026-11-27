@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { FactoryConfig } from "../../src/config/document.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { startDashboard, type Dashboard } from "./dashboard.js";
@@ -6,7 +6,7 @@ import { startDashboard, type Dashboard } from "./dashboard.js";
 let dashboard: Dashboard;
 let base: number;
 
-/** A config with two skills: `triage` loaded by the planner and by coding threads, `brief` by nothing. */
+/** A config with two skills: `triage` loaded by the communicator and by coding threads, `brief` by nothing. */
 function agentsConfig(): FactoryConfig {
   const config = sampleConfig();
   config.skills = {
@@ -109,6 +109,28 @@ function editMeanwhile(change: (config: FactoryConfig) => void): number {
   dashboard.store.markDeployed(version.id);
   return version.id;
 }
+
+describe("The old agent name", () => {
+  it("opens and saves the communicator's page under /config/agents/planner, with a warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      const page = await dashboard.get("/config/agents/planner");
+      expect(page.status).toBe(200);
+      expect(page.html).toContain("Communicator instructions</h1>");
+
+      const saved = await post("/config/agents/planner", {
+        parentId: String(base),
+        text: "Be brief.",
+        message: "Brief",
+      });
+      expect(saved.status).toBe(303);
+      expect(newest().document.roles.communicator.persona).toBe("Be brief.");
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/planner.*deprecated/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
 
 describe("A stale editor form", () => {
   it("comes back with the saved skill text, so saving again cannot undo a newer edit", async () => {
@@ -268,7 +290,7 @@ describe("Agents tab", () => {
 
     expect(status).toBe(200);
     for (const [name, title] of [
-      ["planner", "Planner"],
+      ["communicator", "Communicator"],
       ["lead", "Lead"],
       ["improver", "Improver"],
       ["threads", "Coding threads"],
@@ -285,7 +307,7 @@ describe("Agents tab", () => {
 
     expect(html).toContain('href="/config/skills/triage"');
     expect(html).toContain("Decide whether an issue is &lt;ready&gt;.");
-    expect(html).toContain("used by Planner, Coding threads &middot; 2 files");
+    expect(html).toContain("used by Communicator, Coding threads &middot; 2 files");
     expect(html).toContain("not used &middot; 1 file<");
     expect(html).toContain('popovertarget="new-skill">New skill</button>');
     expect(html).toContain('action="/config/skills"');
@@ -294,7 +316,7 @@ describe("Agents tab", () => {
   it("says so when there are no skills", async () => {
     const none = agentsConfig();
     none.skills = {};
-    none.roles.planner.skills = [];
+    none.roles.communicator.skills = [];
     none.factory.threadSkills = [];
     await post("/config/json", {
       document: JSON.stringify(none),
@@ -310,10 +332,10 @@ describe("Agents tab", () => {
 
 describe("Instructions editor", () => {
   it("shows a role's instructions and which skills it loads", async () => {
-    const { status, html } = await dashboard.get("/config/agents/planner");
+    const { status, html } = await dashboard.get("/config/agents/communicator");
 
     expect(status).toBe(200);
-    expect(html).toContain("Planner instructions</h1>");
+    expect(html).toContain("Communicator instructions</h1>");
     expect(html).toContain('<a href="/config/agents">Agents</a>');
     expect(html).toContain("Plan the work.</textarea>");
     expect(html).toContain('name="skills" value="triage" checked');
@@ -365,7 +387,7 @@ describe("Instructions editor", () => {
       persona: "Lead <carefully>.\nWrite a brief.\n",
       skills: ["brief", "triage"],
     });
-    expect(saved.document.roles.planner).toEqual(agentsConfig().roles.planner);
+    expect(saved.document.roles.communicator).toEqual(agentsConfig().roles.communicator);
     const { html } = await dashboard.get(`/config/agents/lead?saved=${String(base + 1)}`);
     expect(html).toContain(`Version ${String(base + 1)} is saved and deploying.`);
     expect(html).toContain("Lead &lt;carefully&gt;.");
@@ -477,7 +499,7 @@ describe("Skill editor", () => {
 
     expect(status).toBe(200);
     expect(html).toContain(">triage</h1>");
-    expect(html).toContain("Used by Planner and Coding threads.");
+    expect(html).toContain("Used by Communicator and Coding threads.");
     expect(html).toContain('<a href="/config/skills/triage" aria-current="true">SKILL.md</a>');
     expect(html).toContain('<a href="/config/skills/triage?file=examples%2Fgood.md">');
     expect(html).toContain("# Triage\n</textarea>");
@@ -636,7 +658,7 @@ describe("Skill editor", () => {
     expect(Object.keys(document.skills)).toEqual(["triage-issues", "brief"]);
     expect(document.skills["triage-issues"]?.["SKILL.md"]).toContain("name: triage-issues\n");
     expect(document.skills["triage-issues"]?.["examples/good.md"]).toBe("A good one.\n");
-    expect(document.roles.planner.skills).toEqual(["triage-issues"]);
+    expect(document.roles.communicator.skills).toEqual(["triage-issues"]);
     expect(document.factory.threadSkills).toEqual(["triage-issues"]);
   });
 
@@ -653,7 +675,7 @@ describe("Skill editor", () => {
 
   it("says in the delete confirm which instruction sets load the skill", async () => {
     expect((await dashboard.get("/config/skills/triage")).html).toContain(
-      "Planner and Coding threads load it; deleting it unloads it from them.",
+      "Communicator and Coding threads load it; deleting it unloads it from them.",
     );
     expect((await dashboard.get("/config/skills/brief")).html).toContain(
       "No instruction set loads it.",
@@ -672,7 +694,7 @@ describe("Skill editor", () => {
     expect(state).toBe("deployed");
     expect(message).toBe("Delete the skill triage");
     expect(Object.keys(document.skills)).toEqual(["brief"]);
-    expect(document.roles.planner.skills).toEqual([]);
+    expect(document.roles.communicator.skills).toEqual([]);
     expect(document.factory.threadSkills).toEqual([]);
     expect((await dashboard.get("/config/skills/triage")).status).toBe(404);
   });

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
 import { runningTask, startDashboard, type Dashboard } from "./dashboard.js";
 
@@ -50,7 +50,7 @@ describe("Activity", () => {
     dashboard = await startDashboard();
     const task = runningTask(dashboard.h);
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
-    recordCall(dashboard, "planner", "file_issue", false, "2026-11-25T14:00:00.000Z");
+    recordCall(dashboard, "communicator", "file_issue", false, "2026-11-25T14:00:00.000Z");
     notify(dashboard, task, "Task <1> needs you", "2026-11-25T15:00:00.000Z");
 
     const { status, html } = await dashboard.get("/activity");
@@ -61,11 +61,11 @@ describe("Activity", () => {
       `<a href="/work/${String(task)}">#8 Add a cache</a>: moved to Implementing`,
     );
     expect(page).toContain("lead called start_work");
-    expect(page).toContain("planner called file_issue");
+    expect(page).toContain("communicator called file_issue");
     expect(page).toContain("Task &lt;1&gt; needs you");
     const order = [
       "Task &lt;1&gt; needs you",
-      "planner called file_issue",
+      "communicator called file_issue",
       "lead called start_work",
     ];
     const positions = order.map((text) => page.indexOf(text));
@@ -77,7 +77,7 @@ describe("Activity", () => {
   it("shows each row's status as text, and a call's raw arguments under a fold", async () => {
     dashboard = await startDashboard();
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
-    recordCall(dashboard, "planner", "file_issue", false, "2026-11-25T14:00:00.000Z");
+    recordCall(dashboard, "communicator", "file_issue", false, "2026-11-25T14:00:00.000Z");
 
     const page = main((await dashboard.get("/activity")).html);
 
@@ -108,12 +108,12 @@ describe("Activity", () => {
     dashboard = await startDashboard();
     runningTask(dashboard.h);
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
-    recordCall(dashboard, "planner", "file_issue", true, "2026-11-25T14:00:00.000Z");
+    recordCall(dashboard, "communicator", "file_issue", true, "2026-11-25T14:00:00.000Z");
 
     const page = main((await dashboard.get("/activity?show=calls&role=lead")).html);
 
     expect(page).toContain("lead called start_work");
-    expect(page).not.toContain("planner called file_issue");
+    expect(page).not.toContain("communicator called file_issue");
     expect(page).not.toContain("moved to Implementing");
     expect(page).toContain('<form class="grp" method="get" action="/activity">');
     expect(page).toContain('<input type="hidden" name="show" value="calls">');
@@ -134,8 +134,15 @@ describe("Activity", () => {
     const at = "2026-11-25T13:00:00.000Z";
     recordCall(dashboard, "lead", "start_work", true, at, JSON.stringify({ task_id: app }));
     recordCall(dashboard, "lead", "escalate", true, at, JSON.stringify({ task_id: lib }));
-    recordCall(dashboard, "planner", "file_issue", true, at, '{"repo":"octo/app","title":"t"}');
-    recordCall(dashboard, "planner", "list_tasks", true, at, "{}");
+    recordCall(
+      dashboard,
+      "communicator",
+      "file_issue",
+      true,
+      at,
+      '{"repo":"octo/app","title":"t"}',
+    );
+    recordCall(dashboard, "communicator", "list_tasks", true, at, "{}");
     recordCall(dashboard, "improver", "get_config", true, at, "not json");
 
     const page = await getFor(dashboard, "octo/app", "/activity");
@@ -143,11 +150,11 @@ describe("Activity", () => {
     expect(page).toContain("#8 Add a cache</a>: moved to Implementing");
     expect(page).toContain("App notice");
     expect(page).toContain("lead called start_work");
-    expect(page).toContain("planner called file_issue");
+    expect(page).toContain("communicator called file_issue");
     expect(page).not.toContain("Lib work");
     expect(page).not.toContain("Lib notice");
     expect(page).not.toContain("lead called escalate");
-    expect(page).not.toContain("planner called list_tasks");
+    expect(page).not.toContain("communicator called list_tasks");
     expect(page).not.toContain("improver called get_config");
     expect(page).not.toContain('name="project"');
   });
@@ -157,7 +164,7 @@ describe("Activity", () => {
     const app = runningTask(dashboard.h);
     notify(dashboard, app, "App notice", "2026-11-25T10:00:00.000Z");
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T10:00:00.000Z", '{"task_id":1}');
-    recordCall(dashboard, "planner", "file_issue", true, "2026-11-25T10:00:00.000Z");
+    recordCall(dashboard, "communicator", "file_issue", true, "2026-11-25T10:00:00.000Z");
     const lib = dashboard.h.tasks.create({ repo: "octo/lib", issueNumber: 3, title: "Lib" }).id;
     for (let index = 0; index < 201; index += 1) {
       dashboard.h.tasks.event(lib, "waiting", `busy ${String(index)}`);
@@ -172,8 +179,25 @@ describe("Activity", () => {
     expect(page).toContain("lead called start_work");
     expect(page).not.toContain("Lib notice");
 
-    const calls = main((await dashboard.get("/activity?show=calls&role=planner")).html);
-    expect(calls).toContain("planner called file_issue");
+    const calls = main((await dashboard.get("/activity?show=calls&role=communicator")).html);
+    expect(calls).toContain("communicator called file_issue");
+  });
+
+  it("still filters agent calls by the old role name, with a warning", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      dashboard = await startDashboard();
+      recordCall(dashboard, "communicator", "file_issue", true, "2026-11-25T10:00:00.000Z");
+      recordCall(dashboard, "lead", "start_work", true, "2026-11-25T10:00:00.000Z");
+
+      const calls = main((await dashboard.get("/activity?show=calls&role=planner")).html);
+
+      expect(calls).toContain("communicator called file_issue");
+      expect(calls).not.toContain("lead called start_work");
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/planner.*deprecated/));
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("dismisses a notification and comes back to the same view", async () => {

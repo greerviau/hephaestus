@@ -12,6 +12,7 @@ import { installModelPlugin } from "./plugin.js";
 import { FactoryProfiles, shippedInstructionsChanged } from "./profiles.js";
 
 import { ROLE_NAMES, type RoleName } from "../config/document.js";
+import { migratePlannerFiles } from "../legacy-planner.js";
 import { join } from "node:path";
 
 /** Each factory profile's bearer token for Hephaestus's MCP server. */
@@ -43,6 +44,7 @@ export interface SyncOptions {
 export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
   const { paths, run } = options;
   mkdirSync(paths.hermes, { recursive: true, mode: 0o700 });
+  migratePlannerFiles({ hermesRoot: paths.hermes, secrets: options.secrets });
   const hermes = { root: paths.hermes, run };
 
   // Tasks move only through Hephaestus: no model-driven triage, and no Hermes

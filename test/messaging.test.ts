@@ -23,8 +23,8 @@ let messaging: Messaging;
 
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "hephaestus-messaging-"));
-  mkdirSync(join(root, "profiles", "planner"), { recursive: true });
-  writeFileSync(join(root, "profiles", "planner", ".env"), "HEPHAESTUS_MCP_TOKEN=keep-me\n");
+  mkdirSync(join(root, "profiles", "communicator"), { recursive: true });
+  writeFileSync(join(root, "profiles", "communicator", ".env"), "HEPHAESTUS_MCP_TOKEN=keep-me\n");
   db = openStore(":memory:");
   tasks = new TaskStore(db);
   calls = [];
@@ -53,7 +53,7 @@ afterEach(() => {
 });
 
 function env(): string {
-  return readFileSync(join(root, "profiles", "planner", ".env"), "utf8");
+  return readFileSync(join(root, "profiles", "communicator", ".env"), "utf8");
 }
 
 describe("Messaging", () => {
@@ -67,7 +67,7 @@ describe("Messaging", () => {
     expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}`);
     expect(env()).toContain("DISCORD_FREE_RESPONSE_AUTO_THREAD=true");
     expect(env()).toContain("DISCORD_AUTO_THREAD=true");
-    expect(statSync(join(root, "profiles", "planner", ".env")).mode & 0o777).toBe(0o600);
+    expect(statSync(join(root, "profiles", "communicator", ".env")).mode & 0o777).toBe(0o600);
     expect(restarts).toBe(1);
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
       connected: true,
@@ -120,12 +120,12 @@ describe("Messaging", () => {
       dashboardUrl: () => "",
     });
     await own.restart();
-    expect(calls[0]?.args).toEqual(["-p", "planner", "gateway", "restart", "--yes"]);
+    expect(calls[0]?.args).toEqual(["-p", "communicator", "gateway", "restart", "--yes"]);
   });
 
   it("reads quoted and exported values, and removes exported keys on disconnect", async () => {
     writeFileSync(
-      join(root, "profiles", "planner", ".env"),
+      join(root, "profiles", "communicator", ".env"),
       `export DISCORD_BOT_TOKEN="${DISCORD_TOKEN}"\nDISCORD_ALLOWED_USERS=${USER} # me\n`,
     );
     expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
@@ -141,7 +141,7 @@ describe("Messaging", () => {
     await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
     await messaging.send("discord", "hello");
     expect(calls).toEqual([
-      { args: ["-p", "planner", "send", "--to", `discord:${CHANNEL}`], input: "hello" },
+      { args: ["-p", "communicator", "send", "--to", `discord:${CHANNEL}`], input: "hello" },
     ]);
     expect(calls.some((call) => call.args.join(" ").includes(DISCORD_TOKEN))).toBe(false);
 
@@ -276,7 +276,7 @@ describe("Messaging", () => {
   it("starts a stopped factory gateway instead of failing the restart, and only a stopped one", async () => {
     // What the Hermes runner rejects with: the output's last lines, and the exit code as the cause.
     const failure = new Error(
-      "hermes -p planner gateway failed:   gateway.standalone: true in config.yaml,   then wait for the host gateway to rescan",
+      "hermes -p communicator gateway failed:   gateway.standalone: true in config.yaml,   then wait for the host gateway to rescan",
       { cause: Object.assign(new Error("Command failed"), { code: 78 }) },
     );
     let started = 0;
@@ -464,6 +464,6 @@ describe("proposalAlerts", () => {
         text: "Config version 7 is proposed and waits for your approval on Proposals.",
       },
     ]);
-    expect(alerts[0]?.text).not.toMatch(/planner|lead|improver/i);
+    expect(alerts[0]?.text).not.toMatch(/communicator|lead|improver/i);
   });
 });

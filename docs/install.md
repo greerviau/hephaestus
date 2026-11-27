@@ -28,6 +28,12 @@ It refuses, and changes nothing, when the checkout has uncommitted changes to tr
 
 The sidebar shows the commit the service runs. Every five minutes the service fetches `main` from `origin`. When `origin/main` has commits the running one lacks, every page except the Update page (`/update`) opens with an Update available notice that says how many, with an Update now button and a link to the Update page, and the sidebar says how many too. While an update holds the lock, from the dashboard or a shell, the notice says so instead and links to the Update page. A fetch that fails shows nothing. Update now runs the same `update` as a transient systemd user unit, `hephaestus-update.service`, so it outlives the restart of the service that started it; a second update is refused while one runs. The page shows the run's output, which goes to `~/.hephaestus/update.log`, reloads every few seconds while it runs, and gives the command to run on the host if the dashboard does not come back, or if the last update stopped before it finished.
 
+### Upgrading from a build that called the agent the Planner
+
+The chat agent was called the Planner before it was the Communicator. The first start after the upgrade renames it in place and keeps its data: the state database moves the `planner` role to `communicator` in every config version, in the recorded skills, cron jobs, and agent calls, and in chat changes that are waiting; the next `hephaestus hermes sync`, or the service's own start, moves the factory Hermes root's `profiles/planner/` to `profiles/communicator/` with its skills, memories, and sessions, and moves the `hermes-mcp-token-planner` secret to `hermes-mcp-token-communicator`. Each step checks first, so running it again changes nothing, and a `communicator` profile that already exists is never overwritten.
+
+For one release the old name still works where an owner may type it: a `roles.planner` key in an imported config, `/config/agents/planner`, `/activity?role=planner`, and the change target `persona:planner`. Each logs a deprecation warning and uses the Communicator. There are no environment variables to rename.
+
 ## Uninstall
 
 ```sh

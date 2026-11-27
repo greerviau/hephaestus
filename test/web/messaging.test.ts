@@ -22,7 +22,7 @@ async function withMessaging(
   restart: () => Promise<void> = () => Promise.resolve(),
 ): Promise<Dashboard> {
   root = mkdtempSync(join(tmpdir(), "hephaestus-messaging-page-"));
-  mkdirSync(join(root, "profiles", "planner"), { recursive: true });
+  mkdirSync(join(root, "profiles", "communicator"), { recursive: true });
   const holder: { dashboard?: Dashboard } = {};
   const home = root;
   const messaging = new Messaging({
@@ -64,7 +64,7 @@ describe("Chat page", () => {
     expect(html).toContain("Connect a platform first.");
     expect(html).not.toContain('<form method="post" action="/chat/discord/connect"');
     expect(html).not.toContain('http-equiv="refresh"');
-    expect(html).not.toMatch(/planner|lead|improver/i);
+    expect(html).not.toMatch(/communicator|lead|improver/i);
     expect((await dashboard.get("/messaging")).status).toBe(404);
   });
 
@@ -88,7 +88,7 @@ describe("Chat page", () => {
       expect(html).toContain("Where to find these");
       expect(html.match(/<ol class="steps">.*?<\/ol>/s)?.[0].match(/<li>/g)).toHaveLength(3);
       expect(html).not.toContain('http-equiv="refresh"');
-      expect(html).not.toMatch(/planner|lead|improver/i);
+      expect(html).not.toMatch(/communicator|lead|improver/i);
     },
   );
 
@@ -107,7 +107,7 @@ describe("Chat page", () => {
     expect(page).toContain("Send test message");
     expect(page).not.toContain('href="/chat/connect/discord"');
     expect(page).toContain('href="/chat/connect/telegram"');
-    expect(page).not.toMatch(/planner|lead|improver/i);
+    expect(page).not.toMatch(/communicator|lead|improver/i);
 
     await dashboard.post("/chat/discord/test");
     expect(sent).toEqual(["Hephaestus is connected. Ask for work here."]);
@@ -167,7 +167,7 @@ describe("Chat page", () => {
       expect(html).toContain("Not ready yet");
       expect(html).toContain('<a href="/config/versions">Config</a>');
       expect(html).not.toContain('<form class="form"');
-      expect(html).not.toMatch(/planner|lead|improver/i);
+      expect(html).not.toMatch(/communicator|lead|improver/i);
     }
   });
 

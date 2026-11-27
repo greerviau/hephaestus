@@ -92,7 +92,7 @@ afterEach(() => {
 function task(number = 7): number {
   db.prepare(
     `INSERT INTO issues (repo, number, title, author, provenance, filed_by, state, created_at, updated_at)
-     VALUES ('octo/app', ?, 't', 'x', 'factory', 'planner', 'admitted', 'x', 'x')`,
+     VALUES ('octo/app', ?, 't', 'x', 'factory', 'communicator', 'admitted', 'x', 'x')`,
   ).run(number);
   return tasks.create({ repo: "octo/app", issueNumber: number, title: "Add a flag" }).id;
 }

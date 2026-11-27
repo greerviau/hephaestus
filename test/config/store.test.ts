@@ -56,7 +56,7 @@ describe("versions", () => {
 
   it("rejects an invalid document", () => {
     const document = sampleConfig() as unknown as Record<string, unknown>;
-    document.roles = { planner: { persona: 3 } };
+    document.roles = { communicator: { persona: 3 } };
 
     expect(() =>
       store.createVersion({ document: document as never, author: "owner", message: "" }),
@@ -390,7 +390,7 @@ describe("review fixes", () => {
     ["a control character", { s: { "SKILL.md": "x", "a\n/../evil": "x" } }, /relative path/],
   ])("rejects %s", (_label, skills, message) => {
     const document = sampleConfig();
-    document.roles.planner.skills = [];
+    document.roles.communicator.skills = [];
     document.skills = skills;
 
     expect(() => store.createVersion({ document, author: "owner", message: "" })).toThrow(message);

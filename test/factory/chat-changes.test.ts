@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
 import {
   ChangeError,
@@ -86,7 +86,7 @@ describe("ChatChanges", () => {
         content: "# Triage\n",
       });
       expect(s.changes.read("instruction:factory").content).toBe("# Factory instructions\n");
-      expect(s.changes.read("persona:planner").content).toBe("Plan the work.");
+      expect(s.changes.read("persona:communicator").content).toBe("Plan the work.");
       expect(s.changes.read("setting:autoStartMinutes").content).toBe("10");
       expect(JSON.parse(s.changes.read("setting:models.claude").content ?? "")).toHaveProperty(
         "model",
@@ -99,6 +99,20 @@ describe("ChatChanges", () => {
       expect(existing).toContain("setting:limits.threads");
       expect(existing).toContain("persona:improver");
       expect(existing.join("\n")).not.toMatch(/secret|projects/);
+    });
+
+    it("reads the communicator's persona under the old target name, with a warning", () => {
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        expect(s.changes.read("persona:planner")).toEqual({
+          target: "persona:communicator",
+          exists: true,
+          content: "Plan the work.",
+        });
+        expect(warn).toHaveBeenCalledWith(expect.stringMatching(/planner.*deprecated/));
+      } finally {
+        warn.mockRestore();
+      }
     });
 
     it("says a skill file that does not exist yet does not exist", () => {
@@ -170,7 +184,7 @@ describe("ChatChanges", () => {
       const config = deployedConfig(s);
       expect(config.factory.limits.threads).toBe(7);
       expect(config.roles.lead.persona).toBe("Lead the work, briefly.");
-      expect(config.roles.planner.persona).toBe("Plan the work.");
+      expect(config.roles.communicator.persona).toBe("Plan the work.");
     });
 
     it("creates a new file in a skill", async () => {
@@ -412,10 +426,10 @@ describe("ChatChanges", () => {
         summary: "Load triage",
         conversation: CHAT,
       });
-      // The owner removes the skill, and drops it from the planner, before the person answers.
+      // The owner removes the skill, and drops it from the communicator, before the person answers.
       const config = structuredClone(deployedConfig(s));
       config.skills = { other: { "SKILL.md": "# Other\n" } };
-      config.roles.planner.skills = [];
+      config.roles.communicator.skills = [];
       const owner = s.store.createVersion({
         document: config,
         author: "owner",
@@ -537,7 +551,7 @@ describe("ChatChanges", () => {
       "setting:__proto__",
       "setting:",
       "secrets.json",
-      "secret:hermes-mcp-token-planner",
+      "secret:hermes-mcp-token-communicator",
       "file:/home/owner/.hermes/.env",
       "persona:owner",
       "instruction:../escape",

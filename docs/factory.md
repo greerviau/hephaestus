@@ -14,7 +14,7 @@ A closed issue leaves the owner's queue and comes back if it is reopened, and cl
 
 Only files in the calling role's Hermes media caches can be attached, so no other file on the host can reach GitHub: `cache/images`, `cache/documents`, `cache/audio`, `cache/video`, and `cache/videos` under the role's profile in the factory Hermes root, and the legacy `image_cache`, `document_cache`, `audio_cache`, and `video_cache` there, which Hermes uses in place of the current folders on an install that already has them. A path elsewhere is refused by its name without being read. The path is walked one name at a time from the cache folder, and a symbolic link is refused, as the file or as any folder on the way, even when it points inside the cache. The file is opened without waiting for a writer and must be a regular file, so a named pipe or device is refused at once. Hephaestus cannot tell which request in the cache a file came from, so the limit is the role's media caches and not one request's files. Hephaestus checks every file first: it must exist, be a readable regular file, and be at most 10 MB, and a call takes at most 10 files. Any type is accepted, and URLs are not. A bad file fails the call with an error that names it, and no issue is filed. Otherwise each file is committed through the GitHub API to the branch `hephaestus/attachments` of the target repo, which Hephaestus creates from the default branch when it is missing and uses for nothing else. A file lands at `attachments/<first 16 hex characters of its sha256>/<name>`, so filing the same file again reuses the existing commit, once Hephaestus has read that commit back and found the same bytes there; a file deleted or replaced on the branch since is committed again. Characters in a name outside letters, digits, dot, underscore, and hyphen become underscores. The files are committed before the issue is created, so a failure after that can leave files on the branch with no issue; they are harmless.
 
-The issue body gains an `Attachments` section with a commit-pinned link, the size, and the sha256 of each file, and images (png, jpg, gif, webp, svg) are embedded so they render on the issue. Because the files live on the branch, they outlive the planner's cache.
+The issue body gains an `Attachments` section with a commit-pinned link, the size, and the sha256 of each file, and images (png, jpg, gif, webp, svg) are embedded so they render on the issue. Because the files live on the branch, they outlive the communicator's cache.
 
 Hephaestus keeps what each upload returned (path, commit, size, sha256) with the issue it filed, and the implement thread's first message lists each attachment from that record, not from links in the issue text, which anyone can edit and which may hold a link of its own to the same path. An issue Hephaestus stored nothing for gets no such list. The message gives the steps to fetch the exact bytes: `git fetch origin hephaestus/attachments`, then `git show <commit>:<path> > <destination>`. The engineer commits the file into its own branch where the task says; it never pushes to the attachments branch.
 
@@ -46,13 +46,13 @@ After a merge, Hephaestus watches the merge commit's checks on the default branc
 
 The factory profiles reach Hephaestus through an MCP server on `127.0.0.1`, on the port after the dashboard's. Each profile has its own bearer token, kept in `~/.hephaestus/secrets.json` and in the profile's `.env`, and each role gets only its tools:
 
-| Role     | Tools                                                                                                      |
-| -------- | ---------------------------------------------------------------------------------------------------------- |
-| planner  | `file_issue`, `get_status`, `list_tasks`, `read_thread`, the stats tools below, and the change tools below |
-| lead     | `start_work`, `escalate`, `file_issue`, `get_status`, `list_tasks`, `read_thread`                          |
-| improver | `propose_version`, `get_config`, `get_status`, `list_tasks`, `list_threads`, `read_thread`                 |
+| Role         | Tools                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------------- |
+| communicator | `file_issue`, `get_status`, `list_tasks`, `read_thread`, the stats tools below, and the change tools below |
+| lead         | `start_work`, `escalate`, `file_issue`, `get_status`, `list_tasks`, `read_thread`                          |
+| improver     | `propose_version`, `get_config`, `get_status`, `list_tasks`, `list_threads`, `read_thread`                 |
 
-The planner is the chat agent. It is a general communicator: it talks, answers questions about the factory from `get_status`, `list_tasks`, and `read_thread` (a task carries `merged_at`, its recorded merge time, which is not its last update), and uses `file_issue` only when the user asks for work. Besides `file_issue` its only write tools are the change tools below.
+The communicator is the factory's chat agent. It is general-purpose: it talks, answers questions about the factory from `get_status`, `list_tasks`, and `read_thread` (a task carries `merged_at`, its recorded merge time, which is not its last update), and uses `file_issue` only when the user asks for work. Besides `file_issue` its only write tools are the change tools below.
 
 Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with the factory threads it cites as evidence; it changes nothing until the owner approves it.
 

@@ -38,7 +38,7 @@ const CATALOG: ModelCatalog = {
     },
   ],
   profiles: {
-    planner: { provider: "anthropic", model: "claude-sonnet-5" },
+    communicator: { provider: "anthropic", model: "claude-sonnet-5" },
     lead: { provider: "anthropic", model: "claude-sonnet-5" },
     improver: { provider: "anthropic", model: "claude-sonnet-5" },
   },
@@ -118,7 +118,7 @@ describe("FactoryModel", () => {
       "openai-codex",
     ]);
     expect(calls).toEqual([
-      { args: ["hephaestus", "catalog", "--profiles", "planner,lead,improver"] },
+      { args: ["hephaestus", "catalog", "--profiles", "communicator,lead,improver"] },
     ]);
   });
 
@@ -141,7 +141,7 @@ describe("FactoryModel", () => {
           "--provider",
           "deepseek",
           "--profiles",
-          "planner,lead,improver",
+          "communicator,lead,improver",
         ],
         input: "sk-secret",
       },
@@ -174,7 +174,7 @@ describe("FactoryModel", () => {
           "--model",
           "deepseek-chat",
           "--profiles",
-          "planner,lead,improver",
+          "communicator,lead,improver",
         ],
         input: '{"api_key":"","base_url":""}',
       },

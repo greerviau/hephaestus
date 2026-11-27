@@ -77,7 +77,7 @@ const OUT_OF_DATE =
 /**
  * Gives the factory Hermes a provider and model through the Hephaestus
  * plugin, which calls the same Hermes code as Hermes's own dashboard. Every
- * change covers the factory root and the planner, lead, and improver
+ * change covers the factory root and the communicator, lead, and improver
  * profiles, and restarts the gateway so the chat uses it.
  */
 export class FactoryModel {

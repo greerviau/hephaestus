@@ -1,6 +1,6 @@
 # Factory Hermes
 
-Deploying a version also applies it to the factory Hermes root. The factory's planner, lead, and improver run as Hermes profiles in a Hermes root of their own, `~/.hephaestus/hermes/`, never in the owner's `~/.hermes`. With the factory under the owner's home, the owner's running gateway rewrites the owner's `config.yaml`, and the two gateways run each other's tasks and cron jobs (see the Hermes prototype in issue #4).
+Deploying a version also applies it to the factory Hermes root. The factory's communicator, lead, and improver run as Hermes profiles in a Hermes root of their own, `~/.hephaestus/hermes/`, never in the owner's `~/.hermes`. With the factory under the owner's home, the owner's running gateway rewrites the owner's `config.yaml`, and the two gateways run each other's tasks and cron jobs (see the Hermes prototype in issue #4).
 
 ```sh
 node dist/cli.js hermes sync
@@ -41,7 +41,7 @@ It files an issue only when you ask for work or agree when it offers. It also ch
 
 For stats, the factory's task list gives each task's stage, PR, review rounds, and recorded merge time. The agent counts merges by that merge time, never by a task's last update, which moves for other reasons. It lists at most 100 tasks, so when a count reaches the end of the list it says the count is at least that many, and it says so when a task has no recorded merge time.
 
-The agent's own instructions ship with Hephaestus in `templates/roles/planner.md`, so an update brings them to an existing install, as [Configuration](configuration.md) describes. What you add to the role's persona on the Agents page comes after them.
+The agent's own instructions ship with Hephaestus in `templates/roles/communicator.md`, so an update brings them to an existing install, as [Configuration](configuration.md) describes. What you add to the role's persona on the Agents page comes after them.
 
 ### Requests and their threads
 

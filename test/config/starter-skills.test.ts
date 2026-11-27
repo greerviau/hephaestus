@@ -41,7 +41,7 @@ describe("offerStarterSkills", () => {
     expect(draft?.document.roles.lead.skills).toEqual(["write-brief"]);
     // The owner's own skill and its loading stay.
     expect(draft?.document.skills.triage).toEqual({ "SKILL.md": "# Triage\n" });
-    expect(draft?.document.roles.planner.skills).toEqual(["triage", "write-issue"]);
+    expect(draft?.document.roles.communicator.skills).toEqual(["triage", "write-issue"]);
 
     // Offered once: rejecting it does not bring it back.
     store.reject(draft?.id ?? 0);

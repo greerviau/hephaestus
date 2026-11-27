@@ -21,7 +21,7 @@ describe("defaultConfig", () => {
 
     expect(validateConfig(config)).toBe(config);
     // The roles' own instructions ship with Hephaestus; the config holds only the owner's additions.
-    expect(config.roles.planner.persona).toBe("");
+    expect(config.roles.communicator.persona).toBe("");
     expect(config.roles.lead.persona).toBe("");
     expect(config.roles.improver.persona).toBe("");
     // The coding threads' own rules ship in the messages that start them.
@@ -47,7 +47,7 @@ describe("defaultConfig", () => {
       "resolve-conflicts",
       "review-pr",
     ]);
-    expect(config.roles.planner.skills).toEqual(["write-issue"]);
+    expect(config.roles.communicator.skills).toEqual(["write-issue"]);
     expect(config.roles.lead.skills).toEqual(["write-brief"]);
     expect(config.roles.improver.skills).toEqual([]);
   });

@@ -1,4 +1,5 @@
 import { ROLE_NAMES } from "../config/document.js";
+import { currentRoleName } from "../legacy-planner.js";
 import { STORE_ERROR, here, notice, read, type FactoryPages } from "./factory.js";
 import {
   empty,
@@ -43,7 +44,7 @@ export function activityRoutes(factory: FactoryPages): Route[] {
       handle: ({ response, url, shell }) => {
         const show = KINDS.find(([value]) => value === url.searchParams.get("show"))?.[0] ?? "";
         // The role filter belongs to the Agent calls view, the only one that shows its form.
-        const role = show === "calls" ? (url.searchParams.get("role") ?? "") : "";
+        const role = show === "calls" ? currentRoleName(url.searchParams.get("role") ?? "") : "";
         const project = shell?.project;
         const back = here(url);
         const entries: Entry[] = [];

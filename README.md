@@ -6,7 +6,7 @@ It runs as a service on one Linux host and serves a dashboard on your LAN.
 
 ## How it works
 
-Three [Hermes Agent](https://github.com/NousResearch/hermes-agent) profiles manage the work: the planner is the factory's general communicator: it answers questions, discusses ideas, reports stats, and turns requests for work into issues; the lead starts and unblocks work, and the improver proposes config changes. Each piece of work then runs as T3 threads on your worker machines, on two provider instances that Hephaestus sets up there: Factory Claude implements, and Factory Codex reviews.
+Three [Hermes Agent](https://github.com/NousResearch/hermes-agent) profiles manage the work: the communicator is the factory's chat agent: it answers questions, discusses ideas, reports stats, and turns requests for work into issues; the lead starts and unblocks work, and the improver proposes config changes. Each piece of work then runs as T3 threads on your worker machines, on two provider instances that Hephaestus sets up there: Factory Claude implements, and Factory Codex reviews.
 
 Hephaestus sits between them. It starts and watches every thread, enforces the thread limits and the merge gate, merges and reverts, keeps the record, and serves the dashboard. Nothing it adds changes your own Hermes profile, Claude and Codex config, or T3 settings, and uninstall removes it all.
 

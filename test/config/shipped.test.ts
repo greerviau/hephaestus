@@ -16,8 +16,8 @@ Pick up admitted cards and start work on them with \`start_work\`, giving the en
 When Hephaestus escalates a card to you, read its threads with the read tools, decide the next step, and either start new work with a sharper brief or \`escalate\` it to the owner with the reason. Escalate to the owner whenever the decision belongs to them.
 `;
 
-/** The planner's instructions as the builds before the communicator shipped them. */
-const FIRST_PLANNER =
+/** The chat agent's instructions as the builds that still called it the planner shipped them. */
+const FIRST_PLANNER_TEXT =
   "You are the planner for a software factory run by Hephaestus.\n\n" +
   "Turn each request in your channel into one or more GitHub issues on a factory project. Each issue states the problem, the proposed approach when one is known, and numbered acceptance criteria that a reviewer can check.\n\n" +
   "File issues only with the `file_issue` tool. Ask the requester when the goal or scope is unclear, and do not guess. Check `get_status` before filing, so you do not file a duplicate or pass the project's cap on open factory issues.\n\n" +
@@ -49,13 +49,13 @@ function brokenRules(text: string): string[] {
     .map(([name]) => name);
 }
 
-describe("the planner's shipped instructions", () => {
+describe("the communicator's shipped instructions", () => {
   it("keep every filing rule that the communicator needs", () => {
-    expect(brokenRules(shippedInstructions("planner"))).toEqual([]);
+    expect(brokenRules(shippedInstructions("communicator"))).toEqual([]);
   });
 
   it("fail the filing rules when conversation is made to file, to ask about filing, or to file unasked", () => {
-    const text = collapse(shippedInstructions("planner"));
+    const text = collapse(shippedInstructions("communicator"));
     const reversals: { from: string; to: string; breaks: string }[] = [
       // A conversational message must get an answer and no issue.
       {
@@ -94,7 +94,7 @@ describe("the planner's shipped instructions", () => {
   });
 
   it("fail the filing rules when any one of them is removed", () => {
-    const text = collapse(shippedInstructions("planner"));
+    const text = collapse(shippedInstructions("communicator"));
 
     for (const [name, rule] of Object.entries(FILING_RULES)) {
       const sentence = rule.exec(text)?.[0];
@@ -104,7 +104,7 @@ describe("the planner's shipped instructions", () => {
   });
 
   it("describe a communicator that answers from its tools and still files by the same rules", () => {
-    const text = shippedInstructions("planner");
+    const text = shippedInstructions("communicator");
 
     expect(text).toContain("general communicator");
     expect(text).not.toMatch(/^Turn each request/m);
@@ -125,7 +125,7 @@ describe("the planner's shipped instructions", () => {
   });
 
   it("tell the communicator to answer stats questions from the stats tools, without tables, and to say when data is missing", () => {
-    const text = collapse(shippedInstructions("planner"));
+    const text = collapse(shippedInstructions("communicator"));
 
     for (const tool of ["get_factory_stats", "get_usage_stats", "get_host_health"]) {
       expect(text).toContain(`\`${tool}\``);
@@ -143,7 +143,7 @@ describe("the planner's shipped instructions", () => {
   });
 
   it("tell the communicator to draw a chart with the chart tool when one is asked for, and to attach the PNG", () => {
-    const text = collapse(shippedInstructions("planner"));
+    const text = collapse(shippedInstructions("communicator"));
 
     expect(text).toContain("`get_factory_chart`");
     for (const metric of ["merges_per_day", "tasks_by_stage", "review_rounds"]) {
@@ -159,9 +159,11 @@ describe("the planner's shipped instructions", () => {
     expect(brokenRules(text)).toEqual([]);
   });
 
-  it("reach an install whose persona still holds the old planner text, which is left out of what the planner gets", () => {
-    expect(ownInstructions(FIRST_PLANNER).text).toBe("");
-    expect(rolePrompt("planner", FIRST_PLANNER)).toBe(`${shippedInstructions("planner")}\n`);
+  it("reach an install whose persona still holds the old communicator text, which is left out of what the communicator gets", () => {
+    expect(ownInstructions(FIRST_PLANNER_TEXT).text).toBe("");
+    expect(rolePrompt("communicator", FIRST_PLANNER_TEXT)).toBe(
+      `${shippedInstructions("communicator")}\n`,
+    );
   });
 });
 
@@ -169,7 +171,7 @@ describe("rolePrompt", () => {
   it("gives a role the shipped instructions alone when the owner adds none", () => {
     expect(rolePrompt("lead", "")).toBe(`${shippedInstructions("lead")}\n`);
     expect(rolePrompt("lead", "")).toContain("start_work");
-    expect(rolePrompt("planner", "")).toContain("file_issue");
+    expect(rolePrompt("communicator", "")).toContain("file_issue");
     expect(rolePrompt("improver", "")).toContain("propose_version");
   });
 
