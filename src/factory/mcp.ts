@@ -678,6 +678,12 @@ export class FactoryMcp {
         }
         const deployed = store.list().find((version) => version.state === "deployed");
         if (deployed === undefined) throw new Error("No config version is deployed.");
+        const unloaded = unloadedNewSkills(config, deployed.document);
+        if (unloaded.length > 0) {
+          throw new Error(
+            `The proposal adds ${unloaded.length === 1 ? "skill" : "skills"} ${unloaded.join(", ")} but nothing loads ${unloaded.length === 1 ? "it" : "them"}. Load each new skill in the same proposal: add it to factory.threadSkills for coding threads, or to roles.<role>.skills for a role, and say in the message which loads it.`,
+          );
+        }
         const version = store.createVersion({
           document: config as never,
           author: "improver",
@@ -701,4 +707,26 @@ export class FactoryMcp {
     registerChangeTools(register as ChangeRegister, this.changes);
     return server;
   }
+}
+
+/**
+ * Skills a proposal adds that nothing in it loads. Only skills new to the proposal count, since the
+ * owner may leave an existing skill unloaded on purpose.
+ */
+function unloadedNewSkills(proposed: unknown, deployed: unknown): string[] {
+  const record = (value: unknown): Record<string, unknown> =>
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  const names = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  const config = record(proposed);
+  const existing = record(record(deployed).skills);
+  const loaded = new Set([
+    ...names(record(config.factory).threadSkills),
+    ...Object.values(record(config.roles)).flatMap((role) => names(record(role).skills)),
+  ]);
+  return Object.keys(record(config.skills)).filter(
+    (name) => !Object.hasOwn(existing, name) && !loaded.has(name),
+  );
 }

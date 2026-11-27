@@ -482,6 +482,67 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
+  it("refuses a proposal that adds a skill nothing loads, and accepts unloaded skills it already had", async () => {
+    const { h, url, store } = await start();
+    h.events.recordThread({
+      environmentId: "w1",
+      threadId: "impl",
+      title: "Task 1",
+      providerInstanceId: "hephaestus-claude",
+      model: "m",
+      configVersion: 1,
+      taskId: "1",
+      kind: "implement",
+    });
+    const evidence = [{ environment_id: "w1", thread_id: "impl" }];
+    const deployed = sampleConfig();
+    // The deployed version holds a skill that nothing loads, as an owner may leave one on purpose.
+    deployed.skills.idle = { "SKILL.md": "# Idle\n" };
+    const base = store.createVersion({
+      document: deployed,
+      author: "t",
+      message: "idle",
+      parentId: 1,
+    });
+    store.approve(base.id);
+    store.markDeployed(base.id);
+    const c = await client(url, TOKENS.improver);
+    const propose = (config: ReturnType<typeof sampleConfig>) =>
+      c.callTool({
+        name: "propose_version",
+        arguments: { title: "t", message: "m", config, evidence },
+      });
+
+    const unloaded = structuredClone(deployed);
+    unloaded.skills.debugging = { "SKILL.md": "# Debugging\n" };
+    const refused = await propose(unloaded);
+    expect(refused.isError).toBe(true);
+    const text = JSON.stringify(refused.content);
+    expect(text).toContain("debugging");
+    expect(text).toContain("factory.threadSkills");
+    expect(text).toContain("skills");
+    expect(store.count()).toBe(2);
+
+    const viaThreads = structuredClone(unloaded);
+    viaThreads.factory.threadSkills = [...viaThreads.factory.threadSkills, "debugging"];
+    expect((await propose(viaThreads)).isError).toBeFalsy();
+
+    const viaRole = structuredClone(unloaded);
+    viaRole.roles.lead.skills = ["debugging"];
+    expect((await propose(viaRole)).isError).toBeFalsy();
+
+    // Unloading a skill the deployed version has, or editing one already unloaded, is the owner's call.
+    const unloadExisting = structuredClone(deployed);
+    unloadExisting.roles.communicator.skills = [];
+    expect((await propose(unloadExisting)).isError).toBeFalsy();
+
+    const editIdle = structuredClone(deployed);
+    editIdle.skills.idle = { "SKILL.md": "# Idle\nMore.\n" };
+    expect((await propose(editIdle)).isError).toBeFalsy();
+    expect(store.count()).toBe(6);
+    await c.close();
+  });
+
   it("lets only the chat agent change the factory's own config, through a proposal and an approval", async () => {
     const { url, store, mcp, h } = await start();
     const chat = "discord:thread-9";
