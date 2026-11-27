@@ -14,6 +14,7 @@ import { SecretsFile } from "../../src/config/secrets.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { recordShippedInstructions } from "../../src/hermes/profiles.js";
 import { applyShippedInstructions, syncFactoryHermes } from "../../src/hermes/setup.js";
+import { withProfileMoveLock } from "../../src/legacy-planner.js";
 import { resolvePaths, type Paths } from "../../src/paths.js";
 import type { GatewayControl } from "../../src/legacy-planner.js";
 import type { ServiceManager } from "../../src/service.js";
@@ -186,6 +187,39 @@ describe("syncFactoryHermes when the planner profile move is not finished", () =
     ).rejects.toThrow("not fully moved");
     expect(existsSync(join(paths.hermes, "profiles", "lead"))).toBe(true);
     expect(gateway.stopped()).toBe(false);
+    db.close();
+  });
+});
+
+describe("syncFactoryHermes while another caller moves the planner profile", () => {
+  it("waits for a move in progress before it syncs and starts the gateway", async () => {
+    const db = openStore(join(paths.root, "state.db"));
+    const store = new ConfigStore(db);
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    const gateway = new FakeService();
+    const options = {
+      paths,
+      store,
+      db,
+      secrets: new SecretsFile(paths.secrets),
+      hermesPath: "/usr/local/bin/hermes",
+      run: new FakeHermes().run,
+      service: gateway,
+      mcpUrl: "http://127.0.0.1:7701/mcp",
+      gatewayUnitPath: paths.gatewayUnit,
+    };
+    await syncFactoryHermes(options);
+    gateway.starts = 0;
+
+    let syncing: Promise<void> | undefined;
+    await withProfileMoveLock(paths.hermes, async () => {
+      syncing = syncFactoryHermes(options);
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      expect(gateway.starts).toBe(0);
+    });
+    await syncing;
+    expect(gateway.starts).toBe(1);
     db.close();
   });
 });

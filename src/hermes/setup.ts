@@ -12,7 +12,11 @@ import { installModelPlugin } from "./plugin.js";
 import { FactoryProfiles, shippedInstructionsChanged } from "./profiles.js";
 
 import { ROLE_NAMES, type RoleName } from "../config/document.js";
-import { migratePlannerFiles, type GatewayControl } from "../legacy-planner.js";
+import {
+  migratePlannerFiles,
+  withProfileMoveLock,
+  type GatewayControl,
+} from "../legacy-planner.js";
 import { join } from "node:path";
 
 /** Each factory profile's bearer token for Hephaestus's MCP server. */
@@ -75,12 +79,15 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
     token: tokenFor(role),
   }));
 
-  if (existsSync(options.gatewayUnitPath)) {
-    // A start that failed after the unit was written is retried here.
-    options.service.start();
-  } else {
-    options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
-  }
+  // Not while another caller has the gateway down to move the planner's profile.
+  await withProfileMoveLock(paths.hermes, () => {
+    if (existsSync(options.gatewayUnitPath)) {
+      // A start that failed after the unit was written is retried here.
+      options.service.start();
+    } else {
+      options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
+    }
+  });
   if (!moved) {
     throw new Error(
       "The planner's Hermes profile is not fully moved to the communicator; the log says what is left.",

@@ -555,20 +555,19 @@ async function main(argv: string[]): Promise<number> {
       const config = readConfig(paths.config);
       const db = openStore(paths.state);
       const store = new ConfigStore(db);
-      // Before anything reads the role profiles or their tokens. A failed move leaves the
-      // dashboard up to show what is wrong, rather than failing the service in a loop.
-      try {
-        await migratePlannerFiles({
-          hermesRoot: paths.hermes,
-          secrets: new SecretsFile(paths.secrets),
-          gateway: new SystemdUserService(join(dirname(config.unitPath), GATEWAY_SERVICE_NAME)),
-          ...(config.hermesPath === undefined
-            ? {}
-            : { run: hermesRunner(config.hermesPath, paths.hermes) }),
-        });
-      } catch (error) {
+      // The token moves before this returns, ahead of anything that reads it. The profile move
+      // can wait on another caller and on the gateway, so it runs while the dashboard comes up:
+      // an update rolls back a build whose dashboard is not up in 30 seconds.
+      migratePlannerFiles({
+        hermesRoot: paths.hermes,
+        secrets: new SecretsFile(paths.secrets),
+        gateway: new SystemdUserService(join(dirname(config.unitPath), GATEWAY_SERVICE_NAME)),
+        ...(config.hermesPath === undefined
+          ? {}
+          : { run: hermesRunner(config.hermesPath, paths.hermes) }),
+      }).catch((error: unknown) => {
         console.error("Moving the planner's Hermes profile to the communicator failed", error);
-      }
+      });
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
       const { connection, t3 } = t3Client(paths, config);

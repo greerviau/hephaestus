@@ -234,8 +234,8 @@ describe("moving the profile while the factory gateway serves it", () => {
     gateway.events.length = 0;
     await migrate();
     await migrate();
-    // The gateway already serves the moved profile, so only the rekey is left to do, once.
-    expect(gateway.events).toEqual([REKEY]);
+    // Only the rekey is left, done once, with the gateway down for it as the first time.
+    expect(gateway.events).toEqual(["stop with planner gone", REKEY, "start"]);
   });
 
   it("starts the gateway on the next run when starting it after the move fails", async () => {
@@ -299,7 +299,7 @@ describe("moving the profile while the factory gateway serves it", () => {
     }
   });
 
-  it("leaves the profile, the note, and a gateway it could not stop alone", async () => {
+  it("leaves the profile and a gateway it could not stop alone, and keeps the note", async () => {
     const root = upgradedRoot();
     const gateway = new FakeGateway("active", root);
     gateway.stopFailure = "systemd runs it from another unit; leaving it running.";
@@ -315,7 +315,11 @@ describe("moving the profile while the factory gateway serves it", () => {
 
     expect(gateway.events).toEqual([]);
     expect(existsSync(join(root, "profiles", "planner", ".env"))).toBe(true);
-    expect(existsSync(PENDING())).toBe(false);
+    // The stop may have taken effect before it failed, so the restart stays noted.
+    expect(JSON.parse(readFileSync(PENDING(), "utf8"))).toEqual({
+      startGateway: true,
+      rekey: true,
+    });
   });
 
   it("finishes one move before another caller starts, so a failed rekey is retried", async () => {
@@ -347,7 +351,14 @@ describe("moving the profile while the factory gateway serves it", () => {
 
     finish?.();
     await Promise.all([first, second]);
-    expect(gateway.events).toEqual(["stop with planner present", `${REKEY} held`, "start", REKEY]);
+    expect(gateway.events).toEqual([
+      "stop with planner present",
+      `${REKEY} held`,
+      "start",
+      "stop with planner gone",
+      REKEY,
+      "start",
+    ]);
     expect(existsSync(PENDING())).toBe(false);
   });
 
@@ -378,38 +389,6 @@ describe("moving the profile while the factory gateway serves it", () => {
     expect(await migrate()).toBe(true);
     expect(gateway.events).toEqual([REKEY, "start"]);
     expect(existsSync(join(root, "profiles", "communicator", ".env"))).toBe(true);
-  });
-
-  it("gives up on a rekey that does not answer, starts the gateway, and keeps the rekey", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    try {
-      const root = upgradedRoot();
-      const gateway = new FakeGateway("active", root);
-      const hung: HermesRun = () => {
-        gateway.events.push(`${REKEY} hung`);
-        return new Promise(() => undefined);
-      };
-
-      const moving = migratePlannerFiles({
-        hermesRoot: root,
-        secrets: secrets(),
-        gateway,
-        run: hung,
-      });
-      await vi.waitFor(() => {
-        expect(gateway.events).toContain(`${REKEY} hung`);
-      });
-      await vi.advanceTimersByTimeAsync(15_000);
-
-      expect(await moving).toBe(false);
-      expect(gateway.events).toEqual(["stop with planner present", `${REKEY} hung`, "start"]);
-      expect(JSON.parse(readFileSync(PENDING(), "utf8"))).toEqual({
-        startGateway: false,
-        rekey: true,
-      });
-    } finally {
-      vi.useRealTimers();
-    }
   });
 
   it("touches neither the gateway nor Hermes when there is nothing to move", async () => {
