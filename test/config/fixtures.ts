@@ -7,7 +7,7 @@ export function sampleConfig(): FactoryConfig {
       "octo/app": { policy: { preset: "standard", overrides: {} } },
     },
     roles: {
-      planner: { persona: "Plan the work.", skills: ["triage"] },
+      communicator: { persona: "Plan the work.", skills: ["triage"] },
       lead: { persona: "Lead the work.", skills: [] },
       improver: { persona: "Improve the config.", skills: [] },
     },

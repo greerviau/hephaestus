@@ -24,7 +24,7 @@ const LOADED_BY: Record<string, readonly InstructionSetName[]> = {
   "find-root-cause": ["threads"],
   "resolve-conflicts": ["threads"],
   "review-pr": ["threads"],
-  "write-issue": ["planner"],
+  "write-issue": ["communicator"],
   "write-brief": ["lead"],
 };
 

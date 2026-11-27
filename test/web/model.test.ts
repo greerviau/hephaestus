@@ -78,7 +78,7 @@ function catalog(overrides: Partial<ModelCatalog> = {}): ModelCatalog {
       },
     ],
     profiles: {
-      planner: { provider: "anthropic", model: "claude-sonnet-5" },
+      communicator: { provider: "anthropic", model: "claude-sonnet-5" },
       lead: { provider: "anthropic", model: "claude-sonnet-5" },
       improver: { provider: "anthropic", model: "claude-sonnet-5" },
     },
@@ -156,7 +156,7 @@ describe("Planning model page", () => {
     expect(html).toContain("Anthropic");
     expect(html).toContain("claude-sonnet-5");
     expect(html).toContain('<option value="deepseek"');
-    expect(html).not.toMatch(/planner|improver|\blead\b/i);
+    expect(html).not.toMatch(/communicator|improver|\blead\b/i);
     expect(html).toContain("Planning and chat model</h1>");
     expect(html).toContain('<a href="/config/models">Models</a>');
     expect(html).not.toContain('http-equiv="refresh"');
@@ -367,7 +367,7 @@ describe("Planning model page", () => {
       model: fakeModel({
         catalog: catalog({
           profiles: {
-            planner: { provider: "anthropic", model: "claude-sonnet-5" },
+            communicator: { provider: "anthropic", model: "claude-sonnet-5" },
             lead: { provider: "deepseek", model: "deepseek-chat" },
             improver: { provider: "anthropic", model: "claude-sonnet-5" },
           },

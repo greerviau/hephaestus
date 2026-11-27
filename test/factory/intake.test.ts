@@ -6,8 +6,12 @@ import { harness } from "./harness.js";
 describe("Intake", () => {
   it("admits an issue filed through file_issue and gives it a task", async () => {
     const h = harness();
-    const issue = await h.intake.fileIssue("planner", "octo/app", "Add a flag", "Body");
-    expect(issue).toMatchObject({ provenance: "factory", filedBy: "planner", state: "admitted" });
+    const issue = await h.intake.fileIssue("communicator", "octo/app", "Add a flag", "Body");
+    expect(issue).toMatchObject({
+      provenance: "factory",
+      filedBy: "communicator",
+      state: "admitted",
+    });
     expect(h.tasks.get(issue.taskId ?? 0)).toMatchObject({
       stage: "Admitted",
       issueNumber: issue.number,
@@ -64,7 +68,7 @@ describe("Intake", () => {
     });
     const states = [];
     for (const title of ["one", "two", "three"]) {
-      states.push((await h.intake.fileIssue("planner", "octo/app", title, "")).state);
+      states.push((await h.intake.fileIssue("communicator", "octo/app", title, "")).state);
     }
     expect(states).toEqual(["admitted", "admitted", "held-cap"]);
     expect(h.intake.awaitingWork("octo/app")).toBe(2);
@@ -179,7 +183,7 @@ describe("Intake", () => {
     const h = harness((config) => {
       config.projects["octo/lib"] = { policy: { preset: "standard", overrides: {} } };
     });
-    const filed = await h.intake.fileIssue("planner", "octo/app", "one", "");
+    const filed = await h.intake.fileIssue("communicator", "octo/app", "one", "");
     const issue = h.github.issues.get(filed.number);
     if (issue !== undefined) issue.state = "CLOSED";
     const list = h.github.openIssues.bind(h.github);
@@ -205,7 +209,7 @@ describe("Intake", () => {
         policy: { preset: "standard", overrides: { openIssueCap: 1 } },
       };
     });
-    const first = await h.intake.fileIssue("planner", "octo/app", "one", "");
+    const first = await h.intake.fileIssue("communicator", "octo/app", "one", "");
     const issue = h.github.issues.get(first.number);
     if (issue !== undefined) issue.state = "CLOSED";
     const read = h.github.issue.bind(h.github);
@@ -222,7 +226,12 @@ describe("Intake", () => {
 
     // Ten more issues are filed, held at the cap, and closed before the next poll.
     for (let index = 0; index < 10; index += 1) {
-      const held = await h.intake.fileIssue("planner", "octo/app", `held ${String(index)}`, "");
+      const held = await h.intake.fileIssue(
+        "communicator",
+        "octo/app",
+        `held ${String(index)}`,
+        "",
+      );
       expect(held.state).toBe("held-cap");
       const filed = h.github.issues.get(held.number);
       if (filed !== undefined) filed.state = "CLOSED";
@@ -233,8 +242,8 @@ describe("Intake", () => {
 
   it("goes on when a task it would abandon was abandoned during the read", async () => {
     const h = harness();
-    const a = await h.intake.fileIssue("planner", "octo/app", "a", "");
-    const b = await h.intake.fileIssue("planner", "octo/app", "b", "");
+    const a = await h.intake.fileIssue("communicator", "octo/app", "a", "");
+    const b = await h.intake.fileIssue("communicator", "octo/app", "b", "");
     for (const number of [a.number, b.number]) {
       const issue = h.github.issues.get(number);
       if (issue !== undefined) issue.state = "CLOSED";
@@ -358,12 +367,14 @@ describe("Intake", () => {
         policy: { preset: "standard", overrides: { openIssueCap: 1 } },
       };
     });
-    const first = await h.intake.fileIssue("planner", "octo/app", "one", "");
+    const first = await h.intake.fileIssue("communicator", "octo/app", "one", "");
     const issue = h.github.issues.get(first.number);
     if (issue !== undefined) issue.state = "CLOSED";
     await h.intake.poll();
     expect(h.tasks.get(first.taskId ?? 0).stage).toBe("Abandoned");
-    expect((await h.intake.fileIssue("planner", "octo/app", "two", "")).state).toBe("admitted");
+    expect((await h.intake.fileIssue("communicator", "octo/app", "two", "")).state).toBe(
+      "admitted",
+    );
   });
 
   it("files under the config's spelling, so another casing shares the cap", async () => {
@@ -372,8 +383,10 @@ describe("Intake", () => {
         policy: { preset: "standard", overrides: { openIssueCap: 1 } },
       };
     });
-    expect((await h.intake.fileIssue("planner", "octo/app", "one", "")).state).toBe("admitted");
-    const second = await h.intake.fileIssue("planner", "Octo/App", "two", "");
+    expect((await h.intake.fileIssue("communicator", "octo/app", "one", "")).state).toBe(
+      "admitted",
+    );
+    const second = await h.intake.fileIssue("communicator", "Octo/App", "two", "");
     expect(second).toMatchObject({ repo: "octo/app", state: "held-cap" });
     await h.intake.poll();
     expect(h.intake.issues().filter((issue) => issue.number === second.number)).toHaveLength(1);
@@ -398,7 +411,7 @@ describe("Intake", () => {
 
   it("refuses a repo that is not a factory project", async () => {
     const h = harness();
-    await expect(h.intake.fileIssue("planner", "octo/other", "x", "")).rejects.toThrow(
+    await expect(h.intake.fileIssue("communicator", "octo/other", "x", "")).rejects.toThrow(
       NotAFactoryProjectError,
     );
   });

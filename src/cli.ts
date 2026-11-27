@@ -33,6 +33,7 @@ import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
 import { SystemdUserService, runCommand } from "./service.js";
 import { hermesRunner } from "./hermes/cli.js";
+import { migratePlannerFiles } from "./legacy-planner.js";
 import { openStore } from "./store.js";
 import { T3Adapter } from "./t3/adapter.js";
 import {
@@ -554,6 +555,8 @@ async function main(argv: string[]): Promise<number> {
       const config = readConfig(paths.config);
       const db = openStore(paths.state);
       const store = new ConfigStore(db);
+      // Before anything reads the role profiles or their tokens.
+      migratePlannerFiles({ hermesRoot: paths.hermes, secrets: new SecretsFile(paths.secrets) });
       mkdirSync(paths.backups, { recursive: true, mode: 0o700 });
       const stopBackups = scheduleBackups(store, paths.backups);
       const { connection, t3 } = t3Client(paths, config);

@@ -36,4 +36,4 @@ The repo needs Node 22.13 or later and npm 11 or later, as `package.json` requir
 - Keep `docs/` and `README.md` true to the code. Describe current behavior in present tense, in plain sentences.
 - Code comments explain why, not what. Do not use markdown in code comments or commit messages.
 - Secrets never go on a command line, in page HTML, or in logs. Pass them on stdin or in a file with mode 600.
-- Text Hephaestus writes on the Chat pages, on the planning model page (`/config/models/planning`), and in chat messages never names the factory's Hermes roles (planner, lead, improver). The page tests check the pages, `test/hermes/plugin-python.test.ts` checks the Hermes plugin's refusals that the planning model page shows, and a change to chat text needs its own test.
+- Text Hephaestus writes on the Chat pages, on the planning model page (`/config/models/planning`), and in chat messages never names the factory's Hermes roles (communicator, lead, improver). The page tests check the pages, `test/hermes/plugin-python.test.ts` checks the Hermes plugin's refusals that the planning model page shows, and a change to chat text needs its own test.

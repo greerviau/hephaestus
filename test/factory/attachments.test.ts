@@ -57,7 +57,7 @@ async function file(name: string, data: Buffer = PNG, folder = cache): Promise<s
 }
 
 function fileIssue(h: Harness, files: string[], title = "t", body = "b") {
-  return h.intake.fileIssue("planner", "octo/app", title, body, files, [cache]);
+  return h.intake.fileIssue("communicator", "octo/app", title, body, files, [cache]);
 }
 
 describe("file_issue attachments", () => {
@@ -104,8 +104,15 @@ describe("file_issue attachments", () => {
 
   it("changes nothing for a call without attachments", async () => {
     const h = harness();
-    const issue = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body");
-    const empty = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body", [], [cache]);
+    const issue = await h.intake.fileIssue("communicator", "octo/app", "t", "Plain body");
+    const empty = await h.intake.fileIssue(
+      "communicator",
+      "octo/app",
+      "t",
+      "Plain body",
+      [],
+      [cache],
+    );
     expect(h.github.issues.get(issue.number)?.body).toBe("Plain body");
     expect(h.github.issues.get(empty.number)?.body).toBe("Plain body");
     expect(h.github.writes).toEqual(["issue", "issue"]);
@@ -217,7 +224,7 @@ describe("file_issue attachments", () => {
     await expect(fileIssue(h, [source])).rejects.toThrow(`could not write to ${ATTACHMENT_BRANCH}`);
     expect(h.github.issues.size).toBe(0);
     await expect(
-      h.intake.fileIssue("planner", "octo/other", "t", "b", [source], [cache]),
+      h.intake.fileIssue("communicator", "octo/other", "t", "b", [source], [cache]),
     ).rejects.toThrow(NotAFactoryProjectError);
     expect(h.github.writes).toEqual([]);
   });
@@ -325,7 +332,7 @@ describe("which files can be attached", () => {
       paths.push(await file(name, Buffer.from(name), join(home, folder)));
     }
     const issue = await h.intake.fileIssue(
-      "planner",
+      "communicator",
       "octo/app",
       "t",
       "b",
@@ -340,7 +347,7 @@ describe("which files can be attached", () => {
     for (const name of ["config.yaml", ".env"]) {
       await expect(
         h.intake.fileIssue(
-          "planner",
+          "communicator",
           "octo/app",
           "t",
           "b",
@@ -358,18 +365,32 @@ describe("which files can be attached", () => {
     await fileIssue(h, [nested]);
     const viaLink = join(dir, "cache-link");
     await symlink(cache, viaLink);
-    const linked = await h.intake.fileIssue("planner", "octo/app", "t", "b", [nested], [viaLink]);
+    const linked = await h.intake.fileIssue(
+      "communicator",
+      "octo/app",
+      "t",
+      "b",
+      [nested],
+      [viaLink],
+    );
     expect(linked.state).toBe("admitted");
   });
 
   it("refuses every attachment when the role has no cache", async () => {
     const h = harness();
     const source = await file("banner.png");
-    await expect(h.intake.fileIssue("planner", "octo/app", "t", "b", [source], [])).rejects.toThrow(
-      "is not in the chat attachment cache",
-    );
     await expect(
-      h.intake.fileIssue("planner", "octo/app", "t", "b", [source], [join(dir, "no-such-cache")]),
+      h.intake.fileIssue("communicator", "octo/app", "t", "b", [source], []),
+    ).rejects.toThrow("is not in the chat attachment cache");
+    await expect(
+      h.intake.fileIssue(
+        "communicator",
+        "octo/app",
+        "t",
+        "b",
+        [source],
+        [join(dir, "no-such-cache")],
+      ),
     ).rejects.toThrow("is not in the chat attachment cache");
     expect(h.github.writes).toEqual([]);
   });
@@ -427,7 +448,7 @@ describe("attachment instructions for the worker", () => {
 
     const source = await file("banner.png");
     const issue = await fileIssue(h, [source], "Use the banner", "Add it to the README");
-    // The planner's cache is pruned.
+    // The communicator's cache is pruned.
     await rm(source);
     await rm(cache, { recursive: true });
     await h.pipeline.startWork(issue.taskId ?? 0, "Put the banner on the README.");
@@ -512,7 +533,7 @@ describe("attachment instructions for the worker", () => {
 
   it("keeps the record of an issue without attachments empty", async () => {
     const h = harness();
-    const issue = await h.intake.fileIssue("planner", "octo/app", "t", "b");
+    const issue = await h.intake.fileIssue("communicator", "octo/app", "t", "b");
     expect(storedAttachments(h.db, "octo/app", issue.number)).toEqual([]);
   });
 });

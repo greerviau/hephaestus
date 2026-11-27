@@ -161,8 +161,8 @@ context.setup(parser)
 context.handler(parser.parse_args(sys.argv[2:]))
 `;
 
-const SCOPES = ["root", "planner", "lead", "improver"];
-const PROFILES = ["--profiles", "planner,lead,improver"];
+const SCOPES = ["root", "communicator", "lead", "improver"];
+const PROFILES = ["--profiles", "communicator,lead,improver"];
 
 let dir: string;
 
@@ -272,7 +272,7 @@ function models(): Record<string, string | undefined> {
 
 describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
   it("checks every scope before writing, so a profile's refusal changes nothing", () => {
-    seed({ refuse_in: ["planner"] });
+    seed({ refuse_in: ["communicator"] });
 
     const output = run(["set-model", "--provider", "anthropic", "--model", "new", ...PROFILES]);
 
@@ -282,7 +282,7 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
           "Hermes refused the model (for one of the factory's profiles): No usable credentials found",
       },
     ]);
-    expect(models()).toEqual({ root: "old", planner: "old", lead: "old", improver: "old" });
+    expect(models()).toEqual({ root: "old", communicator: "old", lead: "old", improver: "old" });
   });
 
   it("sets the model in every scope with the checked result", () => {
@@ -291,7 +291,7 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     const output = run(["set-model", "--provider", "anthropic", "--model", "new", ...PROFILES]);
 
     expect(output).toEqual([{ ok: true, provider: "anthropic", model: "new" }]);
-    expect(models()).toEqual({ root: "new", planner: "new", lead: "new", improver: "new" });
+    expect(models()).toEqual({ root: "new", communicator: "new", lead: "new", improver: "new" });
   });
 
   it("stops on a warning from any scope unless forced", () => {
@@ -303,7 +303,7 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     expect(models().root).toBe("old");
 
     run(["set-model", "--provider", "anthropic", "--model", "new", "--force", ...PROFILES]);
-    expect(models()).toEqual({ root: "new", planner: "new", lead: "new", improver: "new" });
+    expect(models()).toEqual({ root: "new", communicator: "new", lead: "new", improver: "new" });
   });
 
   it("reads a custom endpoint's URL and key from stdin", () => {
@@ -401,11 +401,11 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
       { refused: "Hermes could not open one of the factory's profiles. Deploy a config version." },
     ]);
     expect(state().scopes.root?.env).toEqual({});
-    expect(state().scopes.planner?.env).toEqual({});
+    expect(state().scopes.communicator?.env).toEqual({});
   });
 
   it("turns any other refusal Hermes's dashboard code raises into a refusal, without role names", () => {
-    seed({ missing: ["planner"] });
+    seed({ missing: ["communicator"] });
 
     expect(run(["catalog", ...PROFILES])).toEqual([
       { refused: "A factory profile does not exist." },

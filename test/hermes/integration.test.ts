@@ -39,7 +39,7 @@ describe.runIf(enabled)("Hermes integration", () => {
     ];
     await profiles.sync(config, 1, mcp);
 
-    for (const role of ["planner", "lead", "improver"] as const) {
+    for (const role of ["communicator", "lead", "improver"] as const) {
       expect(readFileSync(join(factoryRoot, "profiles", role, "SOUL.md"), "utf8")).toBe(
         rolePrompt(role, config.roles[role].persona),
       );
@@ -56,20 +56,22 @@ describe.runIf(enabled)("Hermes integration", () => {
       );
     }
     expect(
-      existsSync(join(factoryRoot, "profiles", "planner", "skills", "triage", "SKILL.md")),
+      existsSync(join(factoryRoot, "profiles", "communicator", "skills", "triage", "SKILL.md")),
     ).toBe(true);
     expect(await run(["-p", "improver", "cron", "list"])).toContain("hephaestus-nightly");
 
     const changed = structuredClone(config);
     changed.roles.lead.persona = "Lead carefully.";
-    changed.roles.planner.skills = [];
+    changed.roles.communicator.skills = [];
     changed.roles.improver.cron = [];
     await profiles.sync(changed, 2, mcp);
 
     expect(readFileSync(join(factoryRoot, "profiles", "lead", "SOUL.md"), "utf8")).toBe(
       rolePrompt("lead", "Lead carefully."),
     );
-    expect(existsSync(join(factoryRoot, "profiles", "planner", "skills", "triage"))).toBe(false);
+    expect(existsSync(join(factoryRoot, "profiles", "communicator", "skills", "triage"))).toBe(
+      false,
+    );
     expect(await run(["-p", "improver", "cron", "list"])).not.toContain("hephaestus-nightly");
 
     const board = new FactoryBoard({ root: factoryRoot, run });

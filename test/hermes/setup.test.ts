@@ -91,12 +91,46 @@ describe("syncFactoryHermes", () => {
     const secrets = new SecretsFile(paths.secrets);
     const lead = secrets.get("hermes-mcp-token-lead");
     expect(lead).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(secrets.get("hermes-mcp-token-planner")).not.toBe(lead);
+    expect(secrets.get("hermes-mcp-token-communicator")).not.toBe(lead);
     expect(readFileSync(join(paths.hermes, "profiles", "lead", ".env"), "utf8")).toContain(
       `HEPHAESTUS_MCP_TOKEN=${lead ?? ""}`,
     );
     expect(service.starts).toBe(1);
     expect(existsSync(paths.gatewayUnit)).toBe(true);
+    db.close();
+  });
+});
+
+describe("syncFactoryHermes on an install that called the chat agent the planner", () => {
+  it("moves its profile and token to the communicator, then syncs", async () => {
+    const db = openStore(join(paths.root, "state.db"));
+    const store = new ConfigStore(db);
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    const old = join(paths.hermes, "profiles", "planner");
+    mkdirSync(join(old, "memories"), { recursive: true });
+    writeFileSync(join(old, "memories", "MEMORY.md"), "kept\n");
+    const secrets = new SecretsFile(paths.secrets);
+    secrets.set("hermes-mcp-token-planner", "old-token");
+
+    await syncFactoryHermes({
+      paths,
+      store,
+      db,
+      secrets,
+      hermesPath: "/usr/local/bin/hermes",
+      run: new FakeHermes().run,
+      service: new FakeService(),
+      mcpUrl: "http://127.0.0.1:7701/mcp",
+      gatewayUnitPath: paths.gatewayUnit,
+    });
+
+    expect(existsSync(old)).toBe(false);
+    expect(
+      readFileSync(join(paths.hermes, "profiles", "communicator", "memories", "MEMORY.md"), "utf8"),
+    ).toBe("kept\n");
+    expect(secrets.get("hermes-mcp-token-communicator")).toBe("old-token");
+    expect(secrets.get("hermes-mcp-token-planner")).toBeUndefined();
     db.close();
   });
 });
@@ -123,7 +157,7 @@ describe("applyShippedInstructions", () => {
 
     // No profiles yet: the first deploy sets the root up, so there is nothing to bring up to date.
     expect(await applyShippedInstructions(options)).toBe(false);
-    for (const role of ["planner", "lead", "improver"]) {
+    for (const role of ["communicator", "lead", "improver"]) {
       mkdirSync(join(hermes, "profiles", role), { recursive: true });
     }
     // An approved version the owner has not deployed is not applied.
@@ -146,7 +180,7 @@ describe("applyShippedInstructions", () => {
     store.approve(version.id);
     store.markDeployed(version.id);
     const hermes = join(home, "factory-hermes");
-    for (const role of ["planner", "lead", "improver"]) {
+    for (const role of ["communicator", "lead", "improver"]) {
       mkdirSync(join(hermes, "profiles", role), { recursive: true });
     }
     let syncs = 0;

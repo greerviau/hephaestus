@@ -75,7 +75,7 @@ function listedJobs(output: string): Map<string, string> {
 }
 
 /**
- * Keeps the planner, lead, and improver profiles in the factory Hermes root
+ * Keeps the communicator, lead, and improver profiles in the factory Hermes root
  * in line with a config version. Each role's instructions, the shipped ones
  * followed by the owner's persona, and its skills arrive as a profile
  * distribution; toolsets, the MCP entry, and cron jobs go through the CLI,

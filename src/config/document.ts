@@ -1,6 +1,7 @@
+import { renameLegacyRole } from "../legacy-planner.js";
 import { POLICY_SETTING_NAMES, PRESET_NAMES, type Policy } from "./policy.js";
 
-export const ROLE_NAMES = ["planner", "lead", "improver"] as const;
+export const ROLE_NAMES = ["communicator", "lead", "improver"] as const;
 export type RoleName = (typeof ROLE_NAMES)[number];
 
 export interface RoleConfig {
@@ -154,13 +155,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function normalizeConfig(value: unknown): unknown {
   if (!isRecord(value)) return value;
+  const renamed = renameLegacyRole(value);
   // Only what is missing gets its default; a value of the wrong type stays for validation to refuse.
-  if (value.factory !== undefined && !isRecord(value.factory)) return value;
-  const factory = value.factory ?? {};
+  if (renamed.factory !== undefined && !isRecord(renamed.factory)) return value;
+  const factory = renamed.factory ?? {};
   if (factory.limits !== undefined && !isRecord(factory.limits)) return value;
   const limits = factory.limits ?? {};
   value = {
-    ...value,
+    ...renamed,
     factory: {
       ...structuredClone(DEFAULT_FACTORY),
       ...factory,

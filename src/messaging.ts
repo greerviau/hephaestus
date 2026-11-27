@@ -7,7 +7,7 @@ import type { HermesRun } from "./hermes/cli.js";
 import { getMeta, setMeta } from "./meta.js";
 
 /** The factory role that talks to the owner in a chat; the owner never needs its name. */
-const CHAT_ROLE = "planner";
+const CHAT_ROLE = "communicator";
 
 export const PLATFORM_NAMES = ["telegram", "discord"] as const;
 export type PlatformName = (typeof PLATFORM_NAMES)[number];

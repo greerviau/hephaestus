@@ -70,7 +70,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 15)}`);
+    db.pragma(`user_version = ${String(latest - 16)}`);
     db.close();
 
     db = openStore(path);
@@ -112,7 +112,7 @@ describe("store migrations", () => {
       INSERT INTO mcp_calls (role, tool, arguments, ok, result, at)
         VALUES ('lead', 'start_work', '{"card_id":8,"brief":"b"}', 1, '{"card_id":8,"stage":"Implementing"}', 'x'),
                ('lead', 'list_cards', '{}', 1, '[{"card_id":8,"title":"Rename the card"}]', 'x');`);
-    db.pragma(`user_version = ${String(latest - 2)}`);
+    db.pragma(`user_version = ${String(latest - 3)}`);
     db.close();
 
     db = openStore(path);
@@ -169,6 +169,76 @@ describe("store migrations", () => {
         )
         .all(),
     ).toHaveLength(1);
+    db.close();
+  });
+
+  it("renames the planner to the communicator in stored state, and keeps the rest", () => {
+    dir = mkdtempSync(join(tmpdir(), "hephaestus-store-"));
+    const path = join(dir, "state.db");
+    let db = openStore(path);
+    const latest = db.pragma("user_version", { simple: true }) as number;
+    const document = (key: string): string =>
+      JSON.stringify({
+        roles: { [key]: { persona: "Be brief.", skills: ["write-issue"] }, lead: { persona: "" } },
+      });
+    const seed = (): void => {
+      db.exec("DELETE FROM config_versions");
+      const add = db.prepare(
+        "INSERT INTO config_versions (state, author, message, created_at, document) VALUES (?, 'owner', '', 'x', ?)",
+      );
+      add.run("superseded", document("planner"));
+      add.run("deployed", document("planner"));
+      db.exec(`INSERT OR REPLACE INTO hermes_skills (role, name) VALUES ('planner', 'write-issue'), ('lead', 'write-brief');
+        INSERT OR REPLACE INTO hermes_cron_jobs (role, name, job_id) VALUES ('planner', 'daily', 'j1'), ('improver', 'nightly', 'j2');
+        INSERT INTO mcp_calls (role, tool, arguments, ok, result, at) VALUES ('planner', 'file_issue', '{}', 1, '{}', 'x'), ('lead', 'start_work', '{}', 1, '{}', 'x');
+        INSERT INTO chat_changes (target, summary, conversation, state, after_text, proposed_at)
+          VALUES ('persona:planner', 's', 'c', 'proposed', 'a', 'x'), ('instruction:factory', 's', 'c', 'proposed', 'a', 'x');`);
+      db.pragma(`user_version = ${String(latest - 1)}`);
+    };
+    const expectRenamed = (): void => {
+      expect(db.pragma("user_version", { simple: true })).toBe(latest);
+      const docs = db.prepare("SELECT document FROM config_versions ORDER BY id").all() as {
+        document: string;
+      }[];
+      for (const row of docs) {
+        expect(JSON.parse(row.document)).toEqual(JSON.parse(document("communicator")));
+      }
+      expect(db.prepare("SELECT role, name FROM hermes_skills ORDER BY role").all()).toEqual([
+        { role: "communicator", name: "write-issue" },
+        { role: "lead", name: "write-brief" },
+      ]);
+      expect(db.prepare("SELECT role, job_id FROM hermes_cron_jobs ORDER BY role").all()).toEqual([
+        { role: "communicator", job_id: "j1" },
+        { role: "improver", job_id: "j2" },
+      ]);
+      expect(db.prepare("SELECT role FROM mcp_calls ORDER BY id").all()).toEqual([
+        { role: "communicator" },
+        { role: "lead" },
+      ]);
+      expect(db.prepare("SELECT target FROM chat_changes ORDER BY id").all()).toEqual([
+        { target: "persona:communicator" },
+        { target: "instruction:factory" },
+      ]);
+    };
+
+    // An upgraded install.
+    seed();
+    db.close();
+    db = openStore(path);
+    expectRenamed();
+    // Run again over the renamed rows, as after a crash between the rename and the version bump.
+    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.close();
+    db = openStore(path);
+    expectRenamed();
+    db.close();
+  });
+
+  it("starts a fresh install with nothing to rename", () => {
+    dir = mkdtempSync(join(tmpdir(), "hephaestus-store-"));
+    const db = openStore(join(dir, "state.db"));
+    expect(db.prepare("SELECT COUNT(*) AS n FROM config_versions").get()).toEqual({ n: 0 });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM mcp_calls").get()).toEqual({ n: 0 });
     db.close();
   });
 

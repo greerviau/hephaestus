@@ -27,6 +27,7 @@ import {
   type FactoryConfig,
 } from "../config/document.js";
 import type { ConfigVersion } from "../config/store.js";
+import { currentRoleName } from "../legacy-planner.js";
 import {
   MAX_FORM_BYTES,
   STALE,
@@ -61,7 +62,10 @@ import {
 import { redirect, sendHtml, type Route, type RouteContext } from "./http.js";
 
 const SETS: Record<InstructionSetName, { title: string; does: string }> = {
-  planner: { title: "Planner", does: "Turns requests into GitHub issues on factory projects." },
+  communicator: {
+    title: "Communicator",
+    does: "Turns requests into GitHub issues on factory projects.",
+  },
   lead: {
     title: "Lead",
     does: "Starts work on admitted tasks with a brief, and handles escalations.",
@@ -348,7 +352,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
   }
 
   function showSet(context: RouteContext, refused?: Refused): void {
-    const name = context.params[0] ?? "";
+    const name = currentRoleName(context.params[0] ?? "");
     const current = store.current();
     if (!isInstructionSet(name) || current === undefined) {
       notFound(context, "agent");
@@ -405,7 +409,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
   }
 
   async function saveSet(context: RouteContext): Promise<void> {
-    const name = context.params[0] ?? "";
+    const name = currentRoleName(context.params[0] ?? "");
     if (!isInstructionSet(name) || store.current() === undefined) {
       notFound(context, "agent");
       return;

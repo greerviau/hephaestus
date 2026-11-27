@@ -27,7 +27,7 @@ export interface ImportedSkill {
 export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
   const role = (): RoleConfig => ({ persona: "", skills: [] });
   const roles: Record<RoleName, RoleConfig> = {
-    planner: role(),
+    communicator: role(),
     lead: role(),
     improver: {
       ...role(),

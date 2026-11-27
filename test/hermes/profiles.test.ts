@@ -84,15 +84,15 @@ describe("FactoryProfiles.sync", () => {
     await profiles.sync(sampleConfig(), 3, mcp);
 
     expect(hermes.lines().some((line) => line.startsWith("profile create"))).toBe(false);
-    const planner = installed.find((entry) => entry.manifest.includes("name: planner"));
-    expect(planner?.soul).toBe(rolePrompt("planner", "Plan the work."));
-    expect(planner?.manifest).toContain("name: planner");
-    expect(planner?.manifest).toContain("version: 0.0.3");
-    expect(planner?.skills).toEqual(["triage"]);
-    expect(planner?.dir.startsWith(root)).toBe(true);
-    expect(planner?.mode).toBe(0o755);
+    const communicator = installed.find((entry) => entry.manifest.includes("name: communicator"));
+    expect(communicator?.soul).toBe(rolePrompt("communicator", "Plan the work."));
+    expect(communicator?.manifest).toContain("name: communicator");
+    expect(communicator?.manifest).toContain("version: 0.0.3");
+    expect(communicator?.skills).toEqual(["triage"]);
+    expect(communicator?.dir.startsWith(root)).toBe(true);
+    expect(communicator?.mode).toBe(0o755);
     expect(hermes.lines()).toContain(
-      `profile install ${planner?.dir ?? ""} --name planner --force -y`,
+      `profile install ${communicator?.dir ?? ""} --name communicator --force -y`,
     );
     for (const entry of installed) expect(existsSync(entry.dir)).toBe(false);
   });
@@ -121,7 +121,7 @@ describe("FactoryProfiles.sync", () => {
   it("keeps tool names out of every role's chat replies", async () => {
     await profiles.sync(sampleConfig(), 1, mcp);
 
-    for (const role of ["planner", "lead", "improver"]) {
+    for (const role of ["communicator", "lead", "improver"]) {
       expect(hermes.lines()).toEqual(
         expect.arrayContaining([
           `-p ${role} config set --force display.tool_progress off`,
@@ -224,13 +224,13 @@ describe("FactoryProfiles.sync", () => {
 
   it("removes a skill directory that the config no longer lists", async () => {
     await profiles.sync(sampleConfig(), 1, mcp);
-    mkdirSync(join(root, "profiles", "planner", "skills", "triage"), { recursive: true });
+    mkdirSync(join(root, "profiles", "communicator", "skills", "triage"), { recursive: true });
     const config = sampleConfig();
-    config.roles.planner.skills = [];
+    config.roles.communicator.skills = [];
 
     await profiles.sync(config, 2, mcp);
 
-    expect(existsSync(join(root, "profiles", "planner", "skills", "triage"))).toBe(false);
+    expect(existsSync(join(root, "profiles", "communicator", "skills", "triage"))).toBe(false);
   });
 
   it("does not claim a skill whose install failed", async () => {
@@ -243,13 +243,13 @@ describe("FactoryProfiles.sync", () => {
     );
     const broken = new FactoryProfiles({ root, run: failing.run }, db);
     await expect(broken.sync(sampleConfig(), 1, mcp)).rejects.toThrow(/install failed/);
-    mkdirSync(join(root, "profiles", "planner", "skills", "triage"), { recursive: true });
+    mkdirSync(join(root, "profiles", "communicator", "skills", "triage"), { recursive: true });
     const config = sampleConfig();
-    config.roles.planner.skills = [];
+    config.roles.communicator.skills = [];
 
     await profiles.sync(config, 2, mcp);
 
-    expect(existsSync(join(root, "profiles", "planner", "skills", "triage"))).toBe(true);
+    expect(existsSync(join(root, "profiles", "communicator", "skills", "triage"))).toBe(true);
   });
 
   it("refuses to delete a skill through a symlink that leaves the factory root", async () => {
@@ -257,10 +257,10 @@ describe("FactoryProfiles.sync", () => {
     const outside = mkdtempSync(join(tmpdir(), "hephaestus-outside-"));
     try {
       mkdirSync(join(outside, "triage"));
-      rmSync(join(root, "profiles", "planner", "skills"), { recursive: true, force: true });
-      symlinkSync(outside, join(root, "profiles", "planner", "skills"));
+      rmSync(join(root, "profiles", "communicator", "skills"), { recursive: true, force: true });
+      symlinkSync(outside, join(root, "profiles", "communicator", "skills"));
       const config = sampleConfig();
-      config.roles.planner.skills = [];
+      config.roles.communicator.skills = [];
 
       await expect(profiles.sync(config, 2, mcp)).rejects.toThrow(
         /outside the factory root|symlink/,
@@ -290,8 +290,8 @@ describe("FactoryProfiles.sync", () => {
       .map((call) => call.args.join(" "))
       .filter((args) => args.includes("config set model."));
     expect(sets).toEqual([
-      "-p planner config set model.default claude-sonnet-5",
-      "-p planner config set model.provider anthropic",
+      "-p communicator config set model.default claude-sonnet-5",
+      "-p communicator config set model.provider anthropic",
       "-p improver config set model.default claude-sonnet-5",
       "-p improver config set model.provider anthropic",
     ]);

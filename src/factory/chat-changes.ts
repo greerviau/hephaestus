@@ -9,6 +9,7 @@ import {
   type RoleName,
 } from "../config/document.js";
 import type { ConfigStore } from "../config/store.js";
+import { currentRoleName } from "../legacy-planner.js";
 import { unifiedDiff } from "../config/text-diff.js";
 
 /** Publishes an approved version and deploys it. */
@@ -101,8 +102,9 @@ function parseTarget(text: string): Target {
     return NAME.test(rest) ? { kind, name: rest } : refuse("that is not an instruction name");
   }
   if (kind === "persona") {
-    return (ROLE_NAMES as readonly string[]).includes(rest)
-      ? { kind, role: rest as RoleName }
+    const role = currentRoleName(rest);
+    return (ROLE_NAMES as readonly string[]).includes(role)
+      ? { kind, role: role as RoleName }
       : refuse("that is not a role");
   }
   if (kind === "setting") {
