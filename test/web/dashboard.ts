@@ -60,6 +60,8 @@ export interface DashboardOptions {
   hermesModel?: string;
   messaging?: FactoryPages["messaging"];
   model?: FactoryPages["model"];
+  updater?: FactoryPages["updater"];
+  version?: FactoryPages["version"];
 }
 
 /** A dashboard on a factory harness. Sessions live in a database of their own, so tests can break the factory's. */
@@ -100,6 +102,8 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     },
     ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
     ...(options.model === undefined ? {} : { model: options.model }),
+    ...(options.updater === undefined ? {} : { updater: options.updater }),
+    ...(options.version === undefined ? {} : { version: options.version }),
     hermesModel: () => options.hermesModel,
     now: () => NOW,
     t3WaitMs: options.t3WaitMs ?? 1000,
