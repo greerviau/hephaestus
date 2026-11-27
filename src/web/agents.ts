@@ -15,6 +15,13 @@ import {
 } from "../config/agents.js";
 import { MAX_SKILL_FILE_BYTES } from "../config/defaults.js";
 import {
+  SHIPPED_THREAD_TEXT,
+  THREAD_RULES,
+  branchRule,
+  ownInstructions,
+  shippedInstructions,
+} from "../config/shipped.js";
+import {
   ConfigValidationError,
   isSafeRelativePath,
   type FactoryConfig,
@@ -42,6 +49,7 @@ import {
   empty,
   escapeHtml,
   field,
+  fold,
   input,
   menu,
   pageHead,
@@ -64,7 +72,7 @@ const SETS: Record<InstructionSetName, { title: string; does: string }> = {
   },
   threads: {
     title: "Coding threads",
-    does: "Instructions every implement and review thread starts with.",
+    does: "Your standing instructions for every implement and review thread.",
   },
 };
 
@@ -101,12 +109,42 @@ function skillHref(name: string, file: string = SKILL_FILE): string {
 }
 
 /** A tall plain-text editor. The newline after the tag keeps a text's own first newline, which a browser would drop. */
-function editor(id: string, label: string, text: string): string {
+function editor(id: string, label: string, text: string, hint?: string): string {
   return field(
     id,
     label,
     `<textarea id="${id}" class="config" name="text" spellcheck="false">\n${escapeHtml(text)}</textarea>`,
+    hint === undefined ? {} : { hint },
   );
+}
+
+/**
+ * The shipped instructions of a role or of the coding threads, which the page shows but cannot
+ * change, and a note when the owner's text repeats some of them, as a config made by an
+ * earlier install does.
+ */
+function shippedPart(name: InstructionSetName, text: string): string {
+  const threads = name === "threads";
+  const { dropped } = threads ? ownInstructions(text, SHIPPED_THREAD_TEXT) : ownInstructions(text);
+  const who = threads ? "every thread" : "the role";
+  const repeated =
+    dropped === 0
+      ? ""
+      : callout(
+          "info",
+          "Some of your text repeats the shipped instructions",
+          `${dropped === 1 ? "1 passage here repeats" : `${String(dropped)} passages here repeat`} instructions Hephaestus ships, so ${who} gets ${dropped === 1 ? "it" : "them"} only once. You can delete ${dropped === 1 ? "it" : "them"}.`,
+        );
+  const shipped = threads
+    ? `${THREAD_RULES}\n\nAn implement thread's first message also gives it the task, the lead's brief, the branch, how to open the PR, and the result block to end with:\n\n${branchRule("<branch>")}\n\nA review thread's first message gives it the PR, the head commit to review, how to judge a revert, and its result block.`
+    : shippedInstructions(name);
+  const order = threads
+    ? "A summary of what Hephaestus tells every thread in its first message, with the result block again in each message after. Your instructions are the threads' standing instructions on the worker."
+    : "The role gets these first, and your instructions after them.";
+  return `${fold(
+    "Shipped with Hephaestus",
+    `<p class="hint">${order} They come with Hephaestus and change when it is updated, so they cannot be edited here.</p><pre class="block">${escapeHtml(shipped)}</pre>`,
+  )}${repeated}`;
 }
 
 /** The message and deploy choice of a dialog that saves a version. `id` keeps its fields apart from the page's own. */
@@ -337,10 +375,13 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       configPage(
         context.shell,
         `${title} instructions`,
-        `${pageHead({ title: `${title} instructions`, lede: does })}${savedNotice(context.url)}${stale ? conflict(current, typed, "the instructions and skills") : ""}${problems("Not saved", refused?.errors)}<form class="form wide" method="post" action="${AGENTS}/${name}"><input type="hidden" name="parentId" value="${escapeHtml(builtFrom(current, kept))}">${editor(
+        `${pageHead({ title: `${title} instructions`, lede: does })}${savedNotice(context.url)}${stale ? conflict(current, typed, "the instructions and skills") : ""}${problems("Not saved", refused?.errors)}${shippedPart(name, saved.text)}<form class="form wide" method="post" action="${AGENTS}/${name}"><input type="hidden" name="parentId" value="${escapeHtml(builtFrom(current, kept))}">${editor(
           "instructions",
-          "Instructions",
+          "Your instructions",
           kept === undefined ? saved.text : formText(kept, "text"),
+          name === "threads"
+            ? "Written to Factory Claude's CLAUDE.md and Factory Codex's AGENTS.md on each worker. Leave it empty to use the shipped rules alone."
+            : "Added after the shipped instructions. Leave it empty to use them alone.",
         )}<fieldset class="sec"><legend>Skills it loads</legend><div class="checks">${
           choices === ""
             ? `<p class="hint">No skills yet. Add one on <a href="${AGENTS}">Agents</a>.</p>`

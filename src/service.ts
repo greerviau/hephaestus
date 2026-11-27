@@ -15,6 +15,8 @@ export interface ServiceManager {
   start?(): void;
   /** Stops the service and leaves its unit in place. */
   stop?(): void;
+  /** Restarts a running service, or starts a stopped one. */
+  restart?(): void;
 }
 
 export class UnitExistsError extends Error {
@@ -113,6 +115,13 @@ export class SystemdUserService implements ServiceManager {
       throw new Error(`${this.unitPath} is not a unit Hephaestus wrote.`);
     }
     this.systemctl("enable", "--now", this.name);
+  }
+
+  restart(): void {
+    if (!this.unitExists() || !readFileSync(this.unitPath, "utf8").startsWith(UNIT_MARKER)) {
+      throw new Error(`${this.unitPath} is not a unit Hephaestus wrote.`);
+    }
+    this.systemctl("restart", this.name);
   }
 
   /**

@@ -12,7 +12,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { FactoryProfiles } from "../../src/hermes/profiles.js";
+import { rolePrompt } from "../../src/config/shipped.js";
+import { FactoryProfiles, shippedInstructionsChanged } from "../../src/hermes/profiles.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { FakeHermes } from "./fake-hermes.js";
@@ -83,7 +84,8 @@ describe("FactoryProfiles.sync", () => {
     await profiles.sync(sampleConfig(), 3, mcp);
 
     expect(hermes.lines().some((line) => line.startsWith("profile create"))).toBe(false);
-    const planner = installed.find((entry) => entry.soul === "Plan the work.");
+    const planner = installed.find((entry) => entry.manifest.includes("name: planner"));
+    expect(planner?.soul).toBe(rolePrompt("planner", "Plan the work."));
     expect(planner?.manifest).toContain("name: planner");
     expect(planner?.manifest).toContain("version: 0.0.3");
     expect(planner?.skills).toEqual(["triage"]);
@@ -93,6 +95,12 @@ describe("FactoryProfiles.sync", () => {
       `profile install ${planner?.dir ?? ""} --name planner --force -y`,
     );
     for (const entry of installed) expect(existsSync(entry.dir)).toBe(false);
+  });
+
+  it("records the shipped instructions it applied, so a build that ships new ones syncs again", async () => {
+    expect(shippedInstructionsChanged(db)).toBe(true);
+    await profiles.sync(sampleConfig(), 3, mcp);
+    expect(shippedInstructionsChanged(db)).toBe(false);
   });
 
   it("turns off terminal, code execution and cron tools on every platform, and adds the MCP entry", async () => {

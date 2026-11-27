@@ -1,4 +1,8 @@
 #!/usr/bin/env node
+import { spawnSync } from "node:child_process";
+import { checkoutOf, serviceProgram, shellCommand, update } from "./update.js";
+import { VersionCheck, gitIn } from "./version-check.js";
+import { offerStarterSkills } from "./config/starter-skills.js";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -59,7 +63,7 @@ import { FactoryMcp } from "./factory/mcp.js";
 import { Pipeline } from "./factory/pipeline.js";
 import { FactoryBoard } from "./hermes/board.js";
 import { chatCacheDirs } from "./hermes/cache.js";
-import { mcpTokenSecret, syncFactoryHermes } from "./hermes/setup.js";
+import { applyShippedInstructions, mcpTokenSecret, syncFactoryHermes } from "./hermes/setup.js";
 
 const USAGE = `Usage:
   hephaestus install [--port <port>] [--skill <folder>]...
@@ -75,9 +79,29 @@ const USAGE = `Usage:
                                        ~/.hephaestus, then report baseline changes. Stops without
                                        removing anything if a worker cannot be cleaned up, unless
                                        --skip-workers is given.
+  hephaestus update                    Bring the checkout the service runs from up to origin/main: fast-forward,
+                                       npm ci, npm run build, a Hermes sync when needed, and a restart.
+                                       Refuses when the checkout has uncommitted changes or cannot
+                                       fast-forward, and does not restart when the build fails.
   hephaestus serve                     Run the dashboard in the foreground (the service runs this).`;
 
 const CONFIG_REPO_KEY = "config_repo";
+/** The npm that `npm ci` needs for this lockfile, run through an older npm when that is all there is. */
+const NPM_PIN = "npm@11.6.2";
+
+/** How to run npm 11 next to `node`: that npm itself, or an older one running npm 11. */
+function npmFor(node: string): string[] {
+  const local = join(dirname(node), "npm");
+  const npm = existsSync(local) ? local : "npm";
+  const version = spawnSync(npm, ["--version"], { encoding: "utf8", env: pathWith(node) });
+  const major = Number(/^(\d+)\./.exec(version.stdout)?.[1] ?? 0);
+  return major >= 11 ? [npm] : [npm, "exec", "--yes", `--package=${NPM_PIN}`, "--", "npm"];
+}
+
+/** The environment with `node`'s folder first on PATH, so npm's scripts find the same node. */
+function pathWith(node: string): NodeJS.ProcessEnv {
+  return { ...process.env, PATH: `${dirname(node)}:${process.env.PATH ?? ""}` };
+}
 
 /** A signed-in connection to this host's T3, through its outside MCP server. */
 function t3Client(paths: Paths, config: Config): { connection: T3Connection; t3: T3Adapter } {
@@ -454,6 +478,56 @@ async function main(argv: string[]): Promise<number> {
       console.log(`The factory Hermes root at ${paths.hermes} matches the current config version.`);
       return 0;
     }
+    case "update": {
+      parseArgs({ args: rest, options: {} });
+      const config = readConfig(paths.config);
+      const unitPath = installedUnitPath(paths);
+      const program = serviceProgram(readFileSync(unitPath, "utf8"));
+      if (program === undefined)
+        throw new Error(`${unitPath} has no ExecStart that Hephaestus wrote.`);
+      const root = checkoutOf(program.cli);
+      const git = config.gitPath ?? "git";
+      const env = pathWith(program.node);
+      return update({
+        root,
+        git,
+        npm: npmFor(program.node),
+        node: program.node,
+        cli: program.cli,
+        hermes: config.hermesPath !== undefined && existsSync(join(paths.hermes, "profiles")),
+        run: (command, args) => {
+          // git's answers are read; npm's and the sync's output goes to the terminal as it runs.
+          const quiet = command === git;
+          const result = spawnSync(command, quiet ? ["-C", root, ...args] : args, {
+            cwd: root,
+            env,
+            encoding: "utf8",
+            stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
+          });
+          // A command that cannot start fails like one that ran and failed, so update can roll back.
+          if (result.error) return { status: 127, stdout: "", stderr: result.error.message };
+          // With inherited output there is nothing to read back.
+          return {
+            status: result.status ?? 1,
+            stdout: typeof result.stdout === "string" ? result.stdout : "",
+            stderr: typeof result.stderr === "string" ? result.stderr : "",
+          };
+        },
+        restart: async () => {
+          try {
+            new SystemdUserService(unitPath).restart();
+            await waitForDashboard(config, { timeoutMs: 30_000 });
+            return true;
+          } catch (error) {
+            console.log(`The service did not come back: ${String(error)}`);
+            return false;
+          }
+        },
+        log: (line) => {
+          console.log(line);
+        },
+      });
+    }
     case "serve": {
       parseArgs({ args: rest, options: {} });
       const config = readConfig(paths.config);
@@ -468,8 +542,48 @@ async function main(argv: string[]): Promise<number> {
       const follower = new ThreadFollower(t3, events).run(following.signal);
       const workers = workerManager(db, paths, config, store, t3, events);
       const engine = factoryEngine(db, paths, config, store, t3, events, workers);
+      // A build that ships new role instructions brings them to the factory Hermes root at once,
+      // and a failed sync is tried again.
+      const hermesPath = config.hermesPath;
+      const applyShipped = (): void => {
+        if (hermesPath === undefined) return;
+        applyShippedInstructions({
+          db,
+          store,
+          hermesRoot: paths.hermes,
+          sync: () => workers.resyncHermes(),
+        }).catch((error: unknown) => {
+          console.error("Applying the shipped role instructions failed", error);
+        });
+      };
+      // An update that ships new starter skills offers them on Proposals, and a draft that a
+      // deploy left behind is offered again on the deployed version.
+      const offerStarters = (): void => {
+        try {
+          offerStarterSkills({ db, store });
+        } catch (error) {
+          console.error("Offering the starter skills failed", error);
+        }
+      };
+      applyShipped();
+      offerStarters();
+      // The commit this service runs, and whether origin/main has more, for the sidebar.
+      const cliPath = realpathSync(fileURLToPath(import.meta.url));
+      const updateCommand = shellCommand([process.execPath, cliPath, "update"]);
+      const versionCheck = new VersionCheck({
+        exec: gitIn(checkoutOf(cliPath), config.gitPath ?? "git"),
+      });
+      const checkVersion = (): void => {
+        void versionCheck.refresh();
+      };
+      checkVersion();
       const mcpServer = engine.mcp.listen(config.port + 1);
       const engineTicks = [
+        setInterval(() => {
+          applyShipped();
+          offerStarters();
+          checkVersion();
+        }, 5 * 60_000),
         setInterval(() => {
           engine.pipeline.tick().catch((error: unknown) => {
             console.error("Advancing cards failed", error);
@@ -548,6 +662,10 @@ async function main(argv: string[]): Promise<number> {
           });
       }, 30_000);
       const pages: FactoryPages = {
+        version: () => {
+          const state = versionCheck.state();
+          return state === undefined ? undefined : { ...state, command: updateCommand };
+        },
         cards: engine.cards,
         intake: engine.intake,
         pipeline: engine.pipeline,

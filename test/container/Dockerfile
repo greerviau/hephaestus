@@ -17,7 +17,8 @@ COPY templates ./templates
 COPY assets ./assets
 COPY test/container/source-hash.sh test/container/scenario.sh /usr/local/bin/
 RUN source-hash.sh /opt/hephaestus > /opt/hephaestus/SOURCE_SHA256 \
-  && npm run build && npm prune --omit=dev
+  && npm run build && npm prune --omit=dev \
+  && cp -r /root/.npm /home/owner/.npm && chown -R owner:owner /home/owner/.npm
 
 STOPSIGNAL SIGRTMIN+3
 CMD ["/lib/systemd/systemd"]

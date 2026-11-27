@@ -234,10 +234,10 @@ describe("FactoryMcp", () => {
       kind: "implement",
     });
     const c = await client(url, TOKENS.improver);
-    const config = json(await c.callTool({ name: "get_config", arguments: {} })).config as Record<
-      string,
-      unknown
-    >;
+    const got = json(await c.callTool({ name: "get_config", arguments: {} }));
+    // The shipped role instructions come beside the config, read-only, so a proposal cannot copy them in.
+    expect((got.shipped_instructions as Record<string, string>).lead).toContain("start_work");
+    const config = got.config as Record<string, unknown>;
     (config.instructions as Record<string, string>).factory = "# Better\n";
     const refused = await c.callTool({
       name: "propose_version",

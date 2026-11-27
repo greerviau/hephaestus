@@ -16,15 +16,40 @@ afterEach(() => {
 });
 
 describe("defaultConfig", () => {
-  it("ships a valid config with the three role templates and the factory instructions", () => {
+  it("ships a valid config with no owner role instructions and the factory instructions", () => {
     const config = defaultConfig([]);
 
     expect(validateConfig(config)).toBe(config);
-    expect(config.roles.planner.persona).toContain("file_issue");
-    expect(config.roles.lead.persona).toContain("start_work");
-    expect(config.roles.improver.persona).toContain("propose_version");
-    expect(config.instructions.factory).toContain("hephaestus-result");
+    // The roles' own instructions ship with Hephaestus; the config holds only the owner's additions.
+    expect(config.roles.planner.persona).toBe("");
+    expect(config.roles.lead.persona).toBe("");
+    expect(config.roles.improver.persona).toBe("");
+    // The coding threads' own rules ship in the messages that start them.
+    expect(config.instructions.factory).toBe("");
     expect(config.projects).toEqual({});
+  });
+
+  it("ships the factory's starter skills, each loaded by the job that uses it", () => {
+    const config = defaultConfig([]);
+
+    expect(Object.keys(config.skills).sort()).toEqual([
+      "find-root-cause",
+      "resolve-conflicts",
+      "review-pr",
+      "test-first",
+      "write-brief",
+      "write-issue",
+    ]);
+    expect(config.skills["test-first"]?.["SKILL.md"]).toMatch(/^---\nname: test-first\n/);
+    expect(config.factory.threadSkills).toEqual([
+      "test-first",
+      "find-root-cause",
+      "resolve-conflicts",
+      "review-pr",
+    ]);
+    expect(config.roles.planner.skills).toEqual(["write-issue"]);
+    expect(config.roles.lead.skills).toEqual(["write-brief"]);
+    expect(config.roles.improver.skills).toEqual([]);
   });
 
   it("refuses two imported skills with the same name", () => {

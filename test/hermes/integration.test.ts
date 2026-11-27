@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
+import { rolePrompt } from "../../src/config/shipped.js";
 import { FactoryBoard } from "../../src/hermes/board.js";
 import { hermesRunner } from "../../src/hermes/cli.js";
 import { FactoryProfiles } from "../../src/hermes/profiles.js";
@@ -37,9 +38,9 @@ describe.runIf(enabled)("Hermes integration", () => {
     ];
     await profiles.sync(config, 1, mcp);
 
-    for (const role of ["planner", "lead", "improver"]) {
+    for (const role of ["planner", "lead", "improver"] as const) {
       expect(readFileSync(join(factoryRoot, "profiles", role, "SOUL.md"), "utf8")).toBe(
-        config.roles[role as "planner" | "lead" | "improver"].persona,
+        rolePrompt(role, config.roles[role].persona),
       );
       const settings = readFileSync(join(factoryRoot, "profiles", role, "config.yaml"), "utf8");
       expect(settings).toContain("http://127.0.0.1:7701/mcp");
@@ -65,7 +66,7 @@ describe.runIf(enabled)("Hermes integration", () => {
     await profiles.sync(changed, 2, mcp);
 
     expect(readFileSync(join(factoryRoot, "profiles", "lead", "SOUL.md"), "utf8")).toBe(
-      "Lead carefully.",
+      rolePrompt("lead", "Lead carefully."),
     );
     expect(existsSync(join(factoryRoot, "profiles", "planner", "skills", "triage"))).toBe(false);
     expect(await run(["-p", "improver", "cron", "list"])).not.toContain("hephaestus-nightly");

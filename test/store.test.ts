@@ -27,6 +27,8 @@ describe("store migrations", () => {
       DROP TABLE issue_attachments;
       ALTER TABLE cards DROP COLUMN version;
       ALTER TABLE cards DROP COLUMN reverting;
+      ALTER TABLE cards DROP COLUMN limit_until;
+      ALTER TABLE cards DROP COLUMN limit_run;
       INSERT INTO notifications (at, card_id, text, kind)
       VALUES ('2026-11-25T12:00:00Z', 1, 'Card 1 needs you: approve the merge', 'info');
       INSERT INTO cards (id, repo, title, stage, created_at, updated_at)
@@ -35,7 +37,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 8)}`);
+    db.pragma(`user_version = ${String(latest - 9)}`);
     db.close();
 
     db = openStore(path);

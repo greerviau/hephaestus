@@ -10,11 +10,23 @@ node dist/cli.js install --port 7700 --skill ~/skills/review
 
 1. It records hashes of the owner's personal Hermes profiles, Claude and Codex config, and T3 settings in `~/.hephaestus/baseline.json`. `src/baseline.ts` lists the files it covers. It honours `HERMES_HOME`, `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `T3CODE_HOME`, and records the folders it used so uninstall checks the same ones. It follows symlinks, so a linked skill's contents count too. It leaves out the files Hermes rewrites in a skills folder: the usage counts and skill locks in `.usage.json` and its lock file, `.curator_state`, `.curator_ledger.jsonl`, `.curator_backups`, `.hub`, `.bundled_manifest`, and `.locks`. It ignores them in a baseline taken before they were left out too, so a changed Hermes skill lock is not reported. The rule applies directly under every covered folder named `skills`, including Claude and Codex ones.
 2. It creates `~/.hephaestus/` with mode 700 and stores the password as a scrypt hash.
-3. It creates config version 1 from the role and instruction templates in `templates/`, plus each `--skill` folder (a folder with a `SKILL.md`), and approves it.
+3. It creates config version 1 from the starter skills Hephaestus ships and each `--skill` folder (a folder with a `SKILL.md`), and approves it. The roles' and coding threads' own instructions are not copied: they ship with Hephaestus (see [Configuration](configuration.md)), so the owner's instructions start empty.
 4. It installs and starts `hephaestus.service` in `~/.config/systemd/user/` (or under `XDG_CONFIG_HOME`), and records the unit's path. It refuses to replace a unit file that is already there.
 5. It waits until its own dashboard answers on the port. If any step fails, it removes the service and `~/.hephaestus/` again.
 
 The dashboard listens on all interfaces on the chosen port, so other devices on the LAN can reach it. It uses plain HTTP, so the password and session cookie cross the LAN unencrypted. Sessions last 7 days. A client that sends 10 wrong passwords in 15 minutes is locked out for the rest of that window. The dashboard refuses any POST whose `Origin` is not the dashboard itself, so a page served from another port on the same host cannot act with the owner's session.
+
+## Update
+
+```sh
+node dist/cli.js update
+```
+
+`update` acts on the checkout the service runs from, which it reads from the service's unit, wherever the command itself is run from. It fetches `main` from `origin`, fast-forwards the checkout to it, runs `npm ci` and `npm run build`, and restarts the service. When npm is older than 11, it runs npm 11 through it. When a change touched what `hermes sync` installs (`templates/hermes/`, `src/hermes/`, or `src/config/shipped.ts`) and a factory Hermes root is set up, it runs the new build's `hermes sync` before the restart. The service brings new shipped role instructions and starter skills itself when it starts (see [Configuration](configuration.md)).
+
+It refuses, and changes nothing, when the checkout has uncommitted changes to tracked files, is not on `main`, cannot fetch from `origin`, or has commits `origin/main` does not. When `npm ci` or the build fails, it does not restart the service: it resets the checkout to the commit it was on and rebuilds that, so the service keeps its build and a restart or reboot still starts it, and the next `update` tries again. When the new build does not start, it rolls back the same way and restarts the service on the old build. The service never updates itself, because a bad build would stop the dashboard needed to recover.
+
+The sidebar shows the commit the service runs. Once an hour the service fetches `main` from `origin`; when `origin/main` has commits the running one lacks, the sidebar says how many and the command to run. A fetch that fails shows nothing.
 
 ## Uninstall
 

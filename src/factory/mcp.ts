@@ -5,7 +5,8 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import type { Database } from "better-sqlite3";
 import { z } from "zod";
-import type { RoleName } from "../config/document.js";
+import { ROLE_NAMES, type RoleName } from "../config/document.js";
+import { shippedInstructions } from "../config/shipped.js";
 import type { ConfigStore } from "../config/store.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import { finalMessage } from "../workers/scripts.js";
@@ -433,11 +434,21 @@ export class FactoryMcp {
         };
       },
     );
-    register("get_config", "The deployed config version, which a proposal edits.", () => {
-      const deployed = store.list().find((version) => version.state === "deployed");
-      if (deployed === undefined) throw new Error("No config version is deployed.");
-      return { version: deployed.id, config: deployed.document };
-    });
+    register(
+      "get_config",
+      "The deployed config version, which a proposal edits, and each role's shipped instructions, which no proposal can change. A role's persona adds to its shipped instructions.",
+      () => {
+        const deployed = store.list().find((version) => version.state === "deployed");
+        if (deployed === undefined) throw new Error("No config version is deployed.");
+        return {
+          version: deployed.id,
+          config: deployed.document,
+          shipped_instructions: Object.fromEntries(
+            ROLE_NAMES.map((role) => [role, shippedInstructions(role)]),
+          ),
+        };
+      },
+    );
     register(
       "propose_version",
       "Propose a new config version: the whole config, edited, with the factory threads that motivated the change. Nothing changes until the owner approves it.",
