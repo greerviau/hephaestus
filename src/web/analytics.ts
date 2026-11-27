@@ -1,5 +1,6 @@
 import type { Analytics } from "../factory/analytics.js";
 import { columns, legend, line, tableFold, type Series } from "./charts.js";
+import { CHART_TIP_SCRIPT_TAG } from "./chart-tip.js";
 import { STORE_ERROR, read, type FactoryPages } from "./factory.js";
 import { dayLabel, empty, escapeHtml, layout, pageHead, section, segmented } from "./html.js";
 import { sendHtml, type Route } from "./http.js";
@@ -95,6 +96,7 @@ function charts(data: Analytics): string {
             values: data.days.map((day) => day.prs),
             color: "var(--series-1)",
             integer: true,
+            name: "PRs",
             aria: `PRs that reached the merge gate per day, ${String(data.totals.prs)} in all.`,
           }),
         ),
@@ -105,6 +107,7 @@ function charts(data: Analytics): string {
             values: data.days.map((day) => day.escalations),
             color: "var(--series-2)",
             integer: true,
+            name: "Escalations",
             aria: `Escalations per day, ${String(data.totals.escalations)} in all.`,
           }),
         ),
@@ -114,6 +117,8 @@ function charts(data: Analytics): string {
             labels,
             values: data.days.map((day) => day.cycleHours),
             color: "var(--series-3)",
+            name: "Median cycle time",
+            format: hours,
             aria: "Median hours from a task's first thread to done, per day.",
           }),
         ),
@@ -153,7 +158,7 @@ export function analyticsRoutes(factory: FactoryPages): Route[] {
             cycleHours.count === 0;
           body = nothing
             ? empty("Nothing to chart yet. Charts fill in as tasks open PRs, merge, and finish.")
-            : `${totals(data.value)}${charts(data.value)}`;
+            : `${totals(data.value)}${charts(data.value)}${CHART_TIP_SCRIPT_TAG}`;
         }
         sendHtml(
           response,
