@@ -94,15 +94,18 @@ const SETTINGS: { name: SettingName; label: string; help: string }[] = [
 const LIST_SETTINGS = new Set<SettingName>(["escalationPaths", "requiredChecks"]);
 const NUMBER_SETTINGS = new Set<SettingName>(["maxReviewRounds", "openIssueCap"]);
 
-/** The presets in the order the form offers them, each with what it does. */
-const PRESET_CHOICES: readonly (readonly [PresetName, string])[] = [
-  [
-    "standard",
+/** What each preset does, as the form describes it. */
+const PRESET_TEXT: Record<PresetName, string> = {
+  strict: "Every merge waits for you, after checks and a review.",
+  standard:
     "Merges when checks pass and the other provider approved the head. Workflow changes wait for you.",
-  ],
-  ["strict", "Every merge waits for you, after checks and a review."],
-  ["yolo", "Merges on green checks with no review. For throwaway repos."],
-];
+  yolo: "Merges on green checks with no review. For throwaway repos.",
+};
+
+/** The presets in the order the form offers them, each with what it does. */
+const PRESET_CHOICES: readonly (readonly [PresetName, string])[] = PRESET_NAMES.map(
+  (name) => [name, PRESET_TEXT[name]] as const,
+);
 
 const ADD_DIALOG = "add-project";
 
