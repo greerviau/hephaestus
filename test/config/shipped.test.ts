@@ -124,6 +124,24 @@ describe("the planner's shipped instructions", () => {
     );
   });
 
+  it("tell the communicator to answer stats questions from the stats tools, without tables, and to say when data is missing", () => {
+    const text = collapse(shippedInstructions("planner"));
+
+    for (const tool of ["get_factory_stats", "get_usage_stats", "get_host_health"]) {
+      expect(text).toContain(`\`${tool}\``);
+    }
+    expect(text).toMatch(/answer from the stats tools and nothing else/);
+    expect(text).toMatch(/Pass `window` \(such as `24h`, `7d`, or `30d`\) and `repo`/);
+    expect(text).toMatch(/a chat has no tables/);
+    expect(text).toMatch(
+      /When a report says data is not recorded or not available, say that plainly/,
+    );
+    expect(text).toMatch(/Never fill a gap with a number a stats tool did not return/);
+    expect(text).toMatch(/never estimate a cost yourself/);
+    // Filing stays as it was: a stats question is not a request for work.
+    expect(brokenRules(text)).toEqual([]);
+  });
+
   it("reach an install whose persona still holds the old planner text, which is left out of what the planner gets", () => {
     expect(ownInstructions(FIRST_PLANNER).text).toBe("");
     expect(rolePrompt("planner", FIRST_PLANNER)).toBe(`${shippedInstructions("planner")}\n`);

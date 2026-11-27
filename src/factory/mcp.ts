@@ -1,5 +1,6 @@
 import { trackingLine } from "../request-threads.js";
 import { timingSafeEqual } from "node:crypto";
+import { homedir } from "node:os";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -8,6 +9,7 @@ import { z } from "zod";
 import { ROLE_NAMES, type RoleName } from "../config/document.js";
 import { shippedInstructions } from "../config/shipped.js";
 import type { ConfigStore } from "../config/store.js";
+import { formatHostHealth, hostHealth, type HostHealth } from "../host-health.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import { finalMessage } from "../workers/scripts.js";
 import type { Card, CardStore } from "./cards.js";
@@ -22,6 +24,7 @@ import {
 import { ChatChanges, type Deploy } from "./chat-changes.js";
 import type { Intake } from "./intake.js";
 import type { Pipeline } from "./pipeline.js";
+import { factoryStats, formatFactoryStats, formatUsageStats, usageStats } from "./stats.js";
 
 export interface FactoryMcpOptions {
   db: Database;
@@ -37,6 +40,8 @@ export interface FactoryMcpOptions {
   /** Where a role's chat gateway caches the files a requester sends; the only places attachments may come from. */
   attachmentRoots?: (role: RoleName) => readonly string[];
   now?: () => Date;
+  /** Reads the host's health; defaults to the system's. Tests supply their own. */
+  health?: (window: string | undefined) => HostHealth;
 }
 
 type Tool =
@@ -49,7 +54,10 @@ type Tool =
   | "list_threads"
   | "read_thread"
   | "get_config"
-  | ChangeTool;
+  | ChangeTool
+  | "get_factory_stats"
+  | "get_usage_stats"
+  | "get_host_health";
 
 /** Each tool's argument schema, shared by its handler and the check at the request boundary. */
 const TOOL_SHAPES = {
@@ -72,6 +80,20 @@ const TOOL_SHAPES = {
   list_threads: { since: z.string().describe("ISO 8601 time") },
   read_thread: { environment_id: z.string(), thread_id: z.string() },
   get_config: {},
+  get_factory_stats: {
+    window: z.string().optional().describe("a time window such as 24h, 7d, or 30d; default 7d"),
+    repo: z.string().optional().describe("owner/repo to limit the stats to one project"),
+  },
+  get_usage_stats: {
+    window: z.string().optional().describe("a time window such as 24h, 7d, or 30d; default 7d"),
+    repo: z.string().optional().describe("owner/repo to limit the stats to one project"),
+  },
+  get_host_health: {
+    window: z
+      .string()
+      .optional()
+      .describe("how far back to look for recent errors, such as 24h or 7d; default 24h"),
+  },
   propose_version: {
     message: z.string().min(1).describe("the problem and the change"),
     config: z
@@ -91,7 +113,16 @@ const TOOL_SHAPES = {
 
 /** The tools each role may call. Factory threads never call this server. */
 export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
-  planner: ["file_issue", "get_status", "list_cards", "read_thread", ...CHANGE_TOOLS],
+  planner: [
+    "file_issue",
+    "get_status",
+    "list_cards",
+    "read_thread",
+    "get_factory_stats",
+    "get_usage_stats",
+    "get_host_health",
+    ...CHANGE_TOOLS,
+  ],
   lead: ["start_work", "escalate", "file_issue", "get_status", "list_cards", "read_thread"],
   improver: [
     "propose_version",
@@ -451,6 +482,33 @@ export class FactoryMcp {
           final_message: finalMessage(items) ?? null,
           activity,
         };
+      },
+    );
+    // The stats tools only read. Each returns the numbers and a `report` of bullet lines to relay.
+    register(
+      "get_factory_stats",
+      "Read-only factory stats: cards by stage, throughput, cycle time, review rounds, escalations with their reasons, and held issues, for a time window and optionally one project. The report field is ready to relay in a chat.",
+      ({ window, repo }) => {
+        const stats = factoryStats(this.options.db, { window, repo, now: this.now() });
+        return { ...stats, report: formatFactoryStats(stats) };
+      },
+    );
+    register(
+      "get_usage_stats",
+      "Read-only token usage and cost of the engineer and reviewer threads, by role, model, and card, for a time window and optionally one project. Only recorded usage is counted; the report says when nothing was recorded.",
+      ({ window, repo }) => {
+        const stats = usageStats(this.options.db, { window, repo, now: this.now() });
+        return { ...stats, report: formatUsageStats(stats) };
+      },
+    );
+    register(
+      "get_host_health",
+      "Read-only host health: CPU, memory, disk, uptime, the state of Hephaestus's services and workers, and recent errors.",
+      ({ window }) => {
+        const health =
+          this.options.health?.(window) ??
+          hostHealth(this.options.db, { path: homedir(), window, now: this.now() });
+        return { ...health, report: formatHostHealth(health) };
       },
     );
     register(

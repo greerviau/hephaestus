@@ -20,6 +20,13 @@ const FINAL_ITEM_STATUSES = new Set([
   "interrupted",
 ]);
 
+/** What a thread used, when something recorded it. Each field is absent when it was not recorded. */
+export interface ThreadUsage {
+  inputTokens?: number;
+  outputTokens?: number;
+  costUsd?: number;
+}
+
 export interface FactoryThread {
   environmentId: string;
   threadId: string;
@@ -169,6 +176,23 @@ export class ThreadEvents {
       )
       .run(status, this.now().toISOString(), environmentId, threadId, expected);
     return result.changes > 0;
+  }
+
+  /** Keeps the usage given; a field left out keeps what was recorded before. */
+  setUsage(environmentId: string, threadId: string, usage: ThreadUsage): void {
+    this.db
+      .prepare(
+        `UPDATE factory_threads SET input_tokens = COALESCE(?, input_tokens),
+           output_tokens = COALESCE(?, output_tokens), cost_usd = COALESCE(?, cost_usd)
+         WHERE environment_id = ? AND thread_id = ?`,
+      )
+      .run(
+        usage.inputTokens ?? null,
+        usage.outputTokens ?? null,
+        usage.costUsd ?? null,
+        environmentId,
+        threadId,
+      );
   }
 
   upsertItems(environmentId: string, threadId: string, items: ThreadItem[]): void {
