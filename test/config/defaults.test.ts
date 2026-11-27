@@ -16,13 +16,14 @@ afterEach(() => {
 });
 
 describe("defaultConfig", () => {
-  it("ships a valid config with the three role templates and the factory instructions", () => {
+  it("ships a valid config with no owner role instructions and the factory instructions", () => {
     const config = defaultConfig([]);
 
     expect(validateConfig(config)).toBe(config);
-    expect(config.roles.planner.persona).toContain("file_issue");
-    expect(config.roles.lead.persona).toContain("start_work");
-    expect(config.roles.improver.persona).toContain("propose_version");
+    // The roles' own instructions ship with Hephaestus; the config holds only the owner's additions.
+    expect(config.roles.planner.persona).toBe("");
+    expect(config.roles.lead.persona).toBe("");
+    expect(config.roles.improver.persona).toBe("");
     expect(config.instructions.factory).toContain("hephaestus-result");
     expect(config.projects).toEqual({});
   });

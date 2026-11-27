@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecretsFile } from "../../src/config/secrets.js";
 import { ConfigStore } from "../../src/config/store.js";
-import { syncFactoryHermes } from "../../src/hermes/setup.js";
+import { recordShippedInstructions } from "../../src/hermes/profiles.js";
+import { applyShippedInstructions, syncFactoryHermes } from "../../src/hermes/setup.js";
 import { resolvePaths, type Paths } from "../../src/paths.js";
 import type { ServiceManager } from "../../src/service.js";
 import { openStore } from "../../src/store.js";
@@ -96,6 +97,29 @@ describe("syncFactoryHermes", () => {
     );
     expect(service.starts).toBe(1);
     expect(existsSync(paths.gatewayUnit)).toBe(true);
+    db.close();
+  });
+});
+
+describe("applyShippedInstructions", () => {
+  it("syncs a set-up factory Hermes root once a build ships new role instructions", async () => {
+    const db = openStore(":memory:");
+    const hermes = join(home, "factory-hermes");
+    let syncs = 0;
+    const sync = (): Promise<string | undefined> => {
+      syncs += 1;
+      recordShippedInstructions(db);
+      return Promise.resolve(undefined);
+    };
+
+    // No profiles yet: the first deploy sets the root up, so there is nothing to bring up to date.
+    expect(await applyShippedInstructions({ db, hermesRoot: hermes, sync })).toBe(false);
+    for (const role of ["planner", "lead", "improver"]) {
+      mkdirSync(join(hermes, "profiles", role), { recursive: true });
+    }
+    expect(await applyShippedInstructions({ db, hermesRoot: hermes, sync })).toBe(true);
+    expect(await applyShippedInstructions({ db, hermesRoot: hermes, sync })).toBe(false);
+    expect(syncs).toBe(1);
     db.close();
   });
 });

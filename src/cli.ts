@@ -58,7 +58,7 @@ import { Intake } from "./factory/intake.js";
 import { FactoryMcp } from "./factory/mcp.js";
 import { Pipeline } from "./factory/pipeline.js";
 import { FactoryBoard } from "./hermes/board.js";
-import { mcpTokenSecret, syncFactoryHermes } from "./hermes/setup.js";
+import { applyShippedInstructions, mcpTokenSecret, syncFactoryHermes } from "./hermes/setup.js";
 
 const USAGE = `Usage:
   hephaestus install [--port <port>] [--skill <folder>]...
@@ -465,6 +465,16 @@ async function main(argv: string[]): Promise<number> {
       const follower = new ThreadFollower(t3, events).run(following.signal);
       const workers = workerManager(db, paths, config, store, t3, events);
       const engine = factoryEngine(db, paths, config, store, t3, events, workers);
+      // A build that ships new role instructions brings them to the factory Hermes root at once.
+      if (config.hermesPath !== undefined) {
+        applyShippedInstructions({
+          db,
+          hermesRoot: paths.hermes,
+          sync: () => workers.resyncHermes(),
+        }).catch((error: unknown) => {
+          console.error("Applying the shipped role instructions failed", error);
+        });
+      }
       const mcpServer = engine.mcp.listen(config.port + 1);
       const engineTicks = [
         setInterval(() => {

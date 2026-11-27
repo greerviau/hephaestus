@@ -114,7 +114,7 @@ describe("install", () => {
     expect(versions).toHaveLength(1);
     expect(versions[0]).toMatchObject({ id: 1, state: "approved", author: "install" });
     expect(versions[0]?.document.skills.review).toEqual({ "SKILL.md": "# Review\n" });
-    expect(versions[0]?.document.roles.lead.persona).toContain("start_work");
+    expect(versions[0]?.document.roles.lead.persona).toBe("");
   });
 
   it("records the t3 CLI and T3 data directory it was given, for the service", async () => {

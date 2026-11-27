@@ -25,17 +25,18 @@ function template(path: string): string {
   return readFileSync(join(TEMPLATES, path), "utf8");
 }
 
-/** The first config version: the shipped role templates and instructions, plus imported skills. */
+/**
+ * The first config version: the factory thread instructions and imported skills. The roles'
+ * own instructions ship with Hephaestus (see shipped.ts), so their personas start empty for
+ * the owner's additions.
+ */
 export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
-  const role = (name: RoleName): RoleConfig => ({
-    persona: template(`roles/${name}.md`),
-    skills: [],
-  });
+  const role = (): RoleConfig => ({ persona: "", skills: [] });
   const roles: Record<RoleName, RoleConfig> = {
-    planner: role("planner"),
-    lead: role("lead"),
+    planner: role(),
+    lead: role(),
     improver: {
-      ...role("improver"),
+      ...role(),
       cron: [
         {
           name: "nightly",
