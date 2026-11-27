@@ -80,6 +80,37 @@ describe("Pipeline", () => {
     expect(h.tasks.get(id).branch).toBe("factory/task-1");
   });
 
+  it("holds the first thread on a new clone of a project with skills until the worker deploys", async () => {
+    const h = harness((config) => {
+      config.projects["octo/app"] = {
+        policy: { preset: "standard", overrides: {} },
+        skills: ["triage"],
+      };
+    });
+    const id = admitted(h);
+    await h.pipeline.queue(id, "Add the flag to the CLI.");
+
+    expect(h.t3.launches).toEqual([]);
+    expect(h.tasks.get(id).waiting).toMatch(/deploy/);
+    expect(
+      h.db
+        .prepare("SELECT skills_cloned_at AS at FROM worker_projects WHERE environment_id = 'w1'")
+        .get(),
+    ).toEqual({ at: "2026-11-25T12:00:00.000Z" });
+    // The worker manager keeps the worker from new threads until a deploy installs the hook.
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(1);
+  });
+
+  it("launches at once on a new clone of a project without skills", async () => {
+    const h = harness();
+    await h.pipeline.queue(admitted(h), "Add the flag to the CLI.");
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.db.prepare("SELECT skills_cloned_at AS at FROM worker_projects").get()).toEqual({
+      at: null,
+    });
+  });
+
   it("takes a task from Admitted to Done with review on the other provider and no human step", async () => {
     const h = harness();
     const id = admitted(h);

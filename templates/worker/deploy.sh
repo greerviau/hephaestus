@@ -69,6 +69,49 @@ for agent in claude codex; do
   done
 done
 
+# A project's own skills reach only its factory threads. T3 makes each thread's
+# worktree from Hephaestus's clone of the repo, so a post-checkout hook in that
+# clone links the project's skills, from the version current when the worktree
+# is made, into the worktree's .claude/skills and .agents/skills, where Claude
+# and Codex load repo skills, and keeps the links out of git status.
+hook_mark="# hephaestus: project skills"
+for clone in "$root"/projects/*/; do
+  [ -d "$clone.git" ] || continue
+  key=$(basename "$clone" | tr '[:upper:]' '[:lower:]')
+  hook=$clone.git/hooks/post-checkout
+  if [ -e "$hook" ] && ! grep -qF "$hook_mark" "$hook"; then
+    # A hook Hephaestus did not write stays; only a project with skills needs this one.
+    if [ -d "$cfg/versions/$sha/projects/$key/skills" ]; then
+      echo "DEPLOY-FAILED $hook is not Hephaestus's; remove it so the project's skills can be installed"
+      exit 1
+    fi
+    continue
+  fi
+  mkdir -p "$clone.git/hooks"
+  cat >"$hook.tmp" <<HOOK
+#!/bin/sh
+$hook_mark
+# Written by Hephaestus's deploy. Links the project's factory skills into a new worktree.
+case \$1 in *[!0]*) exit 0 ;; esac
+src=\$(readlink -f "$cfg/current")/projects/$key/skills
+[ -d "\$src" ] || exit 0
+exclude=\$(git rev-parse --git-path info/exclude)
+mkdir -p "\$(dirname "\$exclude")"
+for skill in "\$src"/*/; do
+  [ -d "\$skill" ] || continue
+  name=\$(basename "\$skill")
+  for dir in .claude/skills .agents/skills; do
+    if [ -e "\$dir/\$name" ] || [ -L "\$dir/\$name" ]; then continue; fi
+    mkdir -p "\$dir" && ln -s "\${skill%/}" "\$dir/\$name" || continue
+    grep -qxF "/\$dir/\$name" "\$exclude" 2>/dev/null || echo "/\$dir/\$name" >>"\$exclude"
+  done
+done
+exit 0
+HOOK
+  chmod 755 "$hook.tmp"
+  mv -f "$hook.tmp" "$hook"
+done
+
 python3 - "$root" "$HOME" <<'PY'
 import glob, json, os, sys
 root, home = sys.argv[1], sys.argv[2]

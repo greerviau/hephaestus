@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -166,6 +166,47 @@ describe("worker scripts", () => {
     expect(readFileSync(join(home, ".hephaestus/codex/config.toml"), "utf8")).toContain(
       join(home, ".agents/skills/group/deep/SKILL.md"),
     );
+  });
+
+  it("deploy.sh makes each new worktree of a project hold that project's skills and no other's", () => {
+    const git = (dir: string, ...args: string[]): string =>
+      execFileSync("git", ["-C", dir, "-c", "user.name=t", "-c", "user.email=t@t", ...args], {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, HOME: home },
+      }).trim();
+    mkdirSync(join(remote, "projects/octo__app/skills/migrations"), { recursive: true });
+    writeFileSync(join(remote, "projects/octo__app/skills/migrations/SKILL.md"), "# Migrations\n");
+    git(remote, "add", "-A");
+    git(remote, "commit", "-qm", "project skills");
+    git(remote, "tag", "-f", "p-v1");
+    const head = git(remote, "rev-parse", "HEAD");
+    // The factory clones T3 made of two projects; the first keeps GitHub's casing.
+    const clones = { app: "Octo__App", lib: "octo__lib" };
+    for (const name of Object.values(clones)) {
+      const clone = join(home, ".hephaestus/projects", name);
+      mkdirSync(join(clone, ".claude/skills/own"), { recursive: true });
+      writeFileSync(join(clone, ".claude/skills/own/SKILL.md"), "# Own\n");
+      git(clone, "init", "-q", "-b", "main");
+      git(clone, "add", "-A");
+      git(clone, "commit", "-qm", "init");
+    }
+
+    run(scriptOf(deployMessage(1, head, remote, "p-v1")), "1", head, remote, "p-v1");
+    const worktree = (name: string): string => {
+      const path = join(home, ".t3/worktrees", name, "task-1");
+      git(join(home, ".hephaestus/projects", name), "worktree", "add", "-q", "-b", "task-1", path);
+      return path;
+    };
+    const app = worktree(clones.app);
+    const lib = worktree(clones.lib);
+
+    for (const dir of [".claude/skills", ".agents/skills"]) {
+      expect(readFileSync(join(app, dir, "migrations/SKILL.md"), "utf8")).toBe("# Migrations\n");
+      expect(existsSync(join(lib, dir, "migrations"))).toBe(false);
+    }
+    expect(readFileSync(join(app, ".claude/skills/own/SKILL.md"), "utf8")).toBe("# Own\n");
+    // The links stay out of what the thread commits.
+    expect(git(app, "status", "--porcelain")).toBe("");
   });
 
   it("cleanup.sh fails and keeps ~/.hephaestus when the factory Codex logout fails", () => {

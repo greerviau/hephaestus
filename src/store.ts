@@ -391,6 +391,9 @@ const MIGRATIONS: Migration[] = [
      AND (reason LIKE 'It was put on hold on the Hermes board%'
           OR (SELECT kind FROM task_events WHERE task_id = tasks.id
               AND kind IN ('escalated:owner', 'stage:Escalated') ORDER BY id DESC LIMIT 1) = 'escalated:owner');`,
+  // When a worker cloned a project that loads skills of its own. Only a deploy started after it
+  // puts the clone's hook in place, which links the skills into each new worktree.
+  `ALTER TABLE worker_projects ADD COLUMN skills_cloned_at TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

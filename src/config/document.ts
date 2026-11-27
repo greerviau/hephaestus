@@ -25,6 +25,11 @@ export interface CronJob {
 
 export interface ProjectConfig {
   policy: Policy;
+  /**
+   * Names of skills in `FactoryConfig.skills` that factory threads for this project load, besides
+   * `FactorySettings.threadSkills`. Absent means none.
+   */
+  skills?: string[];
 }
 
 export interface ModelChoice {
@@ -98,6 +103,14 @@ export function projectKey(
   if (projects === undefined) return undefined;
   if (projects[repo] !== undefined) return repo;
   return Object.keys(projects).find((name) => name.toLowerCase() === repo.toLowerCase());
+}
+
+/**
+ * The folder a worker keeps a project's factory clone and skills under: the repo as
+ * `owner__repo`, in lower case, since GitHub repo names are not case-sensitive.
+ */
+export function projectFolder(repo: string): string {
+  return repo.toLowerCase().replace("/", "__");
 }
 
 export class ConfigValidationError extends Error {
@@ -260,7 +273,14 @@ export function validateConfig(value: unknown): FactoryConfig {
   const projects = object("projects", root.projects) ?? {};
   for (const [repo, project] of Object.entries(projects)) {
     if (!REPO.test(repo)) problems.push(`projects.${repo} must be named owner/repo`);
-    const policy = object(`projects.${repo}.policy`, object(`projects.${repo}`, project)?.policy);
+    const entry = object(`projects.${repo}`, project);
+    if (
+      entry?.skills !== undefined &&
+      (!Array.isArray(entry.skills) || entry.skills.some((skill) => typeof skill !== "string"))
+    ) {
+      problems.push(`projects.${repo}.skills must be a list of skill names`);
+    }
+    const policy = object(`projects.${repo}.policy`, entry?.policy);
     if (policy === undefined) continue;
     if (!PRESET_NAMES.includes(policy.preset as never)) {
       problems.push(`projects.${repo}.policy.preset must be one of ${PRESET_NAMES.join(", ")}`);
@@ -346,6 +366,14 @@ export function validateConfig(value: unknown): FactoryConfig {
   for (const skill of Array.isArray(threadSkills) ? (threadSkills as unknown[]) : []) {
     if (typeof skill === "string" && !Object.hasOwn(skills, skill)) {
       problems.push(`factory.threadSkills names unknown skill ${skill}`);
+    }
+  }
+  for (const [repo, project] of Object.entries(projects)) {
+    const loaded = isRecord(project) ? project.skills : undefined;
+    for (const skill of Array.isArray(loaded) ? (loaded as unknown[]) : []) {
+      if (typeof skill === "string" && !Object.hasOwn(skills, skill)) {
+        problems.push(`projects.${repo}.skills names unknown skill ${skill}`);
+      }
     }
   }
   for (const name of ROLE_NAMES) {

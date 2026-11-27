@@ -1,3 +1,4 @@
+import { skillDescription } from "../config/agents.js";
 import { ConfigValidationError, type FactoryConfig } from "../config/document.js";
 import {
   POLICY_SETTING_NAMES,
@@ -120,6 +121,11 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
     title: "Policy saved",
     text: "The new version is deploying; it applies to the next merge decision.",
   },
+  skills: {
+    kind: "info",
+    title: "Skills saved",
+    text: "The new version is deploying; the project's next factory threads load them.",
+  },
   removed: {
     kind: "info",
     title: "Project removed",
@@ -137,6 +143,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       handle: (context) => editPage(context),
     },
     { method: "POST", path: /^\/projects\/save$/, handle: (context) => save(context) },
+    { method: "POST", path: /^\/projects\/skills$/, handle: (context) => saveSkills(context) },
     { method: "POST", path: /^\/projects\/remove$/, handle: (context) => remove(context) },
   ];
 
@@ -267,6 +274,15 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
 ${policyControls(problem?.policy ?? project.policy)}${saveBar(
       `<button type="submit" class="primary">Save policy</button>${deployChoice(problem?.deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
     )}</form>${section({
+      title: "Skills",
+      body: skillControls(
+        version.value?.document,
+        repo,
+        parentId,
+        problem?.skills ?? project.skills ?? [],
+        problem?.deploy,
+      ),
+    })}${section({
       title: "Remove project",
       body: `<div class="row"><div class="main"><span class="subline">The factory stops reading the repo's issues and starts no new work on it. The repo itself is not changed.</span></div><div class="aside">${dialogButton(removeId, "Remove project", { variant: "danger" })}</div></div>`,
     })}${removeDialog(removeId, repo, parentId, active.ok ? active.value : undefined)}`;
@@ -338,7 +354,7 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
     if (mode === "edit" && document.projects[repo] === undefined) {
       return back([`${repo} is not a factory project any more.`]);
     }
-    document.projects[repo] = { policy: parsed.policy };
+    document.projects[repo] = { ...document.projects[repo], policy: parsed.policy };
     await publish(
       context,
       form,
@@ -348,6 +364,43 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
       mode === "add" ? "added" : "saved",
       back,
     );
+  }
+
+  async function saveSkills(context: RouteContext): Promise<void> {
+    const form = await fields(context);
+    if (form === undefined) return;
+    const repo = form.get("repo") ?? "";
+    const skills = [...new Set(form.getAll("skills"))];
+    const base = current();
+    const back = (errors: string[], shown: string[] = skills): Promise<void> =>
+      editPage(context, {
+        repo,
+        policy: current()?.document.projects[repo]?.policy ?? { preset: "standard", overrides: {} },
+        skills: shown,
+        errors,
+        deploy: form.get("deploy") === "on",
+      });
+    if (base?.document.projects[repo] === undefined) {
+      redirect(context.response, "/projects");
+      return;
+    }
+    if (String(base.id) !== (form.get("parentId") ?? "")) {
+      // The ticks come back as they are in force, so a second submit cannot undo a change made meanwhile.
+      await back(
+        [
+          "The config changed since the page was loaded. The form now shows the skills in force; make your change again.",
+        ],
+        base.document.projects[repo].skills ?? [],
+      );
+      return;
+    }
+    const document = structuredClone(base.document);
+    const project = document.projects[repo];
+    if (project === undefined) return;
+    // No skills leaves the project as a config without project skills has it.
+    if (skills.length === 0) delete project.skills;
+    else project.skills = skills;
+    await publish(context, form, document, base.id, `Change the skills of ${repo}`, "skills", back);
   }
 
   async function remove(context: RouteContext): Promise<void> {
@@ -480,6 +533,8 @@ function mergeInFlight(task: Task): boolean {
 interface Problem {
   repo: string;
   policy: Policy;
+  /** The skills the project's skills form held, when that form was refused. */
+  skills?: string[];
   errors: string[];
   /** Whether the owner asked to approve and deploy, so an error page keeps that choice. */
   deploy?: boolean;
@@ -548,6 +603,40 @@ function removeDialog(
     submit: "Remove and deploy",
     danger: true,
   });
+}
+
+/**
+ * The form that picks the skills a project's factory threads load. A skill every factory thread
+ * loads is named rather than offered, unless the project loads it too, so saving keeps it.
+ */
+function skillControls(
+  config: FactoryConfig | undefined,
+  repo: string,
+  parentId: number | undefined,
+  loaded: readonly string[],
+  deploy: boolean | undefined,
+): string {
+  const every = config?.factory.threadSkills ?? [];
+  const names = Object.keys(config?.skills ?? {})
+    .filter((name) => !every.includes(name) || loaded.includes(name))
+    .sort((a, b) => a.localeCompare(b));
+  const choices = names
+    .map((name) => {
+      const description = skillDescription(config?.skills[name] ?? {});
+      return `<label class="check"><input type="checkbox" name="skills" value="${escapeHtml(name)}"${loaded.includes(name) ? " checked" : ""}><span><strong>${escapeHtml(name)}</strong>${description === undefined ? "" : ` <span class="muted">${escapeHtml(description)}</span>`}</span></label>`;
+    })
+    .join("");
+  const shared =
+    every.length === 0
+      ? ""
+      : ` Every factory thread loads ${escapeHtml(every.join(", "))} already.`;
+  const intro = `<p class="hint">Factory threads for ${escapeHtml(repo)} load the skills ticked here, and threads for other projects do not.${shared} A worker gives a thread the skills of the version deployed when the thread starts.</p>`;
+  if (names.length === 0) {
+    return `${intro}<p class="hint">No other skills yet. Add one on <a href="/config/agents">Agents</a>.</p>`;
+  }
+  return `<form method="post" action="/projects/skills"><input type="hidden" name="parentId" value="${escapeHtml(String(parentId ?? ""))}"><input type="hidden" name="repo" value="${escapeHtml(repo)}">${intro}<fieldset><legend>Skills</legend>${choices}</fieldset>${saveBar(
+    `<button type="submit" class="primary">Save skills</button>${deployChoice(deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
+  )}</form>`;
 }
 
 /** The settings that let a PR merge without the owner, in a few words. */

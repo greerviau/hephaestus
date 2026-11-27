@@ -79,6 +79,34 @@ describe("factory settings", () => {
   });
 });
 
+describe("project skills", () => {
+  it("loads a config whose projects name no skills, and accepts skills that exist", () => {
+    const config = sampleConfig();
+    expect(problems(config)).toEqual([]);
+    config.projects["octo/app"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: ["triage"],
+    };
+    expect(problems(config)).toEqual([]);
+  });
+
+  it("refuses a project skill that is not in skills, and a list that is not names", () => {
+    const config = sampleConfig();
+    config.projects["octo/app"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: ["triage", "missing"],
+    };
+    config.projects["octo/lib"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: "triage" as never,
+    };
+    expect(problems(config)).toEqual([
+      "projects.octo/lib.skills must be a list of skill names",
+      "projects.octo/app.skills names unknown skill missing",
+    ]);
+  });
+});
+
 describe("cron jobs", () => {
   it("accepts a job turned off, and refuses an on switch that is not true or false", () => {
     const config = sampleConfig();

@@ -513,6 +513,25 @@ describe("WorkerManager", () => {
     expect(viewOf("env-1").blocker).toMatch(/periodic redeploy/);
   });
 
+  it("deploys again when a project with skills was cloned since the last deploy", async () => {
+    await makeReady();
+    expect(viewOf("env-1").ready).toBe(true);
+    clock += 60_000;
+    db.prepare(
+      "INSERT INTO worker_projects (environment_id, repo, project_id, skills_cloned_at) VALUES ('env-1', 'octo/app', 'p', ?)",
+    ).run(new Date(clock).toISOString());
+    expect(viewOf("env-1").ready).toBe(false);
+    expect(viewOf("env-1").blocker).toMatch(/cloned .* since its last deploy/);
+
+    clock += 60_000;
+    await manager.tick();
+    const deploy = t3.launches.length;
+    expect(t3.launches[deploy - 1]?.title).toBe("Hephaestus: deploy config");
+    finishThread(`t${String(deploy)}`, deployed(1, SHA));
+    await manager.tick();
+    expect(viewOf("env-1").blocker ?? "").not.toMatch(/cloned/);
+  });
+
   it("times out a task whose thread never ends", async () => {
     const task = await manager.startCodexSignIn("env-1");
     clock += 31 * 60_000;

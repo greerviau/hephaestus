@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { parsePolicy } from "../../src/web/projects.js";
+import { sampleConfig } from "../config/fixtures.js";
 import { startDashboard, type Dashboard } from "./dashboard.js";
 
 let dashboard: Dashboard | undefined;
@@ -206,6 +207,85 @@ describe("Projects", () => {
     expect(removed.headers.get("location")).toBe("/projects?notice=removed");
     expect(dashboard.store.current()?.document.projects).toEqual({});
     expect((await dashboard.get("/projects")).html).toContain("No project yet.");
+  });
+
+  it("shows and edits the skills a project's threads load, and a policy save keeps them", async () => {
+    const live = await startDashboard({ github, deploy: markDeployed });
+    dashboard = live;
+    const latest = (): number => live.store.current()?.id ?? 0;
+    const config = structuredClone(live.store.current()?.document ?? sampleConfig());
+    config.skills.migrations = {
+      "SKILL.md": "---\nname: migrations\ndescription: Write a schema migration.\n---\n",
+    };
+    config.factory.threadSkills = ["triage"];
+    const start = dashboard.store.createVersion({
+      document: config,
+      author: "owner",
+      message: "Two skills",
+      parentId: latest(),
+    });
+    dashboard.store.approve(start.id);
+    dashboard.store.markDeployed(start.id);
+    const box = (name: string, checked: boolean): string =>
+      `<input type="checkbox" name="skills" value="${name}"${checked ? " checked" : ""}>`;
+
+    const page = (await dashboard.get("/projects/octo/app")).html;
+    expect(page).toContain(box("migrations", false));
+    expect(page).toContain("Write a schema migration.");
+    expect(page).toContain(">Save skills</button>");
+    // A skill every thread loads already is shown as such, not offered again.
+    expect(page).toContain("Every factory thread loads triage already.");
+    expect(page).not.toContain('value="triage"');
+
+    const post = (fields: [string, string][]): Promise<Response> =>
+      fetch(`${live.base}/projects/skills`, {
+        method: "POST",
+        headers: { cookie: live.cookie, "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(fields).toString(),
+        redirect: "manual",
+      });
+    const saved = await post([
+      ["repo", "octo/app"],
+      ["parentId", String(start.id)],
+      ["skills", "migrations"],
+      ["deploy", "on"],
+    ]);
+    expect(saved.headers.get("location")).toBe("/projects?notice=skills");
+    expect(dashboard.store.current()?.message).toBe("Change the skills of octo/app");
+    expect(dashboard.store.current()?.document.projects["octo/app"]?.skills).toEqual([
+      "migrations",
+    ]);
+    expect((await dashboard.get("/projects/octo/app")).html).toContain(box("migrations", true));
+
+    await dashboard.post("/projects/save", {
+      mode: "edit",
+      repo: "octo/app",
+      parentId: String(latest()),
+      preset: "strict",
+      deploy: "on",
+    });
+    expect(dashboard.store.current()?.document.projects["octo/app"]).toEqual({
+      policy: { preset: "strict", overrides: {} },
+      skills: ["migrations"],
+    });
+
+    const unknown = await post([
+      ["repo", "octo/app"],
+      ["parentId", String(latest())],
+      ["skills", "ghost"],
+      ["deploy", "on"],
+    ]);
+    expect(unknown.status).toBe(400);
+    expect(await unknown.text()).toContain("projects.octo/app.skills names unknown skill ghost");
+
+    await post([
+      ["repo", "octo/app"],
+      ["parentId", String(latest())],
+      ["deploy", "on"],
+    ]);
+    expect(dashboard.store.current()?.document.projects["octo/app"]).toEqual({
+      policy: { preset: "strict", overrides: {} },
+    });
   });
 
   it("shows in the sidebar when the approved version could not be deployed", async () => {
