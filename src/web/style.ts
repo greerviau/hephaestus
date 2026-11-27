@@ -190,6 +190,9 @@ label.choice .hint { grid-column: 2; }
 .savebar { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: center; padding-top: 16px; }
 .form.wide { max-width: none; }
 input.w-220, textarea.w-220 { width: 220px; }
+.schedule { display: grid; gap: 8px; justify-items: start; }
+.schedule details.fold { margin-top: 0; }
+.schedule .fold-body { display: grid; gap: 4px; max-width: 280px; }
 .row.job .aside input.w-144 { width: 144px; }
 .note { font-size: 13px; color: var(--ink-2); padding: 8px; margin: 12px 0 0; }
 .repo-row { margin-bottom: 24px; }
