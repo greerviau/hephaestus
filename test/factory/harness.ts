@@ -224,7 +224,7 @@ export interface Harness {
   /** Ends a thread with a final assistant message. */
   finish(threadId: string, text: string, status?: string): void;
   /** Ends a thread on the provider's usage limit, as T3 reports it: failed, with an error item. */
-  limit(threadId: string, text?: string): void;
+  limit(threadId: string, text?: string, runId?: string): void;
 }
 
 export function harness(configure: (config: FactoryConfig) => void = () => undefined): Harness {
@@ -301,7 +301,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
       ]);
       events.setStatus(environmentId, threadId, status);
     },
-    limit: (threadId, text = "You've hit your usage limit. Try again at 4:27 PM.") => {
+    limit: (threadId, text = "You've hit your usage limit. Try again at 4:27 PM.", runId) => {
       item += 1;
       events.upsertItems("w1", threadId, [
         {
@@ -310,6 +310,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
           type: "error",
           status: "failed",
           text,
+          ...(runId === undefined ? {} : { runId }),
         },
       ]);
       events.setStatus("w1", threadId, "failed");

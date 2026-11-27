@@ -286,6 +286,10 @@ const MIGRATIONS: Migration[] = [
   `ALTER TABLE factory_threads ADD COLUMN input_tokens INTEGER;
    ALTER TABLE factory_threads ADD COLUMN output_tokens INTEGER;
    ALTER TABLE factory_threads ADD COLUMN cost_usd REAL;`,
+  // The run that wrote each item, so a thread's result is read from its latest run alone.
+  `ALTER TABLE thread_items ADD COLUMN run_id TEXT;`,
+  // The run T3 last reported for each factory thread, so a run that wrote no item is still told apart.
+  `ALTER TABLE factory_threads ADD COLUMN latest_run_id TEXT;`,
   // "Card" became "Task" everywhere. The rows stay; names change, and so do the words in stored text.
   (db) => {
     db.exec(`ALTER TABLE cards RENAME TO tasks;

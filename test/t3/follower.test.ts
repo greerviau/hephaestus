@@ -59,7 +59,11 @@ function scriptRun(): void {
     const after = Number(args.afterPosition);
     const items = (steps[step] ?? []).filter((item) => item.position > after);
     return {
-      thread: { threadId: "t1", status: step === steps.length - 1 ? "completed" : "running" },
+      thread: {
+        threadId: "t1",
+        status: step === steps.length - 1 ? "completed" : "running",
+        latestRunId: "r1",
+      },
       items,
       nextPosition: items.at(-1)?.position ?? after,
       hasMore: false,
@@ -88,7 +92,7 @@ describe("ThreadFollower", () => {
       rounds += 1;
     }
 
-    expect(events.thread("w1", "t1")?.status).toBe("completed");
+    expect(events.thread("w1", "t1")).toMatchObject({ status: "completed", latestRunId: "r1" });
     expect(events.items("w1", "t1").map((item) => [item.itemId, item.status])).toEqual([
       ["a", "completed"],
       ["b", "completed"],
