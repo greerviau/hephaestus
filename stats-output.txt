@@ -1,0 +1,21 @@
+Factory stats for all projects, last 7d:
+- Cards by stage: Done 1, Escalated 1.
+- Completed: 1 card reached Done (0.14 per day).
+- Cycle time (first thread to Done, 1 card): median 4 h, 90th percentile 4 h.
+- Review rounds per completed card: average 2, most 2.
+- Escalations: 1 (1 to the owner).
+  - Card 2 (octo/lib): the change touches a protected path
+- Held issues: none.
+
+Token usage and cost for all projects, last 7d:
+- No engineer or reviewer threads started in this window.
+
+Host health:
+- CPU: 8 cores, load average 3.31 (1 min), 5.04 (5 min), 5.05 (15 min).
+- Memory: 12.2% used, 13.3 GiB free of 15.1 GiB.
+- Disk: 57.5% used, 52.2 GiB free of 122.7 GiB.
+- Host uptime: 2 d 16 h.
+- Hephaestus service: unknown (systemd could not be asked), process up 0 min.
+- Hermes gateway service: unknown (systemd could not be asked).
+- Workers: none set up.
+- Recent errors: none recorded in the last 24h.
