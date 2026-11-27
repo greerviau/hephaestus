@@ -44,7 +44,7 @@ export interface SyncOptions {
 export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
   const { paths, run } = options;
   mkdirSync(paths.hermes, { recursive: true, mode: 0o700 });
-  await migratePlannerFiles({
+  const moved = await migratePlannerFiles({
     hermesRoot: paths.hermes,
     secrets: options.secrets,
     gateway: options.service,
@@ -80,6 +80,11 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
     options.service.start();
   } else {
     options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
+  }
+  if (!moved) {
+    throw new Error(
+      "The planner's Hermes profile is not fully moved to the communicator; the log says what is left.",
+    );
   }
 }
 

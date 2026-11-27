@@ -155,6 +155,41 @@ describe("syncFactoryHermes on an install that called the chat agent the planner
   });
 });
 
+describe("syncFactoryHermes when the planner profile move is not finished", () => {
+  it("syncs the rest and then fails, so the caller knows the threads still need a rekey", async () => {
+    const db = openStore(join(paths.root, "state.db"));
+    const store = new ConfigStore(db);
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    mkdirSync(join(paths.hermes, "profiles", "planner"), { recursive: true });
+    const hermes = new FakeHermes();
+    hermes.answer(
+      (args) => args[1] === "migrate-identity",
+      () => {
+        throw new Error("invalid choice: 'migrate-identity'");
+      },
+    );
+    const gateway = new FakeService(true);
+
+    await expect(
+      syncFactoryHermes({
+        paths,
+        store,
+        db,
+        secrets: new SecretsFile(paths.secrets),
+        hermesPath: "/usr/local/bin/hermes",
+        run: hermes.run,
+        service: gateway,
+        mcpUrl: "http://127.0.0.1:7701/mcp",
+        gatewayUnitPath: paths.gatewayUnit,
+      }),
+    ).rejects.toThrow("not fully moved");
+    expect(existsSync(join(paths.hermes, "profiles", "lead"))).toBe(true);
+    expect(gateway.stopped()).toBe(false);
+    db.close();
+  });
+});
+
 describe("applyShippedInstructions", () => {
   it("syncs a set-up factory Hermes root once a build ships new role instructions", async () => {
     const db = openStore(":memory:");

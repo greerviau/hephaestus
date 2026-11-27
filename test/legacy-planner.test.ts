@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 import { SecretsFile } from "../src/config/secrets.js";
 import { ConfigStore } from "../src/config/store.js";
@@ -60,8 +60,13 @@ class FakeGateway {
   stopped(): boolean {
     return this.state === "inactive";
   }
+  /** Whether the note of what is left existed each time the gateway was stopped. */
+  readonly noteAtStop: boolean[] = [];
+  onStop: () => void = () => undefined;
   stop(): void {
     if (this.stopFailure !== "") throw new Error(this.stopFailure);
+    this.noteAtStop.push(existsSync(join(dirname(this.root), "hermes-profile-move.json")));
+    this.onStop();
     const planner = existsSync(join(this.root, "profiles", "planner")) ? "present" : "gone";
     this.events.push(`stop with planner ${planner}`);
     this.state = "inactive";
@@ -163,7 +168,7 @@ describe("moving the Hermes profile and its token", () => {
 });
 
 describe("moving the profile while the factory gateway serves it", () => {
-  it("stops the gateway for the move, starts it again, then rekeys the sessions", async () => {
+  it("stops the gateway for the move, rekeys the sessions, then starts the gateway", async () => {
     const root = upgradedRoot();
     const gateway = new FakeGateway("active", root);
 
@@ -174,7 +179,10 @@ describe("moving the profile while the factory gateway serves it", () => {
       run: recordingHermes(gateway).run,
     });
 
-    expect(gateway.events).toEqual(["stop with planner present", "start", REKEY]);
+    expect(gateway.events).toEqual(["stop with planner present", REKEY, "start"]);
+    // Noted before the gateway stops, so a crash from there on is finished by the next run.
+    expect(gateway.noteAtStop).toEqual([true]);
+    expect(existsSync(PENDING())).toBe(false);
     expect(existsSync(join(root, "profiles", "planner"))).toBe(false);
     expect(existsSync(join(root, "profiles", "communicator", ".env"))).toBe(true);
   });
@@ -211,7 +219,7 @@ describe("moving the profile while the factory gateway serves it", () => {
   it("says how to finish when rekeying fails, and rekeys again on the next run", async () => {
     const root = upgradedRoot();
     const gateway = new FakeGateway("active", root);
-    const migrate = (failure = ""): Promise<void> =>
+    const migrate = (failure = ""): Promise<boolean> =>
       migratePlannerFiles({
         hermesRoot: root,
         secrets: secrets(),
@@ -219,8 +227,8 @@ describe("moving the profile while the factory gateway serves it", () => {
         run: recordingHermes(gateway, failure).run,
       });
 
-    await migrate("database is locked");
-    expect(gateway.events).toEqual(["stop with planner present", "start", REKEY]);
+    expect(await migrate("database is locked")).toBe(false);
+    expect(gateway.events).toEqual(["stop with planner present", REKEY, "start"]);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining(REKEY));
 
     gateway.events.length = 0;
@@ -234,7 +242,7 @@ describe("moving the profile while the factory gateway serves it", () => {
     const root = upgradedRoot();
     const gateway = new FakeGateway("active", root);
     gateway.failStart = true;
-    const migrate = (): Promise<void> =>
+    const migrate = (): Promise<boolean> =>
       migratePlannerFiles({
         hermesRoot: root,
         secrets: secrets(),
@@ -243,7 +251,7 @@ describe("moving the profile while the factory gateway serves it", () => {
       });
 
     await migrate();
-    expect(gateway.events).toEqual(["stop with planner present", "start", REKEY]);
+    expect(gateway.events).toEqual(["stop with planner present", REKEY, "start"]);
     expect(gateway.stopped()).toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining("enable --now exited with 1"));
 
@@ -268,7 +276,7 @@ describe("moving the profile while the factory gateway serves it", () => {
       run: recordingHermes(gateway).run,
     });
 
-    expect(gateway.events).toEqual(["start", REKEY]);
+    expect(gateway.events).toEqual([REKEY, "start"]);
     expect(existsSync(PENDING())).toBe(false);
   });
 
@@ -335,12 +343,73 @@ describe("moving the profile while the factory gateway serves it", () => {
     });
     await new Promise((resolve) => setTimeout(resolve, 300));
     // The second caller waits while the first still rekeys.
-    expect(gateway.events).toEqual(["stop with planner present", "start", `${REKEY} held`]);
+    expect(gateway.events).toEqual(["stop with planner present", `${REKEY} held`]);
 
     finish?.();
     await Promise.all([first, second]);
-    expect(gateway.events).toEqual(["stop with planner present", "start", `${REKEY} held`, REKEY]);
+    expect(gateway.events).toEqual(["stop with planner present", `${REKEY} held`, "start", REKEY]);
     expect(existsSync(PENDING())).toBe(false);
+  });
+
+  it("keeps the note and starts the gateway later when both the move and the restart fail", async () => {
+    const root = upgradedRoot();
+    const gateway = new FakeGateway("active", root);
+    const blocker = join(root, "profiles", "communicator", "in-the-way");
+    gateway.onStop = () => {
+      mkdirSync(blocker, { recursive: true });
+    };
+    gateway.failStart = true;
+    const migrate = (): Promise<boolean> =>
+      migratePlannerFiles({
+        hermesRoot: root,
+        secrets: secrets(),
+        gateway,
+        run: recordingHermes(gateway).run,
+      });
+
+    await expect(migrate()).rejects.toThrow();
+    expect(gateway.stopped()).toBe(true);
+    expect(existsSync(PENDING())).toBe(true);
+
+    rmSync(join(root, "profiles", "communicator"), { recursive: true });
+    gateway.onStop = () => undefined;
+    gateway.failStart = false;
+    gateway.events.length = 0;
+    expect(await migrate()).toBe(true);
+    expect(gateway.events).toEqual([REKEY, "start"]);
+    expect(existsSync(join(root, "profiles", "communicator", ".env"))).toBe(true);
+  });
+
+  it("gives up on a rekey that does not answer, starts the gateway, and keeps the rekey", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const root = upgradedRoot();
+      const gateway = new FakeGateway("active", root);
+      const hung: HermesRun = () => {
+        gateway.events.push(`${REKEY} hung`);
+        return new Promise(() => undefined);
+      };
+
+      const moving = migratePlannerFiles({
+        hermesRoot: root,
+        secrets: secrets(),
+        gateway,
+        run: hung,
+      });
+      await vi.waitFor(() => {
+        expect(gateway.events).toContain(`${REKEY} hung`);
+      });
+      await vi.advanceTimersByTimeAsync(15_000);
+
+      expect(await moving).toBe(false);
+      expect(gateway.events).toEqual(["stop with planner present", `${REKEY} hung`, "start"]);
+      expect(JSON.parse(readFileSync(PENDING(), "utf8"))).toEqual({
+        startGateway: false,
+        rekey: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("touches neither the gateway nor Hermes when there is nothing to move", async () => {

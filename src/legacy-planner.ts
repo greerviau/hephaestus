@@ -6,13 +6,14 @@
  * the accepted old names one release after this ships; keep the one-time renames for installs
  * that skip releases.
  */
+import { createHash } from "node:crypto";
 import { lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
+import { dirname, join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-import { dirname, join } from "node:path";
 import type { Database } from "better-sqlite3";
 import type { SecretsFile } from "./config/secrets.js";
 import type { HermesRun } from "./hermes/cli.js";
-import { tryLock } from "./update.js";
 
 export const LEGACY_ROLE = "planner";
 export const CHAT_ROLE_NAME = "communicator";
@@ -104,32 +105,38 @@ interface PendingMove {
   rekey: boolean;
 }
 
-/** How long a run waits for another process's move to finish before giving up. */
-const LOCK_WAIT_MS = 120_000;
+/**
+ * How long a run waits for another caller's move, and for the rekey. `serve` runs this before its
+ * dashboard listens, and an update rolls back a build whose dashboard is not up in 30 seconds; a
+ * rekey that takes longer is left noted and done again on the next run.
+ */
+const LOCK_WAIT_MS = 10_000;
+const REKEY_WAIT_MS = 15_000;
 
 /**
  * Moves the old role's Hermes profile, with its skills, memories, and sessions, and its MCP
  * token secret to the new name. A profile that already exists under the new name is not
- * overwritten: the old one stays, and the log says so. Safe to run again.
+ * overwritten: the old one stays, and the log says so. Safe to run again. Returns whether
+ * nothing is left to do.
  *
  * A running factory gateway serves the profile by its old name and holds its files open, so a
  * move under it leaves the gateway serving an empty profile at the old path and refusing the
- * moved one. The gateway is stopped for the move and started again after. Hermes keys the
- * Discord sessions and routes by profile name, so `run` then rekeys them; Hermes does that with
- * the gateway running too. What is left to do is noted beside the Hermes root before the
- * gateway stops, and a later run finishes it, since by then the old profile is gone. The service
- * and `hermes sync` can both run this, so a lock beside the Hermes root keeps them apart. Without
- * `run` the profile is not moved, so its threads are never left on the old name.
+ * moved one. The gateway is stopped for the move. Hermes keys the Discord sessions and routes by
+ * profile name, so `run` rekeys them while the gateway is down, since a gateway that has just
+ * started may not take the rekey yet, and the gateway is started after. What is left to do is
+ * noted beside the Hermes root before the gateway stops, and a later run finishes it, since by
+ * then the old profile is gone. The service and `hermes sync` can both run this, so they take
+ * turns. Without `run` the profile is not moved, so its threads are never left on the old name.
  */
 export async function migratePlannerFiles(options: {
   hermesRoot: string;
   secrets: SecretsFile;
   gateway?: GatewayControl;
   run?: HermesRun;
-}): Promise<void> {
-  const release = await waitForLock(join(dirname(options.hermesRoot), "hermes-profile-move.lock"));
+}): Promise<boolean> {
+  const release = await waitForLock(options.hermesRoot);
   try {
-    await movePlannerFiles(options);
+    return await movePlannerFiles(options);
   } finally {
     release();
   }
@@ -140,7 +147,7 @@ async function movePlannerFiles(options: {
   secrets: SecretsFile;
   gateway?: GatewayControl;
   run?: HermesRun;
-}): Promise<void> {
+}): Promise<boolean> {
   const { hermesRoot, secrets, gateway, run } = options;
   const token = secrets.get(tokenSecret(LEGACY_ROLE));
   if (token !== undefined) {
@@ -166,13 +173,13 @@ async function movePlannerFiles(options: {
       console.warn(
         `The Hermes profile ${LEGACY_ROLE} was not moved to ${CHAT_ROLE_NAME}, which already exists. Move its skills, memories, and sessions by hand.`,
       );
-      return;
+      return false;
     }
     if (run === undefined) {
       console.warn(
         `The Hermes profile ${LEGACY_ROLE} was not moved to ${CHAT_ROLE_NAME}: Hephaestus does not know where hermes is. Run \`hephaestus hermes sync --hermes <path>\` to move it.`,
       );
-      return;
+      return false;
     }
     // A run that stopped the gateway and was cut off before the move left it to be started.
     const earlier = readPending(pendingPath);
@@ -187,51 +194,105 @@ async function movePlannerFiles(options: {
       }
       renameSync(from, to);
     } catch (error) {
-      // Nothing moved, so nothing new is left to do. Only a gateway this run stopped is started
-      // again; one it could not stop is left alone.
-      if (earlier === undefined) rmSync(pendingPath, { force: true });
-      if (startGateway && stoppedHere) gateway?.start();
+      // Nothing moved. A gateway this run stopped is started again, and the note stays until it
+      // is; one it could not stop is left alone.
+      let restored = !(startGateway && stoppedHere);
+      if (!restored) {
+        try {
+          gateway?.start();
+          restored = true;
+        } catch (startError) {
+          console.warn(
+            `The factory gateway did not start again (${String(startError)}). The next run tries again.`,
+          );
+        }
+      }
+      if (restored && earlier === undefined) rmSync(pendingPath, { force: true });
       throw error;
     }
   }
   const pending = readPending(pendingPath);
-  if (pending === undefined) return;
+  if (pending === undefined) return true;
+  if (pending.rekey && run !== undefined) {
+    try {
+      await withTimeout(run(MIGRATE_IDENTITY), REKEY_WAIT_MS);
+      pending.rekey = false;
+    } catch (error) {
+      console.warn(
+        `The Hermes profile moved to ${CHAT_ROLE_NAME}, but its Discord threads still route to ${LEGACY_ROLE} (${String(error)}). The next run tries again, or run \`hermes ${MIGRATE_IDENTITY.join(" ")}\` with HERMES_HOME=${hermesRoot}.`,
+      );
+    }
+  }
   if (pending.startGateway && gateway !== undefined) {
     try {
       gateway.start();
       pending.startGateway = false;
     } catch (error) {
       console.warn(
-        `The Hermes profile moved to ${CHAT_ROLE_NAME}, but the factory gateway did not start again (${String(error)}). The next start of Hephaestus tries again.`,
+        `The Hermes profile moved to ${CHAT_ROLE_NAME}, but the factory gateway did not start again (${String(error)}). The next run tries again.`,
       );
     }
   }
-  if (pending.rekey && run !== undefined) {
-    try {
-      await run(MIGRATE_IDENTITY);
-      pending.rekey = false;
-    } catch (error) {
-      console.warn(
-        `The Hermes profile moved to ${CHAT_ROLE_NAME}, but its Discord threads still route to ${LEGACY_ROLE} (${String(error)}). The next start of Hephaestus tries again, or run \`hermes ${MIGRATE_IDENTITY.join(" ")}\` with HERMES_HOME=${hermesRoot}.`,
-      );
-    }
+  if (pending.startGateway || pending.rekey) {
+    writePending(pendingPath, pending);
+    return false;
   }
-  if (pending.startGateway || pending.rekey) writePending(pendingPath, pending);
-  else rmSync(pendingPath, { force: true });
+  rmSync(pendingPath, { force: true });
+  return true;
 }
 
-async function waitForLock(path: string): Promise<() => void> {
+/** Rejects once `ms` pass; the work itself carries on, and its result is dropped. */
+async function withTimeout<T>(work: Promise<T>, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error(`no answer in ${String(ms / 1000)} seconds`));
+    }, ms);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer);
+    // A late failure must not surface as an unhandled rejection.
+    work.catch(() => undefined);
+  }
+}
+
+/**
+ * Holds a lock for the move of the profiles under `hermesRoot`: an abstract Unix socket, which
+ * only one process can bind at a time and which the kernel frees when its holder dies, so there
+ * is never a stale lock to take over.
+ */
+async function waitForLock(hermesRoot: string): Promise<() => void> {
+  const digest = createHash("sha256").update(resolve(hermesRoot)).digest("hex").slice(0, 32);
+  const name = `\0hephaestus-profile-move-${digest}`;
   const deadline = Date.now() + LOCK_WAIT_MS;
   for (;;) {
-    const release = tryLock(path);
-    if (release !== undefined) return release;
+    const server = createServer();
+    const bound = await new Promise<boolean>((done, fail) => {
+      server.once("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "EADDRINUSE") done(false);
+        else fail(error);
+      });
+      server.listen({ path: name }, () => {
+        done(true);
+      });
+    });
+    if (bound) {
+      // The socket must not keep a process alive that is otherwise done.
+      server.unref();
+      return () => {
+        server.close();
+      };
+    }
     if (Date.now() > deadline) {
-      throw new Error(`Another process is moving the Hermes profile. If none is, delete ${path}.`);
+      throw new Error(
+        "Another process is still moving the Hermes profile; the next run tries again.",
+      );
     }
     await sleep(200);
   }
 }
-
 /** Replaced in one step, so a crash never leaves half a file. */
 function writePending(path: string, pending: PendingMove): void {
   const partial = `${path}.partial`;
