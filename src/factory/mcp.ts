@@ -52,6 +52,7 @@ export interface FactoryMcpOptions {
 
 type Tool =
   | "file_issue"
+  | "comment_issue"
   | "start_work"
   | "get_status"
   | "escalate"
@@ -79,6 +80,11 @@ const TOOL_SHAPES = {
       .describe(
         "absolute paths of files the requester sent in the chat, as the chat gave them to you; at most 10 files of 10 MB each",
       ),
+  },
+  comment_issue: {
+    repo: z.string().describe("owner/repo of a factory project"),
+    issue_number: z.number().int().positive(),
+    body: z.string().describe("the comment's text"),
   },
   start_work: { task_id: z.number().int(), brief: z.string().min(1) },
   escalate: { task_id: z.number().int(), reason: z.string().min(1) },
@@ -131,6 +137,7 @@ const TOOL_SHAPES = {
 export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
   communicator: [
     "file_issue",
+    "comment_issue",
     "get_status",
     "list_tasks",
     "read_thread",
@@ -433,6 +440,13 @@ export class FactoryMcp {
             "If the request came in a chat, reply in its thread with the issue's link and the tracking line exactly as given.",
         };
       },
+    );
+    register(
+      "comment_issue",
+      "Post a comment on an existing GitHub issue of a factory project and return the comment's URL. Use it only when a person asks in the conversation for a comment on an existing issue, and post what they asked for. It does not file an issue, create a task, or change the issue's labels or state, and it refuses a pull request's number. If the issue does not exist or the body is empty, nothing is posted and the error says why.",
+      async ({ repo, issue_number, body }) => ({
+        url: await intake.commentOnIssue(repo, issue_number, body),
+      }),
     );
     register(
       "start_work",

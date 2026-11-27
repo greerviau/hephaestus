@@ -183,6 +183,121 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
+  describe("comment_issue", () => {
+    it("posts a comment on an existing issue, returns its URL, and creates no task", async () => {
+      const { h, url, mcp } = await start();
+      const c = await client(url, TOKENS.communicator);
+      const filed = json(
+        await c.callTool({
+          name: "file_issue",
+          arguments: { repo: "octo/app", title: "Add a flag", body: "B" },
+        }),
+      );
+      const number = filed.issue as number;
+      const before = {
+        tasks: h.tasks.list().length,
+        awaiting: h.intake.awaitingWork("octo/app"),
+        issue: { ...h.github.issues.get(number) },
+        tracked: h.intake.issues(),
+      };
+      const result = json(
+        await c.callTool({
+          name: "comment_issue",
+          arguments: { repo: "octo/app", issue_number: number, body: "More context." },
+        }),
+      );
+      expect(result.url).toBe(
+        `https://github.com/octo/app/issues/${String(number)}#issuecomment-1`,
+      );
+      expect(h.github.comments).toEqual([{ repo: "octo/app", number, body: "More context." }]);
+      // Nothing else changes: no task, no cap use, no label or state change, no new record.
+      expect(h.tasks.list().length).toBe(before.tasks);
+      expect(h.intake.awaitingWork("octo/app")).toBe(before.awaiting);
+      expect(h.github.issues.get(number)).toEqual(before.issue);
+      expect(h.intake.issues()).toEqual(before.tracked);
+      expect(mcp.calls()[0]).toMatchObject({
+        role: "communicator",
+        tool: "comment_issue",
+        ok: true,
+      });
+      await c.close();
+    });
+
+    it("refuses a repo that is not a factory project, naming it, and posts nothing", async () => {
+      const { h, url } = await start();
+      h.github.issues.set(7, { number: 7, title: "t", body: "", author: "o", state: "OPEN" });
+      const c = await client(url, TOKENS.communicator);
+      const result = await c.callTool({
+        name: "comment_issue",
+        arguments: { repo: "other/thing", issue_number: 7, body: "Hi" },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain("other/thing is not a factory project");
+      expect(h.github.comments).toEqual([]);
+      await c.close();
+    });
+
+    it("refuses an issue that does not exist and posts nothing", async () => {
+      const { h, url } = await start();
+      const c = await client(url, TOKENS.communicator);
+      const result = await c.callTool({
+        name: "comment_issue",
+        arguments: { repo: "octo/app", issue_number: 404, body: "Hi" },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain("octo/app#404 does not exist");
+      expect(h.github.comments).toEqual([]);
+      await c.close();
+    });
+
+    it("refuses an empty or whitespace-only body before any call to GitHub", async () => {
+      const { h, url } = await start();
+      h.github.issues.set(7, { number: 7, title: "t", body: "", author: "o", state: "OPEN" });
+      const calls: string[] = [];
+      const post = h.github.commentOnIssue.bind(h.github);
+      h.github.commentOnIssue = (...args) => {
+        calls.push("github");
+        return post(...args);
+      };
+      const c = await client(url, TOKENS.communicator);
+      for (const body of ["", "  \n\t "]) {
+        const result = await c.callTool({
+          name: "comment_issue",
+          arguments: { repo: "octo/app", issue_number: 7, body },
+        });
+        expect(result.isError).toBe(true);
+        expect(JSON.stringify(result)).toMatch(/body is empty/);
+      }
+      expect(calls).toEqual([]);
+      expect(h.github.comments).toEqual([]);
+      await c.close();
+    });
+
+    it("refuses a pull request's number and posts nothing", async () => {
+      const { h, url } = await start();
+      h.github.issues.set(8, { number: 8, title: "t", body: "", author: "o", state: "OPEN" });
+      h.github.pullNumbers.add(8);
+      const c = await client(url, TOKENS.communicator);
+      const result = await c.callTool({
+        name: "comment_issue",
+        arguments: { repo: "octo/app", issue_number: 8, body: "Hi" },
+      });
+      expect(result.isError).toBe(true);
+      expect(h.github.comments).toEqual([]);
+      await c.close();
+    });
+
+    it("is offered to the communicator only", async () => {
+      const { url } = await start();
+      for (const [role, token] of Object.entries(TOKENS)) {
+        const c = await client(url, token);
+        const names = (await c.listTools()).tools.map((tool) => tool.name);
+        expect(names.includes("comment_issue")).toBe(role === "communicator");
+        await c.close();
+      }
+    });
+  });
+
   it("files an issue with an attachment, and reports a bad attachment as an error with no issue", async () => {
     const { h, url } = await start();
     const dir = await mkdtemp(join(tmpdir(), "mcp-attach-"));
