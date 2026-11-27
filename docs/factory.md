@@ -76,3 +76,13 @@ The chat agent answers questions about the factory with three read-only tools. E
 - `get_host_health` gives CPU cores and load average, memory, disk, host uptime, the state of the Hephaestus and Hermes gateway services as systemd reports it, each worker's config version and problem, and the failed tool calls, worker tasks, and thread launches recorded in the window.
 
 When data is missing the report says so, and the chat agent is told never to fill a gap with a number it did not get from a tool.
+
+### Charts
+
+When someone asks for a chart, graph, or plot, the chat agent calls `get_factory_chart` and attaches the PNG it returns to its reply (the tool's report carries a `MEDIA:<path>` line, which the Hermes gateway sends as an attachment). The tool takes a `metric`, a `window` (`24h`, `7d`, or `30d`; the default is `7d`), and optionally a `repo`. It draws only recorded data:
+
+- `merges_per_day` counts recorded merges by UTC day, from the time Hephaestus recorded each merge. The caption says how many Done tasks in the window were left out because they have no recorded merge time.
+- `tasks_by_stage` counts the tasks that entered each stage in the window, from the recorded stage changes. A task that passed through several stages counts once in each.
+- `review_rounds` counts the tasks that reached Done in the window by their review rounds, with the average in the caption.
+
+When the window holds nothing recorded for the metric, the tool returns `no_data` and a message, writes no image, and the agent says so. Charts are drawn by Hephaestus itself into a PNG with Node's zlib and a built-in pixel font, so the host needs no browser, display, native module, or font file. They are written to `hephaestus-charts` in the system's temp folder, and the newest 20 stay.

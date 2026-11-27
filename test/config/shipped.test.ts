@@ -142,6 +142,23 @@ describe("the planner's shipped instructions", () => {
     expect(brokenRules(text)).toEqual([]);
   });
 
+  it("tell the communicator to draw a chart with the chart tool when one is asked for, and to attach the PNG", () => {
+    const text = collapse(shippedInstructions("planner"));
+
+    expect(text).toContain("`get_factory_chart`");
+    for (const metric of ["merges_per_day", "tasks_by_stage", "review_rounds"]) {
+      expect(text).toContain(`\`${metric}\``);
+    }
+    expect(text).toMatch(/chart, graph, or plot/);
+    expect(text).toMatch(/instead of typing a bar chart by hand/);
+    expect(text).toMatch(/attach the PNG to your reply with the `MEDIA:` line the tool returns/);
+    expect(text).toMatch(
+      /When the tool returns `no_data`, attach nothing and say there is no data/,
+    );
+    expect(text).toMatch(/Say how many Done tasks the caption says were left out/);
+    expect(brokenRules(text)).toEqual([]);
+  });
+
   it("reach an install whose persona still holds the old planner text, which is left out of what the planner gets", () => {
     expect(ownInstructions(FIRST_PLANNER).text).toBe("");
     expect(rolePrompt("planner", FIRST_PLANNER)).toBe(`${shippedInstructions("planner")}\n`);
