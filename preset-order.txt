@@ -1,0 +1,6 @@
+Policy preset choices on the project edit page, in page order:
+- strict: Every merge waits for you, after checks and a review.
+- standard (selected): Merges when checks pass and the other provider approved the head. Workflow changes wait for you.
+- yolo: Merges on green checks with no review. For throwaway repos.
+
+Escalation hint: By preset: strict: .github/workflows/**; standard: .github/workflows/**; yolo: none.
