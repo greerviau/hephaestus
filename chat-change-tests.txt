@@ -1,0 +1,70 @@
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > reading > shows the current content of a skill, an instruction, a persona, and a setting
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > reading > lists what can be changed, and none of it is a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > reading > says a skill file that does not exist yet does not exist
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > proposes without writing, then applies after approval
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > changes a setting from JSON and a persona from text
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > creates a new file in a skill
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > applies a change once
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > refuses an approval without the person's words, from another conversation, or too soon
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > reports a deploy that fails, and keeps the error on the record
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > passes on a warning when the factory Hermes could not take the version
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > approve > stops at an approved version when nothing can deploy it
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > decline or silence > changes nothing when the person declines
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > decline or silence > changes nothing when the person says nothing, and a late approval is refused
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > decline or silence > refuses to decline from another conversation
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > refuses a setting that is not JSON, before anyone is asked to approve
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > refuses a setting the config would reject
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > refuses broken frontmatter, bad JSON in a skill, and empty text
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > accepts frontmatter
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > refuses an unchanged text
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > checks again at apply time and reports the config's error
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > validation > refuses to apply over an edit made after the proposal
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > revert > restores the earlier text as a new version and records it
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > revert > removes a file the change created
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > revert > refuses when the target changed again, so a later edit is not overwritten
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > revert > refuses a change that was never applied, and a revert with no request
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "projects:octo/app"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "project:octo/app"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "setting:setup"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "setting:projects"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "setting:__proto__"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "setting:"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "secrets.json"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "secret:hermes-mcp-token-planner"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "file:/home/owner/.hermes/.env"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "persona:owner"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "instruction:../escape"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/"
+ ✓ test/factory/mcp.test.ts > FactoryMcp > rejects a call without a factory profile token
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/../../etc/passwd"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:../x/SKILL.md"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses ""
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/.env" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/secrets.json" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/credentials" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/keys/id_rsa" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/cert.pem" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:secrets/SKILL.md" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses "skill:triage/api-token.txt" because its name says it holds a secret
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses text that looks like a credential: "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses text that looks like a credential: "-----BEGIN OPENSSH PRIVATE KEY-----\nabc"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses text that looks like a credential: "use sk-ant-api03-abcdefghijklmnopqrstuvwxyz"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses text that looks like a credential: "Authorization: Bearer abcdefghijklmnopqrstuvwxyz012345"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses text that looks like a credential: "API_KEY=abcdefghijklmnop1234"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > refuses text that looks like a credential: "aws AKIAABCDEFGHIJKLMNOP"
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > never echoes the secret it refused
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > allows prose that only mentions a token
+ ✓ test/factory/chat-changes.test.ts > ChatChanges > targets outside the allowlist > writes nothing for a refused target even when approved
+ ✓ test/factory/mcp.test.ts > FactoryMcp > offers each role only its tools
+ ✓ test/factory/mcp.test.ts > FactoryMcp > records a call to a tool the role does not have
+ ✓ test/factory/mcp.test.ts > FactoryMcp > records a call whose arguments do not fit the tool
+ ✓ test/factory/mcp.test.ts > FactoryMcp > records a call with null arguments
+ ✓ test/factory/mcp.test.ts > FactoryMcp > files an issue for the planner and records the call with the role
+ ✓ test/factory/mcp.test.ts > FactoryMcp > starts work for the lead and reports a refused call as an error
+ ✓ test/factory/mcp.test.ts > FactoryMcp > files a proposal for the improver only with factory threads as evidence
+ ✓ test/factory/mcp.test.ts > FactoryMcp > lets only the chat agent change the factory's own config, through a proposal and an approval
+ ✓ test/factory/mcp.test.ts > FactoryMcp > refuses a disallowed target and a secret without keeping the secret
+ ✓ test/factory/mcp.test.ts > FactoryMcp > changes nothing for a declined proposal
+ Test Files  2 passed (2)
+      Tests  68 passed (68)
