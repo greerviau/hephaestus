@@ -288,7 +288,8 @@ export class FactoryProfiles {
       `INSERT INTO hermes_cron_jobs (role, name, job_id) VALUES (?, ?, ?)
        ON CONFLICT (role, name) DO UPDATE SET job_id = excluded.job_id`,
     );
-    for (const job of jobs) {
+    // A job turned off is left out, so the removal below takes it out of Hermes.
+    for (const job of jobs.filter((entry) => entry.enabled !== false)) {
       const label = `${CRON_PREFIX}${job.name}`;
       const id = recorded.get(job.name) ?? listed.get(label);
       if (id === undefined) {

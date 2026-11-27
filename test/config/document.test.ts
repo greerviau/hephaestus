@@ -78,3 +78,16 @@ describe("factory settings", () => {
     expect(problems(config)).toEqual([]);
   });
 });
+
+describe("cron jobs", () => {
+  it("accepts a job turned off, and refuses an on switch that is not true or false", () => {
+    const config = sampleConfig();
+    config.roles.improver.cron = [
+      { name: "nightly", schedule: "30 2 * * *", prompt: "Improve.", enabled: false },
+    ];
+    expect(problems(config)).toEqual([]);
+
+    (config.roles.improver.cron[0] as unknown as Record<string, unknown>).enabled = "no";
+    expect(problems(config)).toEqual(["roles.improver.cron[0].enabled must be true or false"]);
+  });
+});

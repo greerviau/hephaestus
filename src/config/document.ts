@@ -19,6 +19,8 @@ export interface CronJob {
   /** A Hermes schedule: a cron expression, or forms such as `every 2h`. */
   schedule: string;
   prompt: string;
+  /** False keeps the job in the config but out of Hermes. Absent means on. */
+  enabled?: boolean;
 }
 
 export interface ProjectConfig {
@@ -309,6 +311,9 @@ export function validateConfig(value: unknown): FactoryConfig {
           if (typeof entry[field] !== "string" || entry[field] === "") {
             problems.push(`${path}.${field} must be a non-empty string`);
           }
+        }
+        if (entry.enabled !== undefined && typeof entry.enabled !== "boolean") {
+          problems.push(`${path}.enabled must be true or false`);
         }
       }
     }

@@ -1,5 +1,10 @@
-import { ROLE_NAMES, type FactoryConfig, type ModelChoice } from "../config/document.js";
-import { escapeHtml, fold, section, setting } from "./html.js";
+import {
+  ROLE_NAMES,
+  type CronJob,
+  type FactoryConfig,
+  type ModelChoice,
+} from "../config/document.js";
+import { checkbox, escapeHtml, fold, section, setting } from "./html.js";
 
 /** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
 type Value = (name: string, saved: string) => string;
@@ -77,16 +82,7 @@ export function limitsAndSchedulesFields(
     ),
   ].join("");
   const jobs = ROLE_NAMES.flatMap((role) =>
-    (config.roles[role].cron ?? []).map((job) => {
-      const id = escapeHtml(`f-cron-${role}-${job.name}`);
-      const name = escapeHtml(`cron.${role}.${job.name}`);
-      return setting(
-        `f-cron-${role}-${job.name}`,
-        `${role}: ${job.name}`,
-        "A cron expression, or a form such as every 2h.",
-        `<input type="text" class="w-220" id="${id}" name="${name}" value="${escapeHtml(value(`cron.${role}.${job.name}`, job.schedule))}" required>`,
-      );
-    }),
+    (config.roles[role].cron ?? []).map((job) => jobSetting(role, job, value, submitted)),
   ).join("");
   return `<fieldset class="sec"><legend>Limits</legend>${limits}</fieldset>${
     jobs === "" ? "" : `<fieldset class="sec"><legend>Schedules</legend>${jobs}</fieldset>`
@@ -117,13 +113,89 @@ export function applyLimitsAndSchedules(
   const triageAlert = whole("triageAlertMinutes", "Tell me after (minutes)");
   if (triageAlert !== undefined) next.factory.triageAlertMinutes = triageAlert;
   for (const role of ROLE_NAMES) {
-    for (const job of next.roles[role].cron ?? []) {
-      const schedule = (form.get(`cron.${role}.${job.name}`) ?? "").trim();
-      if (schedule === "") errors.push(`${role}: ${job.name}: give a schedule.`);
-      else job.schedule = schedule;
-    }
+    for (const job of next.roles[role].cron ?? []) applyJob(role, job, form, errors);
   }
   return { config: next, errors };
+}
+
+/** The time zone Hermes reads a cron expression in: the host's own, as Hephaestus runs there. */
+function hostTimeZone(): string {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+
+/** The time of day, as HH:MM, of a schedule that runs once a day at a fixed minute; else undefined. */
+export function dailyTime(schedule: string): string | undefined {
+  const match = /^(\d{1,2}) (\d{1,2}) \* \* \*$/.exec(schedule.trim());
+  if (match === null) return undefined;
+  const minute = Number(match[1]);
+  const hour = Number(match[2]);
+  if (minute > 59 || hour > 23) return undefined;
+  return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+/** A plain sentence that says when a job runs. */
+export function scheduleSummary(job: CronJob, timeZone = hostTimeZone()): string {
+  if (job.enabled === false) return "Off: this job does not run.";
+  const time = dailyTime(job.schedule);
+  const when =
+    time === undefined ? `on the custom schedule ${job.schedule}` : `every day at ${time}`;
+  return `Runs ${when}, Hermes host time (${timeZone}).`;
+}
+
+const CUSTOM_HINT =
+  "Replaces the time of day when filled in. Five cron fields (minute, hour, day of month, month, weekday), such as 30 2 * * *, or a form such as every 2h.";
+
+/** A scheduled job's row: an on switch, a time of day, a custom schedule in a fold, and what it adds up to. */
+function jobSetting(
+  role: string,
+  job: CronJob,
+  value: Value,
+  submitted: URLSearchParams | undefined,
+): string {
+  const id = `f-cron-${role}-${job.name}`;
+  const base = `cron.${role}.${job.name}`;
+  const time = dailyTime(job.schedule);
+  const on = submitted === undefined ? job.enabled !== false : submitted.has(`${base}.on`);
+  const custom = value(`${base}.custom`, time === undefined ? job.schedule : "");
+  const control = `<div class="schedule">${checkbox(`${base}.on`, "On", { checked: on })}<input type="time" id="${escapeHtml(id)}" name="${escapeHtml(`${base}.time`)}" value="${escapeHtml(value(`${base}.time`, time ?? ""))}" aria-label="${escapeHtml(`${role}: ${job.name} time of day`)}">${fold(
+    "Custom schedule",
+    `<input type="text" class="w-220" name="${escapeHtml(`${base}.custom`)}" value="${escapeHtml(custom)}" aria-label="${escapeHtml(`${role}: ${job.name} custom schedule`)}" placeholder="every 2h"><span class="hint">${escapeHtml(CUSTOM_HINT)}</span>`,
+    custom.trim() !== "",
+  )}</div>`;
+  return setting(id, `${role}: ${job.name}`, escapeHtml(scheduleSummary(job)), control);
+}
+
+/** A custom schedule Hermes reads: five cron fields, or an every form. */
+function customSchedule(text: string): boolean {
+  return text.split(/\s+/).length === 5 || /^every \S+/.test(text);
+}
+
+/** Applies one job's fields. A form without them leaves the job as it is. */
+function applyJob(role: string, job: CronJob, form: URLSearchParams, errors: string[]): void {
+  const base = `cron.${role}.${job.name}`;
+  if (!form.has(`${base}.time`) && !form.has(`${base}.custom`)) return;
+  const label = `${role}: ${job.name}`;
+  const on = form.has(`${base}.on`);
+  const custom = (form.get(`${base}.custom`) ?? "").trim();
+  const time = (form.get(`${base}.time`) ?? "").trim();
+  let schedule: string | undefined;
+  if (custom !== "") {
+    if (customSchedule(custom)) schedule = custom;
+    else
+      errors.push(
+        `${label}: write the custom schedule as five cron fields, such as 30 2 * * *, or as every 2h.`,
+      );
+  } else if (time !== "") {
+    // A browser's time picker sends HH:MM, or HH:MM:SS when it shows seconds.
+    const match = /^([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?$/.exec(time);
+    if (match === null) errors.push(`${label}: give a time of day as HH:MM, such as 02:30.`);
+    else schedule = `${String(Number(match[2]))} ${String(Number(match[1]))} * * *`;
+  } else if (on) {
+    errors.push(`${label}: give a time of day, or a custom schedule.`);
+  }
+  if (schedule !== undefined) job.schedule = schedule;
+  if (on) delete job.enabled;
+  else job.enabled = false;
 }
 
 /** The coding jobs, each a model setting that exists today. The provider of the first two is fixed. */

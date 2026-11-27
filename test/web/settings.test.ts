@@ -138,7 +138,7 @@ describe("Factory tab", () => {
     expect(html).toContain('action="/config/factory"');
     expect(html).toContain('name="limits.threads" min="0" step="1" value="4"');
     expect(html).toContain('name="triageAlertMinutes" min="0" step="1" value="30"');
-    expect(html).toContain('name="cron.improver.nightly" value="0 3 * * *"');
+    expect(html).toContain('name="cron.improver.nightly.time" value="03:00"');
     expect(html).toContain('<label for="f-threads">Threads in all</label>');
     expect(html).toContain("Deploy now");
     expect(html).toContain(`built from version ${String(id)}`);
@@ -159,7 +159,9 @@ describe("Factory tab", () => {
       "limits.threads": "2",
       "limits.startsPerDay": "10",
       triageAlertMinutes: "0",
-      "cron.improver.nightly": "every 12h",
+      "cron.improver.nightly.on": "1",
+      "cron.improver.nightly.time": "03:00",
+      "cron.improver.nightly.custom": "every 12h",
       deploy: "on",
     });
 
@@ -230,6 +232,169 @@ describe("Factory tab", () => {
     const stale = await dashboard.post("/config/factory", { ...FACTORY_FIELDS, parentId: "7" });
     expect(await stale.text()).toContain("The config changed since the page was loaded.");
     expect(dashboard.store.list()).toHaveLength(1);
+  });
+});
+
+const HOST_ZONE = Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+/** The Factory tab with the improver's nightly job set to `schedule`, and the job's settings row. */
+async function nightlyRow(job: { schedule: string; enabled?: boolean }): Promise<string> {
+  await start();
+  const config = sampleConfig();
+  config.roles.improver.cron = [{ name: "nightly", prompt: "Improve.", ...job }];
+  deployVersion(config);
+  const { html } = await dashboard.get("/config");
+  const at = html.indexOf('id="f-cron-improver-nightly"');
+  expect(at).toBeGreaterThan(-1);
+  return html.slice(html.lastIndexOf('<div class="setting">', at), html.indexOf("</fieldset>", at));
+}
+
+describe("Factory tab schedules", () => {
+  it("shows a daily job as an on switch, a time of day, and a summary with the host time zone", async () => {
+    const row = await nightlyRow({ schedule: "30 2 * * *" });
+
+    expect(row).toContain(
+      '<input type="checkbox" name="cron.improver.nightly.on" value="1" checked>',
+    );
+    expect(row).toContain(
+      '<input type="time" id="f-cron-improver-nightly" name="cron.improver.nightly.time" value="02:30"',
+    );
+    expect(row).toContain('name="cron.improver.nightly.custom" value=""');
+    expect(row).toContain(`Runs every day at 02:30, Hermes host time (${HOST_ZONE}).`);
+    expect(row).not.toContain('value="30 2 * * *"');
+  });
+
+  it.each([
+    ["0 0 * * *", "00:00"],
+    ["5 9 * * *", "09:05"],
+    ["05 09 * * *", "09:05"],
+    ["59 23 * * *", "23:59"],
+  ])("shows %s as %s", async (schedule, time) => {
+    const row = await nightlyRow({ schedule });
+
+    expect(row).toContain(`name="cron.improver.nightly.time" value="${time}"`);
+    expect(row).toContain(`Runs every day at ${time}, Hermes host time`);
+  });
+
+  it("shows any other schedule in the custom field, open, and summarizes it", async () => {
+    const row = await nightlyRow({ schedule: "every 12h" });
+
+    expect(row).toContain('name="cron.improver.nightly.custom" value="every 12h"');
+    expect(row).toContain('name="cron.improver.nightly.time" value=""');
+    expect(row).toContain('<details class="fold" open>');
+    expect(row).toContain(
+      `Runs on the custom schedule every 12h, Hermes host time (${HOST_ZONE}).`,
+    );
+  });
+
+  it("shows a job that is off unticked, keeps its time, and says it does not run", async () => {
+    const row = await nightlyRow({ schedule: "0 0 * * *", enabled: false });
+
+    expect(row).toContain('<input type="checkbox" name="cron.improver.nightly.on" value="1">');
+    expect(row).toContain('name="cron.improver.nightly.time" value="00:00"');
+    expect(row).toContain("Off: this job does not run.");
+  });
+
+  async function saveNightly(fields: Record<string, string>): Promise<Response> {
+    const config = sampleConfig();
+    config.roles.improver.cron = [{ name: "nightly", schedule: "30 2 * * *", prompt: "Improve." }];
+    const id = deployVersion(config);
+    return dashboard.post("/config/factory", {
+      ...FACTORY_FIELDS,
+      parentId: String(id),
+      ...fields,
+    });
+  }
+
+  it.each([
+    ["00:00", "0 0 * * *"],
+    ["09:05", "5 9 * * *"],
+    ["9:05", "5 9 * * *"],
+    ["23:59", "59 23 * * *"],
+  ])("saves the time %s as %s and shows it again after a reload", async (time, schedule) => {
+    await start();
+
+    const response = await saveNightly({
+      "cron.improver.nightly.on": "1",
+      "cron.improver.nightly.time": time,
+      "cron.improver.nightly.custom": "",
+    });
+
+    expect(response.status).toBe(303);
+    const job = dashboard.store.list()[0]?.document.roles.improver.cron?.[0];
+    expect(job).toEqual({ name: "nightly", schedule, prompt: "Improve." });
+    dashboard.store.approve(dashboard.store.list()[0]?.id ?? 0);
+    dashboard.store.markDeployed(dashboard.store.list()[0]?.id ?? 0);
+    const { html } = await dashboard.get("/config");
+    const shown = time.padStart(5, "0");
+    expect(html).toContain(`name="cron.improver.nightly.time" value="${shown}"`);
+    expect(html).toContain(`Runs every day at ${shown}, Hermes host time`);
+  });
+
+  it("saves a job turned off, with its time kept", async () => {
+    await start();
+
+    await saveNightly({
+      "cron.improver.nightly.time": "04:15",
+      "cron.improver.nightly.custom": "",
+    });
+
+    expect(dashboard.store.list()[0]?.document.roles.improver.cron?.[0]).toEqual({
+      name: "nightly",
+      schedule: "15 4 * * *",
+      prompt: "Improve.",
+      enabled: false,
+    });
+  });
+
+  it.each([
+    ["25:00", "improver: nightly: give a time of day as HH:MM, such as 02:30."],
+    ["2:3", "improver: nightly: give a time of day as HH:MM, such as 02:30."],
+    ["", "improver: nightly: give a time of day, or a custom schedule."],
+  ])("refuses the time %j with a clear message and saves nothing", async (time, message) => {
+    await start();
+
+    const response = await saveNightly({
+      "cron.improver.nightly.on": "1",
+      "cron.improver.nightly.time": time,
+      "cron.improver.nightly.custom": " ",
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(html).toContain(message);
+    expect(html).toContain(`name="cron.improver.nightly.time" value="${time}"`);
+    // Only the starting version and the one the test deployed.
+    expect(dashboard.store.list()).toHaveLength(2);
+  });
+
+  it("refuses a custom schedule that is neither a five-field cron expression nor an every form", async () => {
+    await start();
+
+    const response = await saveNightly({
+      "cron.improver.nightly.on": "1",
+      "cron.improver.nightly.time": "02:30",
+      "cron.improver.nightly.custom": "2 * *",
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(400);
+    expect(html).toContain(
+      "improver: nightly: write the custom schedule as five cron fields, such as 30 2 * * *, or as every 2h.",
+    );
+    expect(html).toContain('name="cron.improver.nightly.custom" value="2 * *"');
+  });
+
+  it("keeps a job as it is when the form does not carry its fields", async () => {
+    await start();
+
+    await saveNightly({});
+
+    expect(dashboard.store.list()[0]?.document.roles.improver.cron?.[0]).toEqual({
+      name: "nightly",
+      schedule: "30 2 * * *",
+      prompt: "Improve.",
+    });
   });
 });
 

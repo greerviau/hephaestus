@@ -188,6 +188,24 @@ describe("FactoryProfiles.sync", () => {
     ]);
   });
 
+  it("removes a job turned off from Hermes, and creates none for it", async () => {
+    const config = sampleConfig();
+    config.roles.improver.cron = [{ name: "nightly", schedule: "30 2 * * *", prompt: "Improve." }];
+    await profiles.sync(config, 1, mcp);
+    config.roles.improver.cron = [
+      { name: "nightly", schedule: "30 2 * * *", prompt: "Improve.", enabled: false },
+    ];
+    await profiles.sync(config, 2, mcp);
+    await profiles.sync(config, 3, mcp);
+
+    expect(
+      hermes.lines().filter((line) => line.includes(" cron ") && !line.endsWith("cron list")),
+    ).toEqual([
+      "-p improver cron create --name=hephaestus-nightly -- 30 2 * * * Improve.",
+      "-p improver cron remove -- job-1",
+    ]);
+  });
+
   it("adopts a job Hermes already has under the managed name instead of creating another", async () => {
     hermes.answer(
       (args) => args.includes("cron") && args.includes("list"),
