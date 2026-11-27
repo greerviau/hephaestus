@@ -29,6 +29,29 @@ describe("defaultConfig", () => {
     expect(config.projects).toEqual({});
   });
 
+  it("ships the factory's starter skills, each loaded by the job that uses it", () => {
+    const config = defaultConfig([]);
+
+    expect(Object.keys(config.skills).sort()).toEqual([
+      "find-root-cause",
+      "resolve-conflicts",
+      "review-pr",
+      "test-first",
+      "write-brief",
+      "write-issue",
+    ]);
+    expect(config.skills["test-first"]?.["SKILL.md"]).toMatch(/^---\nname: test-first\n/);
+    expect(config.factory.threadSkills).toEqual([
+      "test-first",
+      "find-root-cause",
+      "resolve-conflicts",
+      "review-pr",
+    ]);
+    expect(config.roles.planner.skills).toEqual(["write-issue"]);
+    expect(config.roles.lead.skills).toEqual(["write-brief"]);
+    expect(config.roles.improver.skills).toEqual([]);
+  });
+
   it("refuses two imported skills with the same name", () => {
     const skill = { name: "review", files: { "SKILL.md": "# Review\n" } };
 

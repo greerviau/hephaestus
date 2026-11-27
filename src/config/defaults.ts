@@ -2,6 +2,7 @@ import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
 import { TextDecoder } from "node:util";
 import { defineOwn } from "./diff.js";
+import { starterSkills, withStarterSkill } from "./starter-skills.js";
 import {
   DEFAULT_FACTORY,
   isSafeRelativePath,
@@ -19,8 +20,9 @@ export interface ImportedSkill {
 }
 
 /**
- * The first config version: the imported skills, and empty owner instructions. The roles' and
- * coding threads' own instructions ship with Hephaestus (see shipped.ts).
+ * The first config version: the starter skills, loaded by their jobs, the imported skills, and
+ * empty owner instructions. The roles' and coding threads' own instructions ship with
+ * Hephaestus (see shipped.ts). An imported skill with a starter skill's name replaces it.
  */
 export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
   const role = (): RoleConfig => ({ persona: "", skills: [] });
@@ -45,14 +47,17 @@ export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
       throw new Error(`There are two skills named ${skill.name}; rename one folder.`);
     names.add(skill.name);
   }
-  return {
+  let config: FactoryConfig = {
     factory: structuredClone(DEFAULT_FACTORY),
     projects: {},
     roles,
     // The coding threads' own rules ship in the messages that start them.
     instructions: { factory: "" },
-    skills: Object.fromEntries(skills.map((skill) => [skill.name, skill.files])),
+    skills: {},
   };
+  for (const starter of starterSkills()) config = withStarterSkill(config, starter);
+  for (const skill of skills) config.skills[skill.name] = skill.files;
+  return config;
 }
 
 /** Reads a skill folder (one with a SKILL.md) as text files keyed by relative path. */

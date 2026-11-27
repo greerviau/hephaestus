@@ -11,6 +11,14 @@ import { isDeepStrictEqual } from "node:util";
 
 export type VersionState = "draft" | "approved" | "deployed" | "rejected" | "superseded";
 
+/** Who files a draft version that waits on Proposals: the improver, or an update's starter skills. */
+const PROPOSERS: readonly string[] = ["improver", "hephaestus"];
+
+/** Whether a version is a proposal, which the Proposals page lists. */
+export function isProposal(version: { author: string }): boolean {
+  return PROPOSERS.includes(version.author);
+}
+
 export interface ConfigVersion {
   id: number;
   parentId: number | null;

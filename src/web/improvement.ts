@@ -1,5 +1,5 @@
 import type { Change } from "../config/diff.js";
-import { VersionNotFoundError, type ConfigVersion } from "../config/store.js";
+import { VersionNotFoundError, isProposal, type ConfigVersion } from "../config/store.js";
 import { STORE_ERROR, notice, read, threadHref, withNotice, type FactoryPages } from "./factory.js";
 import {
   dialog,
@@ -87,7 +87,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
   function proposal(id: number): ConfigVersion | undefined {
     try {
       const version = store.get(id);
-      return version.author === "improver" ? version : undefined;
+      return isProposal(version) ? version : undefined;
     } catch (error) {
       if (error instanceof VersionNotFoundError) return undefined;
       throw error;
@@ -100,7 +100,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
       404,
       layout(
         "Not found",
-        `${pageHead({ title: "No such proposal" })}${empty("This is not an improver proposal.")}`,
+        `${pageHead({ title: "No such proposal" })}${empty("This is not a proposal.")}`,
         { section: "/proposals", shell, crumbs: [["Proposals", "/proposals"], ["Not found"]] },
       ),
     );
@@ -111,9 +111,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
       method: "GET",
       path: /^\/proposals$/,
       handle: ({ response, url, shell }) => {
-        const proposals = read("proposals", () =>
-          store.list().filter((version) => version.author === "improver"),
-        );
+        const proposals = read("proposals", () => store.list().filter(isProposal));
         const pending = read("proposal details", () =>
           (proposals.ok ? proposals.value : [])
             .filter((version) => version.state === "draft")
@@ -177,7 +175,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
             "Proposals",
             `${pageHead({
               title: "Proposals",
-              lede: "Config changes the improver suggests from the factory's own threads. It may file one each night. Nothing changes until you approve one; approving deploys it to every worker.",
+              lede: "Config changes the improver suggests from the factory's own threads, which it may file each night, and starter skills a Hephaestus update brings. Nothing changes until you approve one; approving deploys it to every worker.",
             })}${notice(url)}${failed ? STORE_ERROR : ""}${waiting}${history}`,
             { section: "/proposals", shell },
           ),

@@ -1,3 +1,4 @@
+import { isProposal } from "../config/store.js";
 import { here, read, workerNeedsOwner, type FactoryPages } from "./factory.js";
 import { PROJECT_FILTER_PATH, backTo, type Shell } from "./html.js";
 import { cookie, readBody, redirect, type Route, type ShellSource } from "./http.js";
@@ -59,9 +60,7 @@ export function shellSource(factory: FactoryPages): ShellSource {
     const paused = read("the pause switch", () => factory.pipeline.paused());
     const running = read("running threads", () => factory.pipeline.runningThreads());
     const drafts = read("proposals", () =>
-      factory.store
-        .list()
-        .filter((version) => version.author === "improver" && version.state === "draft"),
+      factory.store.list().filter((version) => isProposal(version) && version.state === "draft"),
     );
     const proposals = drafts.ok ? drafts.value.length : 0;
     const projects = factoryProjects(factory);

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { offerStarterSkills } from "./config/starter-skills.js";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { networkInterfaces } from "node:os";
 import { dirname, isAbsolute, join, resolve } from "node:path";
@@ -480,6 +481,12 @@ async function main(argv: string[]): Promise<number> {
         });
       };
       applyShipped();
+      // An update that ships new starter skills offers them on Proposals.
+      try {
+        offerStarterSkills({ db, store });
+      } catch (error) {
+        console.error("Offering the starter skills failed", error);
+      }
       const mcpServer = engine.mcp.listen(config.port + 1);
       const engineTicks = [
         setInterval(applyShipped, 5 * 60_000),

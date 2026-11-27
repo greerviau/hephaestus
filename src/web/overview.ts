@@ -1,3 +1,4 @@
+import { isProposal } from "../config/store.js";
 import { setupChecklist } from "./setup.js";
 import type { Card } from "../factory/cards.js";
 import type { WorkerView } from "../workers/manager.js";
@@ -75,7 +76,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         const proposals = read("proposals", () =>
           factory.store
             .list()
-            .filter((version) => version.author === "improver" && version.state === "draft"),
+            .filter((version) => isProposal(version) && version.state === "draft"),
         );
         const notifications = read("notifications", () => factory.cards.notifications());
         const workers = read("workers", () => factory.workers?.views() ?? []);
