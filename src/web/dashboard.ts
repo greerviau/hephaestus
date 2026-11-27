@@ -1,3 +1,4 @@
+import { updateRoutes } from "./update.js";
 import { factoryActionRoutes, type FactoryPages } from "./factory.js";
 import type { Route } from "./http.js";
 import { overviewRoutes } from "./overview.js";
@@ -23,5 +24,6 @@ export function dashboardRoutes(factory: FactoryPages): Route[] {
     ...configRoutes(factory),
     ...factoryActionRoutes(factory),
     ...shellRoutes(factory),
+    ...updateRoutes(factory),
   ];
 }

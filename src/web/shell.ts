@@ -72,7 +72,9 @@ export function shellSource(factory: FactoryPages): ShellSource {
       proposals,
       projects,
       project: chosen(cookie(request, PROJECT_COOKIE), projects),
-      ...(version === undefined ? {} : { version }),
+      ...(version === undefined
+        ? {}
+        : { version: { ...version, updatable: factory.updater !== undefined } }),
       // A page a form posted to has no address to come back to.
       back: request.method === "GET" ? here(url) : undefined,
     };

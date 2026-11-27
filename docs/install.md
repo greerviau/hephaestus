@@ -26,7 +26,7 @@ node dist/cli.js update
 
 It refuses, and changes nothing, when the checkout has uncommitted changes to tracked files, is not on `main`, cannot fetch from `origin`, or has commits `origin/main` does not. When `npm ci` or the build fails, it does not restart the service: it resets the checkout to the commit it was on and rebuilds that, so the service keeps its build and a restart or reboot still starts it, and the next `update` tries again. When the new build does not start, it rolls back the same way and restarts the service on the old build. The service never updates itself, because a bad build would stop the dashboard needed to recover.
 
-The sidebar shows the commit the service runs. Once an hour the service fetches `main` from `origin`; when `origin/main` has commits the running one lacks, the sidebar says how many and the command to run. A fetch that fails shows nothing.
+The sidebar shows the commit the service runs. Once an hour the service fetches `main` from `origin`; when `origin/main` has commits the running one lacks, the sidebar says how many and links to the Update page (`/update`). Update now there runs the same `update` as a transient systemd user unit, `hephaestus-update.service`, so it outlives the restart of the service that started it; a second update is refused while one runs. The page shows the run's output, which goes to `~/.hephaestus/update.log`, reloads every few seconds while it runs, and gives the command to run on the host if the dashboard does not come back. A fetch that fails shows nothing.
 
 ## Uninstall
 

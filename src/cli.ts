@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { SelfUpdate } from "./self-update.js";
 import { spawnSync } from "node:child_process";
 import { checkoutOf, serviceProgram, shellCommand, update } from "./update.js";
 import { VersionCheck, gitIn } from "./version-check.js";
@@ -23,7 +24,7 @@ import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
 import { waitForDashboard } from "./ready.js";
 import { createDashboardServer } from "./server.js";
-import { SystemdUserService } from "./service.js";
+import { SystemdUserService, runCommand } from "./service.js";
 import { hermesRunner } from "./hermes/cli.js";
 import { openStore } from "./store.js";
 import { T3Adapter } from "./t3/adapter.js";
@@ -659,6 +660,14 @@ async function main(argv: string[]): Promise<number> {
           });
       }, 30_000);
       const pages: FactoryPages = {
+        // Update runs as a unit of its own, so it outlives this service's restart.
+        updater: new SelfUpdate({
+          run: runCommand,
+          node: process.execPath,
+          cli: cliPath,
+          logPath: join(paths.root, "update.log"),
+          path: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+        }),
         version: () => {
           const state = versionCheck.state();
           return state === undefined ? undefined : { ...state, command: updateCommand };

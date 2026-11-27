@@ -99,7 +99,7 @@ export interface Shell {
   /** The project the picker is set to. Undefined means all projects. */
   project: string | undefined;
   /** The commit the service runs, how far origin/main is ahead of it, and the command that updates it. */
-  version?: { commit: string; behind?: number; command: string };
+  version?: { commit: string; behind?: number; command: string; updatable?: boolean };
   /**
    * The page's own address without a result notice: where the picker and the
    * pause control return to, and what a reloading page reloads. Undefined on
@@ -175,7 +175,11 @@ function versionLines(version: NonNullable<Shell["version"]>): string {
   const ahead =
     behind === 0
       ? ""
-      : `<p class="hint">${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main. To update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.</p>`;
+      : `<p class="hint">${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main. ${
+          version.updatable === true
+            ? '<a href="/update">Update</a>'
+            : `To update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.`
+        }</p>`;
   return `<div class="row-line"><span class="muted">Version <code>${escapeHtml(version.commit.slice(0, 7))}</code></span></div>${ahead}`;
 }
 
