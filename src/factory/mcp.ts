@@ -1,6 +1,8 @@
 import { trackingLine } from "../request-threads.js";
-import { timingSafeEqual } from "node:crypto";
-import { homedir } from "node:os";
+import { randomBytes, timingSafeEqual } from "node:crypto";
+import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -21,6 +23,8 @@ import {
   type ChangeRegister,
   type ChangeTool,
 } from "./chat-change-tools.js";
+import { chartData, CHART_METRICS } from "./chart.js";
+import { renderBarChart } from "./chart-image.js";
 import { ChatChanges, type Deploy } from "./chat-changes.js";
 import type { Intake } from "./intake.js";
 import type { Pipeline } from "./pipeline.js";
@@ -39,6 +43,8 @@ export interface FactoryMcpOptions {
   tokens: () => Partial<Record<RoleName, string>>;
   /** Where a role's chat gateway caches the files a requester sends; the only places attachments may come from. */
   attachmentRoots?: (role: RoleName) => readonly string[];
+  /** Where chart PNGs are written; defaults to a folder in the system's temp folder. At most `MAX_CHARTS` stay. */
+  chartDir?: string;
   now?: () => Date;
   /** Reads the host's health; defaults to the system's. Tests supply their own. */
   health?: (window: string | undefined) => HostHealth;
@@ -57,6 +63,7 @@ type Tool =
   | ChangeTool
   | "get_factory_stats"
   | "get_usage_stats"
+  | "get_factory_chart"
   | "get_host_health";
 
 /** Each tool's argument schema, shared by its handler and the check at the request boundary. */
@@ -87,6 +94,15 @@ const TOOL_SHAPES = {
   get_usage_stats: {
     window: z.string().optional().describe("a time window such as 24h, 7d, or 30d; default 7d"),
     repo: z.string().optional().describe("owner/repo to limit the stats to one project"),
+  },
+  get_factory_chart: {
+    metric: z
+      .enum(CHART_METRICS)
+      .describe(
+        "merges_per_day, tasks_by_stage (tasks that entered each stage in the window), or review_rounds (per completed task)",
+      ),
+    window: z.string().optional().describe("a time window such as 24h, 7d, or 30d; default 7d"),
+    repo: z.string().optional().describe("owner/repo to limit the chart to one project"),
   },
   get_host_health: {
     window: z
@@ -120,6 +136,7 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
     "read_thread",
     "get_factory_stats",
     "get_usage_stats",
+    "get_factory_chart",
     "get_host_health",
     ...CHANGE_TOOLS,
   ],
@@ -133,6 +150,22 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
     "read_thread",
   ],
 };
+
+/** The newest chart files kept in the chart folder; older ones are removed when a new chart is written. */
+const MAX_CHARTS = 20;
+
+/** Writes a chart PNG into `dir`, first removing the oldest charts so the folder never holds more than `MAX_CHARTS`. */
+function writeChart(dir: string, metric: string, png: Buffer): string {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const charts = readdirSync(dir)
+    .filter((name) => name.endsWith(".png"))
+    .map((name) => ({ path: join(dir, name), at: statSync(join(dir, name)).mtimeMs }))
+    .sort((a, b) => b.at - a.at);
+  for (const old of charts.slice(MAX_CHARTS - 1)) unlinkSync(old.path);
+  const path = join(dir, `${metric}-${randomBytes(6).toString("hex")}.png`);
+  writeFileSync(path, png, { mode: 0o600 });
+  return path;
+}
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_TEXT = 60_000;
@@ -499,6 +532,32 @@ export class FactoryMcp {
       ({ window, repo }) => {
         const stats = usageStats(this.options.db, { window, repo, now: this.now() });
         return { ...stats, report: formatUsageStats(stats) };
+      },
+    );
+    register(
+      "get_factory_chart",
+      "Draw a chart of recorded factory data as a PNG: merges_per_day, tasks_by_stage, or review_rounds, for a time window and optionally one project. Returns the PNG's path and a caption; attach the PNG to the reply with the MEDIA line in the report. When nothing is recorded in the window it returns no_data and no image.",
+      ({ metric, window, repo }) => {
+        const chart = chartData(this.options.db, { metric, window, repo, now: this.now() });
+        if (chart.kind === "no-data") {
+          return {
+            no_data: true,
+            report: `${chart.message} There is nothing to chart, so do not attach an image: tell the person this.`,
+          };
+        }
+        const png = renderBarChart(chart);
+        const path = writeChart(
+          this.options.chartDir ?? join(tmpdir(), "hephaestus-charts"),
+          metric,
+          png,
+        );
+        return {
+          path,
+          title: chart.title,
+          caption: chart.caption,
+          bars: chart.bars,
+          report: `${chart.title}. ${chart.caption}\nMEDIA:${path}`,
+        };
       },
     );
     register(

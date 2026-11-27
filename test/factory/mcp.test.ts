@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +46,7 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
     now: () => new Date(clock.now),
     tokens: () => TOKENS,
     attachmentRoots: (role) => chatCacheDirs(join(caches ?? tmpdir(), role)),
+    ...(caches === undefined ? {} : { chartDir: join(caches, "charts") }),
     health: () => FAKE_HEALTH,
   });
   server = mcp.listen(0);
@@ -564,5 +565,119 @@ describe("FactoryMcp", () => {
       expect(names).not.toContain("get_host_health");
       await c.close();
     }
+  });
+});
+
+describe("get_factory_chart", () => {
+  const PNG_SIGNATURE = [137, 80, 78, 71, 13, 10, 26, 10];
+
+  afterEach(async () => {
+    const dir = caches;
+    caches = undefined;
+    if (dir !== undefined) await rm(dir, { recursive: true, force: true });
+  });
+
+  async function startWithCharts(): Promise<{
+    h: Harness;
+    url: string;
+    dir: string;
+    mcp: FactoryMcp;
+  }> {
+    const dir = await mkdtemp(join(tmpdir(), "hephaestus-chart-test-"));
+    caches = dir;
+    const started = await start();
+    return { ...started, dir: join(dir, "charts") };
+  }
+
+  it("gives the planner a PNG of recorded merges, with the left-out tasks in the caption", async () => {
+    const { h, url, dir, mcp } = await startWithCharts();
+    const merged = h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "a" });
+    h.tasks.update(merged.id, { prNumber: 11 });
+    h.tasks.recordMerge("octo/app", 11, "sha", merged.id, false);
+    h.tasks.transition(merged.id, "Implementing", "work started");
+    h.tasks.transition(merged.id, "Done", "merged");
+    const bare = h.tasks.create({ repo: "octo/app", issueNumber: 2, title: "b" });
+    h.tasks.transition(bare.id, "Implementing", "work started");
+    h.tasks.transition(bare.id, "Done", "merged outside Hephaestus");
+
+    const c = await client(url, TOKENS.planner);
+    const result = json(
+      await c.callTool({
+        name: "get_factory_chart",
+        arguments: { metric: "merges_per_day", window: "7d", repo: "octo/app" },
+      }),
+    );
+    expect(String(result.path).startsWith(dir)).toBe(true);
+    expect(String(result.path)).toMatch(/\.png$/);
+    expect(result.caption).toContain("1 merge");
+    expect(result.caption).toContain("1 Done task left out because it has no recorded merge time");
+    expect(result.report).toContain(`MEDIA:${String(result.path)}`);
+    const file = await readFile(String(result.path));
+    expect([...file.subarray(0, 8)]).toEqual(PNG_SIGNATURE);
+    expect(mcp.calls()[0]).toMatchObject({ role: "planner", tool: "get_factory_chart", ok: true });
+    await c.close();
+  });
+
+  it("returns a no-data result and writes no file when the window is empty", async () => {
+    const { url, dir } = await startWithCharts();
+    const c = await client(url, TOKENS.planner);
+    for (const metric of ["merges_per_day", "tasks_by_stage", "review_rounds"]) {
+      const result = json(
+        await c.callTool({ name: "get_factory_chart", arguments: { metric, window: "24h" } }),
+      );
+      expect(result.no_data).toBe(true);
+      expect(result.path).toBeUndefined();
+      expect(String(result.report)).toContain("No ");
+      expect(String(result.report)).toContain("do not attach");
+    }
+    expect(await readdir(dir).catch(() => [])).toEqual([]);
+    await c.close();
+  });
+
+  it("refuses a bad window or metric", async () => {
+    const { url } = await startWithCharts();
+    const c = await client(url, TOKENS.planner);
+    const bad = await c.callTool({
+      name: "get_factory_chart",
+      arguments: { metric: "merges_per_day", window: "soon" },
+    });
+    expect(bad.isError).toBe(true);
+    const unknown = await c
+      .callTool({ name: "get_factory_chart", arguments: { metric: "vibes" } })
+      .catch(() => ({ isError: true }));
+    expect(unknown.isError).toBe(true);
+    await c.close();
+  });
+
+  it("keeps the chart folder bounded by removing the oldest charts", async () => {
+    const { h, url, dir } = await startWithCharts();
+    const task = h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "a" });
+    h.tasks.transition(task.id, "Escalated", "to the owner: x");
+    await mkdir(dir, { recursive: true });
+    for (let i = 0; i < 30; i++) {
+      const name = join(dir, `old-${String(i).padStart(2, "0")}.png`);
+      await writeFile(name, "x");
+      const when = new Date(Date.now() - (60 - i) * 60_000);
+      await utimes(name, when, when);
+    }
+    const c = await client(url, TOKENS.planner);
+    json(await c.callTool({ name: "get_factory_chart", arguments: { metric: "tasks_by_stage" } }));
+    const left = await readdir(dir);
+    expect(left.length).toBeLessThanOrEqual(20);
+    expect(left).toContain("old-29.png");
+    expect(left).not.toContain("old-00.png");
+    await c.close();
+  });
+
+  it("is offered to the planner only", async () => {
+    const { url } = await startWithCharts();
+    for (const token of [TOKENS.lead, TOKENS.improver]) {
+      const c = await client(url, token);
+      expect((await c.listTools()).tools.map((tool) => tool.name)).not.toContain(
+        "get_factory_chart",
+      );
+      await c.close();
+    }
+    expect(ROLE_TOOLS.planner).toContain("get_factory_chart");
   });
 });
