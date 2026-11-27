@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import type { Database } from "better-sqlite3";
+import { ConfigStore } from "../src/config/store.js";
 import { openStore, renameCardWords } from "../src/store.js";
 
 /**
@@ -28,8 +29,14 @@ function backToCardSchema(db: Database): void {
     CREATE INDEX card_events_by_card ON card_events (card_id, id);`);
 }
 
+/** Puts a current database back into the shape it had before version titles. */
+function backToUntitledVersions(db: Database): void {
+  db.exec("ALTER TABLE config_versions DROP COLUMN title;");
+}
+
 /** Puts a current database back into the shape it had before the lead's queue. */
 function backToBeforeQueue(db: Database): void {
+  backToUntitledVersions(db);
   db.exec(`ALTER TABLE tasks DROP COLUMN queue_order;
     ALTER TABLE tasks DROP COLUMN defer_reason;
     ALTER TABLE tasks DROP COLUMN defer_after;
@@ -83,7 +90,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 17)}`);
+    db.pragma(`user_version = ${String(latest - 18)}`);
     db.close();
 
     db = openStore(path);
@@ -127,7 +134,7 @@ describe("store migrations", () => {
       INSERT INTO mcp_calls (role, tool, arguments, ok, result, at)
         VALUES ('lead', 'start_work', '{"card_id":8,"brief":"b"}', 1, '{"card_id":8,"stage":"Implementing"}', 'x'),
                ('lead', 'list_cards', '{}', 1, '[{"card_id":8,"title":"Rename the card"}]', 'x');`);
-    db.pragma(`user_version = ${String(latest - 4)}`);
+    db.pragma(`user_version = ${String(latest - 5)}`);
     db.close();
 
     db = openStore(path);
@@ -209,7 +216,7 @@ describe("store migrations", () => {
         INSERT INTO chat_changes (target, summary, conversation, state, after_text, proposed_at)
           VALUES ('persona:planner', 's', 'c', 'proposed', 'a', 'x'), ('instruction:factory', 's', 'c', 'proposed', 'a', 'x');`);
       backToBeforeQueue(db);
-      db.pragma(`user_version = ${String(latest - 2)}`);
+      db.pragma(`user_version = ${String(latest - 3)}`);
     };
     const expectRenamed = (): void => {
       expect(db.pragma("user_version", { simple: true })).toBe(latest);
@@ -244,7 +251,7 @@ describe("store migrations", () => {
     expectRenamed();
     // Run again over the renamed rows, as after a crash between the rename and the version bump.
     backToBeforeQueue(db);
-    db.pragma(`user_version = ${String(latest - 2)}`);
+    db.pragma(`user_version = ${String(latest - 3)}`);
     db.close();
     db = openStore(path);
     expectRenamed();
@@ -270,7 +277,7 @@ describe("store migrations", () => {
       VALUES ('hephaestus-implement-3-0', 'w1', 'Task 3', 'p', 'm', 1, '3', 'pending', 'x', 'x'),
              ('hephaestus-implement-7-0', 'w1', 'Task 7', 'p', 'm', 1, '7', 'launched', 'x', 'x'),
              ('hephaestus-implement-8-0', 'w1', 'Task 8', 'p', 'm', 1, '8', 'failed', 'x', 'x');`);
-    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.pragma(`user_version = ${String(latest - 2)}`);
     db.close();
 
     db = openStore(path);
@@ -331,6 +338,28 @@ describe("store migrations", () => {
         .prepare("SELECT task_id FROM task_events WHERE kind = 'stage:Queued' ORDER BY task_id")
         .all(),
     ).toEqual([{ task_id: 1 }, { task_id: 4 }, { task_id: 8 }]);
+    db.close();
+  });
+
+  it("keeps the versions saved before titles, which read with a title made from their message", () => {
+    dir = mkdtempSync(join(tmpdir(), "hephaestus-store-"));
+    const path = join(dir, "state.db");
+    let db = openStore(path);
+    const latest = db.pragma("user_version", { simple: true }) as number;
+    backToUntitledVersions(db);
+    db.exec(`INSERT INTO config_versions (state, author, message, created_at, document)
+      VALUES ('draft', 'improver', 'Tighten the review skill. It missed two failing tests.', 'x', '{}');`);
+    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.close();
+
+    db = openStore(path);
+    expect(db.pragma("user_version", { simple: true })).toBe(latest);
+    const version = new ConfigStore(db).get(1);
+    expect(version).toMatchObject({
+      title: "Tighten the review skill",
+      message: "Tighten the review skill. It missed two failing tests.",
+      state: "draft",
+    });
     db.close();
   });
 

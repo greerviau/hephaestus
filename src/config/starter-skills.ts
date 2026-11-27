@@ -160,6 +160,7 @@ export function offerStarterSkills(options: {
       draft = store.createVersion({
         document,
         author: STARTER_AUTHOR,
+        title: "Starter skills from Hephaestus",
         message: `Starter skills from Hephaestus: ${parts.join("; ")}`,
         parentId: deployed.id,
       });

@@ -6,7 +6,7 @@ import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { ConfigStore } from "../../src/config/store.js";
+import { ConfigStore, MAX_TITLE_LENGTH } from "../../src/config/store.js";
 import { chatCacheDirs } from "../../src/hermes/cache.js";
 import { FactoryMcp, ROLE_TOOLS } from "../../src/factory/mcp.js";
 import { sampleConfig } from "../config/fixtures.js";
@@ -439,21 +439,43 @@ describe("FactoryMcp", () => {
     (config.instructions as Record<string, string>).factory = "# Better\n";
     const refused = await c.callTool({
       name: "propose_version",
-      arguments: { message: "m", config, evidence: [{ environment_id: "w1", thread_id: "nope" }] },
+      arguments: {
+        title: "t",
+        message: "m",
+        config,
+        evidence: [{ environment_id: "w1", thread_id: "nope" }],
+      },
     });
     expect(refused.isError).toBe(true);
+    const evidence = [{ environment_id: "w1", thread_id: "impl", note: "missed X" }];
+    // A proposal needs a short title beside the message that describes it.
+    for (const title of [undefined, "x".repeat(MAX_TITLE_LENGTH + 1)]) {
+      const untitled = await c.callTool({
+        name: "propose_version",
+        arguments: { ...(title === undefined ? {} : { title }), message: "m", config, evidence },
+      });
+      expect(untitled.isError).toBe(true);
+      expect(JSON.stringify(untitled.content)).toContain("title");
+    }
+    expect(store.count()).toBe(1);
     const proposed = json(
       await c.callTool({
         name: "propose_version",
         arguments: {
-          message: "Say X",
+          title: "Say X in the factory instructions",
+          message: "Threads kept missing X, so the factory instructions now say it.",
           config,
           evidence: [{ environment_id: "w1", thread_id: "impl", note: "missed X" }],
         },
       }),
     );
     expect(proposed).toMatchObject({ version: 2, state: "draft", changes: 1 });
-    expect(store.get(2)).toMatchObject({ author: "improver", state: "draft" });
+    expect(store.get(2)).toMatchObject({
+      author: "improver",
+      state: "draft",
+      title: "Say X in the factory instructions",
+      message: "Threads kept missing X, so the factory instructions now say it.",
+    });
     expect(
       h.db.prepare("SELECT thread_id, note FROM version_evidence WHERE version_id = 2").all(),
     ).toEqual([{ thread_id: "impl", note: "missed X" }]);

@@ -283,6 +283,7 @@ ol.log .tool .what { color: var(--ink-2); }
 .diff .ln { white-space: pre; padding: 0 12px; min-width: max-content; }
 .diff .add { background: var(--add); } .diff .del { background: var(--del); }
 .diff .ctx { color: var(--muted); }
+p.desc { margin: 0; max-width: 72ch; white-space: pre-wrap; overflow-wrap: anywhere; }
 pre.block { background: var(--sunk); border: 1px solid var(--line); border-radius: var(--r); padding: 12px; margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 textarea.config { min-height: 420px; font-size: 13px; }
 .code-big { font-size: 24px; font-weight: 700; letter-spacing: 0.08em; padding: 8px 16px; border: 1px dashed var(--ctl); border-radius: var(--r); display: inline-block; background: var(--sunk); }
