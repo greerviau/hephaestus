@@ -645,3 +645,133 @@ describe("proposalAlerts", () => {
     expect(alerts[0]?.text).not.toMatch(/communicator|lead|improver/i);
   });
 });
+
+const SLACK_BOT = `xoxb-1234567890-1234567890123-${"a".repeat(24)}`;
+const SLACK_APP = `xapp-1-A0123456789-1234567890123-${"b".repeat(64)}`;
+const SLACK_USER = "U0123ABCDEF";
+const SLACK_CHANNEL = "C0123ABCDEF";
+const SLACK_OTHER = "C0456GHIJKL";
+const SLACK_THIRD = "G0789MNOPQR";
+
+describe("Messaging on Slack", () => {
+  it("connects Slack with its bot and app tokens, answers in the request channel, and reads only it", async () => {
+    await messaging.connect("slack", {
+      token: SLACK_BOT,
+      appToken: SLACK_APP,
+      users: SLACK_USER,
+      home: SLACK_CHANNEL,
+    });
+
+    expect(env()).toContain("HEPHAESTUS_MCP_TOKEN=keep-me");
+    expect(env()).toContain(`SLACK_BOT_TOKEN=${SLACK_BOT}\n`);
+    expect(env()).toContain(`SLACK_APP_TOKEN=${SLACK_APP}\n`);
+    expect(env()).toContain(`SLACK_ALLOWED_USERS=${SLACK_USER}\n`);
+    expect(env()).toContain(`SLACK_HOME_CHANNEL=${SLACK_CHANNEL}\n`);
+    expect(env()).toContain(`SLACK_FREE_RESPONSE_CHANNELS=${SLACK_CHANNEL}\n`);
+    expect(env()).toContain(`SLACK_ALLOWED_CHANNELS=${SLACK_CHANNEL}\n`);
+    expect(statSync(join(root, "profiles", "communicator", ".env")).mode & 0o777).toBe(0o600);
+    expect(restarts).toBe(1);
+    expect(messaging.states().find((state) => state.platform === "slack")).toMatchObject({
+      label: "Slack",
+      connected: true,
+      tokenEnd: SLACK_BOT.slice(-4),
+      users: [SLACK_USER],
+      request: SLACK_CHANNEL,
+      readAll: false,
+      home: SLACK_CHANNEL,
+    });
+    expect(messaging.credentials("slack")).toEqual({ token: SLACK_BOT, request: SLACK_CHANNEL });
+  });
+
+  it("reads the listed channels, posts status and alerts apart, and keeps the tokens when channels change", async () => {
+    await messaging.connect("slack", {
+      token: SLACK_BOT,
+      appToken: SLACK_APP,
+      users: SLACK_USER,
+      home: SLACK_CHANNEL,
+      reads: `${SLACK_OTHER}, ${SLACK_THIRD}`,
+      status: SLACK_OTHER,
+      alerts: SLACK_THIRD,
+    });
+    expect(env()).toContain(
+      `SLACK_ALLOWED_CHANNELS=${SLACK_CHANNEL},${SLACK_OTHER},${SLACK_THIRD}\n`,
+    );
+    expect(env()).toContain(`SLACK_HOME_CHANNEL=${SLACK_OTHER}\n`);
+    await messaging.send("slack", "status line");
+    await messaging.send("slack", "alert line", "alerts");
+    expect(calls.map((call) => call.args.at(-1))).toEqual([
+      `slack:${SLACK_OTHER}`,
+      `slack:${SLACK_THIRD}`,
+    ]);
+
+    await messaging.setChannels("slack", { home: SLACK_CHANNEL, readAll: true });
+    expect(env()).not.toContain("SLACK_ALLOWED_CHANNELS");
+    expect(env()).toContain(`SLACK_BOT_TOKEN=${SLACK_BOT}\n`);
+    expect(env()).toContain(`SLACK_APP_TOKEN=${SLACK_APP}\n`);
+    expect(messaging.states().find((state) => state.platform === "slack")?.readAll).toBe(true);
+  });
+
+  it("refuses a wrong bot or app token, user, or channel, and changes nothing", async () => {
+    const good = { token: SLACK_BOT, appToken: SLACK_APP, users: SLACK_USER, home: SLACK_CHANNEL };
+    for (const input of [
+      { ...good, token: SLACK_APP },
+      { ...good, token: DISCORD_TOKEN },
+      { ...good, appToken: "" },
+      { ...good, appToken: SLACK_BOT },
+      { ...good, users: USER },
+      { ...good, users: "" },
+      { ...good, home: "" },
+      { ...good, home: "general" },
+      { ...good, reads: "#random" },
+      { ...good, status: CHANNEL },
+    ]) {
+      await expect(messaging.connect("slack", input)).rejects.toThrow(MessagingError);
+    }
+    await expect(messaging.connect("slack", { ...good, appToken: "" })).rejects.toThrow(
+      /Slack app-level token/,
+    );
+    await expect(messaging.connect("slack", { ...good, users: USER })).rejects.toThrow(
+      /Slack member ID/,
+    );
+    expect(env()).toBe("HEPHAESTUS_MCP_TOKEN=keep-me\n");
+    expect(restarts).toBe(0);
+  });
+
+  it("removes only the Slack settings on disconnect, and leaves Discord connected", async () => {
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    const discord = env();
+    await messaging.connect("slack", {
+      token: SLACK_BOT,
+      appToken: SLACK_APP,
+      users: SLACK_USER,
+      home: SLACK_CHANNEL,
+    });
+    await messaging.disconnect("slack");
+    expect(env()).toBe(discord);
+    expect(messaging.states().find((state) => state.platform === "slack")?.connected).toBe(false);
+    expect(messaging.states().find((state) => state.platform === "discord")?.connected).toBe(true);
+  });
+
+  it("posts to a Slack thread and hides both tokens in errors", async () => {
+    await messaging.connect("slack", {
+      token: SLACK_BOT,
+      appToken: SLACK_APP,
+      users: SLACK_USER,
+      home: SLACK_CHANNEL,
+    });
+    await messaging.sendTo("slack", `${SLACK_CHANNEL}:1712345678.000100`, "in the thread");
+    expect(calls.at(-1)).toEqual({
+      args: ["-p", "communicator", "send", "--to", `slack:${SLACK_CHANNEL}:1712345678.000100`],
+      input: "in the thread",
+    });
+    await expect(messaging.sendTo("slack", `${SLACK_CHANNEL}:x y`, "no")).rejects.toThrow(
+      /not a chat ID/,
+    );
+    expect(calls.some((call) => call.args.join(" ").includes("xox"))).toBe(false);
+
+    fail = new Error(`invalid_auth for ${SLACK_BOT} and ${SLACK_APP}`);
+    await expect(messaging.send("slack", "hello")).rejects.toThrow(
+      "invalid_auth for [token] and [token]",
+    );
+  });
+});

@@ -667,7 +667,7 @@ export interface InputOptions extends FieldNotes {
   placeholder?: string;
   maxlength?: number;
   autocomplete?: string;
-  inputmode?: "numeric" | "decimal" | "url" | "email";
+  inputmode?: "numeric" | "decimal" | "url" | "email" | undefined;
   /** Defaults to true. */
   required?: boolean;
   autofocus?: boolean;

@@ -60,6 +60,7 @@ describe("Chat page", () => {
     expect(html).toContain('<h1 id="page-title">Chat</h1>');
     expect(html).toContain('href="/chat/connect/discord"');
     expect(html).toContain('href="/chat/connect/telegram"');
+    expect(html).toContain('href="/chat/connect/slack"');
     expect(html).toContain("Not connected");
     expect(html).toContain("Connect a platform first.");
     expect(html).not.toContain('<form method="post" action="/chat/discord/connect"');
@@ -71,6 +72,7 @@ describe("Chat page", () => {
   it.each([
     ["discord", "Connect Discord", "Request channel ID", true],
     ["telegram", "Connect Telegram", "Request chat ID (optional)", false],
+    ["slack", "Connect Slack", "Request channel ID", true],
   ] as const)(
     "gives %s a connect page of its own with the steps and the form",
     async (platform, title, channelLabel, channelRequired) => {
@@ -81,6 +83,10 @@ describe("Chat page", () => {
       expect(html).toContain('<a href="/chat">Chat</a>');
       expect(html).toContain(`<form class="form" method="post" action="/chat/${platform}/connect"`);
       expect(html).toContain('<input type="password" id="token" name="token"');
+      // Only Slack needs a second, app-level token, for Socket Mode.
+      expect(html.includes('<input type="password" id="app_token" name="app_token"')).toBe(
+        platform === "slack",
+      );
       expect(html).toContain(`>${channelLabel}</label>`);
       expect(/<input type="text" id="channel" name="channel"[^>]* required/.test(html)).toBe(
         channelRequired,
@@ -253,5 +259,68 @@ describe("Chat page", () => {
     const retried = await dashboard.post("/chat/restart");
     expect(retried.headers.get("location")).toBe("/chat?notice=restarted");
     expect(restarts).toBe(2);
+  });
+});
+
+const SLACK_BOT = `xoxb-1234567890-1234567890123-${"a".repeat(24)}`;
+const SLACK_APP = `xapp-1-A0123456789-1234567890123-${"b".repeat(64)}`;
+const SLACK = {
+  token: SLACK_BOT,
+  app_token: SLACK_APP,
+  users: "U0123ABCDEF",
+  channel: "C0123ABCDEF",
+};
+
+describe("Chat page, Slack", () => {
+  it("connects Slack beside Discord, shows its IDs, sends a test, and never shows either token", async () => {
+    const sent: string[] = [];
+    dashboard = await withMessaging(sent);
+    await dashboard.post("/chat/discord/connect", DISCORD);
+    const connected = await dashboard.post("/chat/slack/connect", {
+      ...SLACK,
+      reads: "C0456GHIJKL",
+      alerts: "G0789MNOPQR",
+    });
+    expect(connected.headers.get("location")).toBe("/chat?notice=connected");
+    const page = (await dashboard.get("/chat")).html;
+    expect(page).toContain(`Bot token ending <code>${SLACK_BOT.slice(-4)}</code>`);
+    expect(page).toContain("answers U0123ABCDEF");
+    expect(page).toContain("reads channel C0123ABCDEF, C0456GHIJKL");
+    expect(page).toContain("status goes to channel C0123ABCDEF");
+    expect(page).toContain("alerts go to channel G0789MNOPQR");
+    expect(page).toContain("Discord and Slack");
+    expect(page).not.toContain(SLACK_BOT);
+    expect(page).not.toContain(SLACK_APP);
+    expect(page).toContain('action="/chat/slack/test"');
+    expect(page).toContain('href="/chat/slack/channels"');
+    expect(page).toContain("Remove the Slack bot's credentials from this host?");
+    expect(page).not.toContain('href="/chat/connect/slack"');
+    expect(page).not.toMatch(/communicator|lead|improver/i);
+
+    await dashboard.post("/chat/slack/test");
+    expect(sent).toEqual(["Hephaestus is connected. Ask for work here."]);
+
+    const form = await dashboard.get("/chat/slack/channels");
+    expect(form.html).toContain('<h1 id="page-title">Slack channels</h1>');
+    expect(form.html).toContain('name="channel" value="C0123ABCDEF"');
+    expect(form.html).not.toContain('inputmode="numeric"');
+    expect(form.html).not.toContain(SLACK_APP);
+
+    const gone = await dashboard.post("/chat/slack/disconnect");
+    expect(gone.headers.get("location")).toBe("/chat?notice=disconnected");
+    const after = (await dashboard.get("/chat")).html;
+    expect(after).toContain('href="/chat/connect/slack"');
+    expect(after).not.toContain('href="/chat/connect/discord"');
+  });
+
+  it("says what to fix when the app token is missing, and keeps neither token", async () => {
+    dashboard = await withMessaging();
+    const response = await dashboard.post("/chat/slack/connect", { ...SLACK, app_token: "" });
+    const html = await response.text();
+    expect(response.status).toBe(400);
+    expect(html).toContain("Slack: not changed");
+    expect(html).toContain("does not look like a Slack app-level token");
+    expect(html).toContain('name="users" value="U0123ABCDEF"');
+    expect(html).not.toContain(SLACK_BOT);
   });
 });

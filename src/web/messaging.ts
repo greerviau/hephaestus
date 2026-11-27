@@ -1,5 +1,6 @@
 import {
   MessagingError,
+  PLATFORM_NAMES,
   PLATFORMS,
   RestartError,
   statusTarget,
@@ -32,6 +33,9 @@ import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./h
 
 const MAX_FORM_BYTES = 16 * 1024;
 
+/** The platform names as a regex group, so each route takes every platform. */
+const NAMES = `(${PLATFORM_NAMES.join("|")})`;
+
 /** How to make a bot on each platform, shown beside its form. Safe HTML. */
 const STEPS: Record<PlatformName, string[]> = {
   discord: [
@@ -43,6 +47,11 @@ const STEPS: Record<PlatformName, string[]> = {
     "In Telegram, message @BotFather, send /newbot, and copy the token it gives you.",
     "Message @userinfobot to get your numeric user ID.",
     "Leave the chat empty to use your direct chat with the bot, or give a group's ID.",
+  ],
+  slack: [
+    `On ${externalLink("https://api.slack.com/apps", "Slack's app page")}, create an app from scratch. Under Socket Mode, turn it on and make an app-level token with the connections:write scope. Under Event Subscriptions, subscribe the bot to message.channels, message.groups, message.im, and app_mention.`,
+    "Under OAuth &amp; Permissions, add the bot scopes chat:write, channels:history, groups:history, im:history, app_mentions:read, users:read, and files:write, install the app to your workspace, and copy the Bot User OAuth Token. Invite the bot to your channels.",
+    "In Slack, open your profile and choose Copy member ID for your user ID. Open a channel's details for its channel ID at the bottom.",
   ],
 };
 
@@ -136,7 +145,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     },
     {
       method: "GET",
-      path: /^\/chat\/connect\/(discord|telegram)$/,
+      path: new RegExp(`^/chat/connect/${NAMES}$`),
       handle: (context) => {
         const { response, params } = context;
         const platform = params[0] as PlatformName;
@@ -150,12 +159,12 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     },
     {
       method: "POST",
-      path: /^\/chat\/(discord|telegram)\/(connect|disconnect|test)$/,
+      path: new RegExp(`^/chat/${NAMES}/(connect|disconnect|test)$`),
       handle: (context) => act(context),
     },
     {
       method: "GET",
-      path: /^\/chat\/(discord|telegram)\/channels$/,
+      path: new RegExp(`^/chat/${NAMES}/channels$`),
       handle: (context) => {
         const { response, params } = context;
         const platform = params[0] as PlatformName;
@@ -179,7 +188,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     },
     {
       method: "POST",
-      path: /^\/chat\/(discord|telegram)\/channels$/,
+      path: new RegExp(`^/chat/${NAMES}/channels$`),
       handle: async (context) => {
         const { request, response, params } = context;
         const platform = params[0] as PlatformName;
@@ -259,6 +268,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
       if (action === "connect") {
         await messaging.connect(platform, {
           token: form.get("token") ?? "",
+          appToken: form.get("app_token") ?? "",
           users: typed.users,
           ...channelInput(typed),
         });
@@ -324,7 +334,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
         : rowList([
             {
               title: "Post what needs you to the chat",
-              sub: `Escalations, reverts, proposals to approve, and workers that need a sign-in are posted to the alerts channel on ${escapeHtml(connected.map((state) => state.label).join(" and "))}, each with a link to the dashboard.`,
+              sub: `Escalations, reverts, proposals to approve, and workers that need a sign-in are posted to the alerts channel on ${escapeHtml(listed(connected.map((state) => state.label)))}, each with a link to the dashboard.`,
               aside: `${statusText(alerts ? "done" : "off", alerts ? "On" : "Off")}${postButton(
                 `/chat/alerts/${alerts ? "off" : "on"}`,
                 alerts ? "Turn alerts off" : "Turn alerts on",
@@ -366,7 +376,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
         : callout("err", `${platform.label}: not changed`, escapeHtml(problem.text));
     const form = `<form class="form" method="post" action="/chat/${name}/connect" autocomplete="off">
 ${input("token", "Bot token", { type: "password", autocomplete: "off", hint: "Kept in a file only you can read on this host. It is never shown again." })}
-${input("users", "Your user ID", { value: typed?.users, inputmode: "numeric", hint: "Only these users can use the bot. Separate several with commas." })}
+${platform.appToken === undefined ? "" : `${input("app_token", "App-level token", { type: "password", autocomplete: "off", hint: "The xapp- token Socket Mode uses. Kept and never shown again, like the bot token." })}\n`}${input("users", "Your user ID", { value: typed?.users, inputmode: numeric(name), hint: "Only these users can use the bot. Separate several with commas." })}
 ${channelFields(name, typed)}
 <div class="savebar"><button type="submit" class="primary">${escapeHtml(title)}</button><a href="/chat">Cancel</a></div>
 </form>`;
@@ -417,16 +427,17 @@ ${channelFields(name, typed)}
 /** The channel fields that the connect and channels forms share. */
 function channelFields(name: PlatformName, typed: Typed | undefined): string {
   const platform = PLATFORMS[name];
-  const where = name === "discord" ? "channel" : "chat";
+  const where = noun(name);
+  const inputmode = numeric(name);
   const request = platform.needsChannel
     ? input("channel", "Request channel ID", {
         value: typed?.channel,
-        inputmode: "numeric",
+        inputmode,
         hint: "Ask for work here without mentioning the bot; each request gets its own thread.",
       })
     : input("channel", "Request chat ID (optional)", {
         value: typed?.channel,
-        inputmode: "numeric",
+        inputmode,
         required: false,
         hint: "Ask for work here. Empty uses your direct chat with the bot.",
       });
@@ -436,27 +447,43 @@ function channelFields(name: PlatformName, typed: Typed | undefined): string {
       value: typed?.reads,
       rows: 2,
       required: false,
-      hint:
-        name === "discord"
-          ? "Channel IDs, separated by commas. The bot answers there when you mention it. Empty keeps it to the request channel."
-          : "Group chat IDs, separated by commas. Empty keeps it to the request chat and your direct chat.",
+      hint: platform.needsChannel
+        ? "Channel IDs, separated by commas. The bot answers there when you mention it. Empty keeps it to the request channel."
+        : "Group chat IDs, separated by commas. Empty keeps it to the request chat and your direct chat.",
     }),
     checkbox("read_all", `Let the bot read every ${where} it can see`, {
       checked: typed?.readAll === true,
     }),
     input("status", `Status ${where} ID (optional)`, {
       value: typed?.status,
-      inputmode: "numeric",
+      inputmode,
       required: false,
       hint: `Where the factory's own notices go, such as scheduled job results and restarts. Empty uses the request ${where}.`,
     }),
     input("alerts", `Alerts ${where} ID (optional)`, {
       value: typed?.alerts,
-      inputmode: "numeric",
+      inputmode,
       required: false,
       hint: `Where anything that needs you goes. Empty uses the status ${where}, or the request ${where} when that is empty too.`,
     }),
   ].join("\n");
+}
+
+/** What the platform calls the place a bot reads: a channel, or a chat on Telegram. */
+function noun(name: PlatformName): string {
+  return PLATFORMS[name].needsChannel ? "channel" : "chat";
+}
+
+/** The number pad for platforms whose IDs are numbers. */
+function numeric(name: PlatformName): "numeric" | undefined {
+  return PLATFORMS[name].numericIds ? "numeric" : undefined;
+}
+
+/** Names as a sentence lists them: "A", "A and B", or "A, B, and C". */
+function listed(names: string[]): string {
+  return names.length < 3
+    ? names.join(" and ")
+    : `${names.slice(0, -1).join(", ")}, and ${names.at(-1) ?? ""}`;
 }
 
 function disconnectId(state: PlatformState): string {
@@ -471,14 +498,14 @@ function platformRow(state: PlatformState): Row {
       aside: buttonLink(`/chat/connect/${state.platform}`, "Connect"),
     };
   }
-  const noun = state.platform === "discord" ? "channel" : "chat";
+  const where = noun(state.platform);
   const at = (id: string | undefined, direct: string): string =>
-    id === undefined ? direct : `${noun} ${escapeHtml(id)}`;
+    id === undefined ? direct : `${where} ${escapeHtml(id)}`;
   const direct = "your direct chat";
   const reads = state.readAll
-    ? `reads every ${noun} it can see`
+    ? `reads every ${where} it can see`
     : `reads ${[
-        state.request === undefined ? direct : `${noun} ${escapeHtml(state.request)}`,
+        state.request === undefined ? direct : `${where} ${escapeHtml(state.request)}`,
         ...state.reads.map(escapeHtml),
       ].join(", ")}`;
   const status = statusTarget(state);

@@ -13,7 +13,7 @@ const OTHER = "555555555555555555";
 
 let db: Database;
 let tasks: TaskStore;
-let posts: { chat: string; text: string; attachments: boolean }[];
+let posts: { platform: string; chat: string; text: string; attachments: boolean }[];
 let unreadable: Set<string>;
 let failPosts: number;
 let messages: Record<string, { id: string; content: string; author: { id: string } }[]>;
@@ -62,13 +62,14 @@ beforeEach(() => {
     db,
     tasks,
     messaging: {
-      credentials: () => ({ token: "token", request: CHANNEL }),
-      sendTo: (_platform, chat, text, attachments) => {
+      credentials: (platform) =>
+        platform === "discord" ? { token: "token", request: CHANNEL } : undefined,
+      sendTo: (platform, chat, text, attachments) => {
         if (failPosts > 0) {
           failPosts -= 1;
           return Promise.reject(new Error("Discord is down"));
         }
-        posts.push({ chat, text, attachments: attachments === true });
+        posts.push({ platform, chat, text, attachments: attachments === true });
         return Promise.resolve();
       },
     },
@@ -506,5 +507,139 @@ describe("RequestThreads, an updated PR", () => {
     expect(texts.find((text) => text.startsWith("This needs you"))).toMatch(
       /^This needs you: approve the revert merge\./,
     );
+  });
+});
+
+describe("RequestThreads on Slack", () => {
+  const SLACK_BOT = "U0BOT00001";
+  const SLACK_CHANNEL = "C0123ABCDEF";
+  const ROOT = "1712345678.000100";
+  let slackMessages: Record<string, { ts: string; text: string; user: string }[]>;
+  let roots: { ts: string; thread_ts?: string; reply_count?: number; latest_reply?: string }[];
+  let calls: string[];
+  let slackFails: boolean;
+
+  const slackFetcher: Fetch = (url, init) => {
+    calls.push(url);
+    const parsed = new URL(url);
+    const method = parsed.pathname.replace("/api/", "");
+    let body: unknown = { ok: false, error: "unknown_method" };
+    if (init.headers.Authorization !== "Bearer xoxb-token")
+      body = { ok: false, error: "invalid_auth" };
+    else if (slackFails) body = { ok: false, error: "ratelimited" };
+    else if (method === "auth.test") body = { ok: true, user_id: SLACK_BOT };
+    else if (
+      method === "conversations.history" &&
+      parsed.searchParams.get("channel") === SLACK_CHANNEL
+    ) {
+      body = { ok: true, messages: roots };
+    } else if (method === "conversations.replies") {
+      const ts = parsed.searchParams.get("ts") ?? "";
+      const oldest = parsed.searchParams.get("oldest");
+      body = {
+        ok: true,
+        messages: (slackMessages[ts] ?? []).filter(
+          (message) => oldest === null || Number(message.ts) > Number(oldest),
+        ),
+      };
+    }
+    return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(body) });
+  };
+
+  beforeEach(() => {
+    slackMessages = {};
+    roots = [];
+    calls = [];
+    slackFails = false;
+    threads = new RequestThreads({
+      db,
+      tasks,
+      messaging: {
+        credentials: (platform) =>
+          platform === "slack" ? { token: "xoxb-token", request: SLACK_CHANNEL } : undefined,
+        sendTo: (platform, chat, text, attachments) => {
+          posts.push({ platform, chat, text, attachments: attachments === true });
+          return Promise.resolve();
+        },
+      },
+      github: { evidence: () => Promise.resolve(evidence) },
+      install: "0123abcd-ffff-4fff-8fff-ffffffffffff",
+      dashboardUrl: () => "http://host:7700/",
+      fetcher: slackFetcher,
+    });
+  });
+
+  it("follows a request's Slack thread by the bot's tracking line, and posts each milestone there", async () => {
+    const id = task();
+    await threads.progress();
+    roots = [
+      { ts: ROOT, thread_ts: ROOT, reply_count: 2, latest_reply: "1712345680.000300" },
+      // A message nobody answered has no thread to follow.
+      { ts: "1712345690.000100" },
+    ];
+    slackMessages[ROOT] = [
+      { ts: ROOT, text: "Could you add a flag?", user: "U0OWNER001" },
+      { ts: "1712345679.000200", text: trackingLine("octo/app", 7), user: "U0OWNER001" },
+      {
+        ts: "1712345680.000300",
+        text: `Filed https://github.com/octo/app/issues/7\n\`${trackingLine("octo/app", 7)}\``,
+        user: SLACK_BOT,
+      },
+    ];
+    await threads.link();
+    tasks.transition(id, "Queued", "the lead queued the work");
+    tasks.transition(id, "Implementing", "work started");
+    await threads.progress();
+
+    const chat = `${SLACK_CHANNEL}:${ROOT}`;
+    expect(posts).toEqual([
+      {
+        platform: "slack",
+        chat,
+        text: "Following octo/app#7: it is admitted and waiting to start. Progress shows up here.",
+        attachments: false,
+      },
+      { platform: "slack", chat, text: "Work started.", attachments: false },
+    ]);
+    // The token goes only in the header, never in a URL.
+    expect(calls.some((url) => url.includes("xoxb"))).toBe(false);
+    expect(
+      calls.some((url) => url.startsWith("https://slack.com/api/conversations.replies?")),
+    ).toBe(true);
+  });
+
+  it("reads a thread again only when it has new replies, and follows an issue filed later", async () => {
+    task(7);
+    task(8);
+    await threads.progress();
+    roots = [{ ts: ROOT, thread_ts: ROOT, reply_count: 1, latest_reply: "1712345680.000300" }];
+    slackMessages[ROOT] = [
+      { ts: "1712345680.000300", text: trackingLine("octo/app", 7), user: SLACK_BOT },
+    ];
+    await threads.link();
+    await threads.link();
+    expect(calls.filter((url) => url.includes("conversations.replies"))).toHaveLength(1);
+
+    slackMessages[ROOT].push({
+      ts: "1712345699.000400",
+      text: trackingLine("octo/app", 8),
+      user: SLACK_BOT,
+    });
+    roots = [{ ts: ROOT, thread_ts: ROOT, reply_count: 2, latest_reply: "1712345699.000400" }];
+    await threads.link();
+    const rows = db
+      .prepare("SELECT number, platform, chat FROM chat_threads ORDER BY number")
+      .all();
+    expect(rows).toEqual([
+      { number: 7, platform: "slack", chat: `${SLACK_CHANNEL}:${ROOT}` },
+      { number: 8, platform: "slack", chat: `${SLACK_CHANNEL}:${ROOT}` },
+    ]);
+  });
+
+  it("fails the pass with Slack's error, and never says the token", async () => {
+    slackFails = true;
+    const failure = threads.link();
+    await expect(failure).rejects.toThrow(/ratelimited/);
+    await expect(failure).rejects.not.toThrow(/xoxb/);
   });
 });

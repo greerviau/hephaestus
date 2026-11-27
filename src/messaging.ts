@@ -9,7 +9,7 @@ import { getMeta, setMeta } from "./meta.js";
 /** The factory role that talks to the owner in a chat; the owner never needs its name. */
 const CHAT_ROLE = "communicator";
 
-export const PLATFORM_NAMES = ["telegram", "discord"] as const;
+export const PLATFORM_NAMES = ["telegram", "discord", "slack"] as const;
 export type PlatformName = (typeof PLATFORM_NAMES)[number];
 
 interface Platform {
@@ -30,8 +30,22 @@ interface Platform {
   alertsKey: string;
   /** What a bot token looks like, so a pasted typo is caught before the gateway restarts. */
   tokenShape: RegExp;
-  /** What a user or channel ID looks like. */
+  /** What a channel ID looks like, and a user ID when `userShape` is absent. */
   idShape: RegExp;
+  userShape?: RegExp;
+  /** What a chat Hephaestus posts to looks like, such as a thread; `idShape` when absent. */
+  chatShape?: RegExp;
+  /** Whether IDs are numbers, so the forms bring up a number pad. */
+  numericIds: boolean;
+  /** How refusals name a user ID, a channel ID, and a list of channel IDs. */
+  userIdText: string;
+  channelIdText: string;
+  channelIdsText: string;
+  /**
+   * A second token the bot needs, such as Slack's app-level token for Socket
+   * Mode, kept and removed with the bot token.
+   */
+  appToken?: { key: string; shape: RegExp; text: string };
   /** Whether the platform needs a channel; Telegram can use the owner's direct chat instead. */
   needsChannel: boolean;
   /** Further `.env` settings for the channel, such as making it a request channel. */
@@ -50,6 +64,10 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     alertsKey: "HEPHAESTUS_TELEGRAM_ALERTS_CHANNEL",
     tokenShape: /^\d{5,}:[A-Za-z0-9_-]{30,}$/,
     idShape: /^-?\d{3,}$/,
+    numericIds: true,
+    userIdText: "numeric Telegram user ID",
+    channelIdText: "numeric Telegram ID",
+    channelIdsText: "numeric IDs",
     needsChannel: false,
     channelSettings: () => ({}),
   },
@@ -64,6 +82,10 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     alertsKey: "HEPHAESTUS_DISCORD_ALERTS_CHANNEL",
     tokenShape: /^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$/,
     idShape: /^\d{15,22}$/,
+    numericIds: true,
+    userIdText: "numeric Discord user ID",
+    channelIdText: "numeric Discord ID",
+    channelIdsText: "numeric IDs",
     needsChannel: true,
     // In the request channel the bot answers without an @mention, in a new thread per message.
     channelSettings: (channel) => ({
@@ -71,6 +93,36 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
       DISCORD_AUTO_THREAD: channel === undefined ? undefined : "true",
       DISCORD_FREE_RESPONSE_AUTO_THREAD: channel === undefined ? undefined : "true",
     }),
+  },
+  slack: {
+    label: "Slack",
+    token: "SLACK_BOT_TOKEN",
+    users: "SLACK_ALLOWED_USERS",
+    home: "SLACK_HOME_CHANNEL",
+    readGate: "SLACK_ALLOWED_CHANNELS",
+    requestKey: "HEPHAESTUS_SLACK_REQUEST_CHANNEL",
+    statusKey: "HEPHAESTUS_SLACK_STATUS_CHANNEL",
+    alertsKey: "HEPHAESTUS_SLACK_ALERTS_CHANNEL",
+    tokenShape: /^xoxb-[A-Za-z0-9-]{20,}$/,
+    // Hermes's Slack adapter connects over Socket Mode, which needs an app-level token too.
+    appToken: {
+      key: "SLACK_APP_TOKEN",
+      shape: /^xapp-[A-Za-z0-9-]{20,}$/,
+      text: "Slack app-level token (xapp-...)",
+    },
+    // Public and private channels, and direct chats; member IDs start with U or W.
+    idShape: /^[CGD][A-Z0-9]{8,}$/,
+    userShape: /^[UW][A-Z0-9]{8,}$/,
+    // A thread is its channel and the timestamp of its first message, the form Hermes sends to.
+    chatShape: /^[CGD][A-Z0-9]{8,}(:\d+\.\d+)?$/,
+    numericIds: false,
+    userIdText: "Slack member ID, such as U0123ABCD",
+    channelIdText: "Slack channel ID, such as C0123ABCD",
+    channelIdsText: "IDs such as C0123ABCD",
+    needsChannel: true,
+    // In the request channel the bot answers without an @mention; Hermes replies in a thread
+    // under each message by default.
+    channelSettings: (channel) => ({ SLACK_FREE_RESPONSE_CHANNELS: channel }),
   },
 };
 
@@ -274,7 +326,7 @@ export class Messaging {
   /** Saves the bot's credentials and restarts the gateway, so the bot starts answering. */
   async connect(
     name: PlatformName,
-    input: { token: string; users: string } & ChannelInput,
+    input: { token: string; appToken?: string; users: string } & ChannelInput,
   ): Promise<void> {
     if (!this.ready()) {
       throw new MessagingError("Deploy a config version first; it sets up the factory's Hermes.");
@@ -286,18 +338,26 @@ export class Messaging {
         `That does not look like a ${platform.label} bot token. Paste the whole token.`,
       );
     }
+    const appToken = input.appToken?.trim() ?? "";
+    if (platform.appToken !== undefined && !platform.appToken.shape.test(appToken)) {
+      throw new MessagingError(
+        `That does not look like a ${platform.appToken.text}. Paste the whole token.`,
+      );
+    }
     const users = input.users
       .split(/[\s,]+/)
       .map((user) => user.trim())
       .filter((user) => user !== "");
-    if (users.length === 0 || !users.every((user) => platform.idShape.test(user))) {
+    const userShape = platform.userShape ?? platform.idShape;
+    if (users.length === 0 || !users.every((user) => userShape.test(user))) {
       throw new MessagingError(
-        `Give your numeric ${platform.label} user ID; separate several with commas. Only these users can use the bot.`,
+        `Give your ${platform.userIdText}; separate several with commas. Only these users can use the bot.`,
       );
     }
     const channels = this.channelSettings(name, input, users);
     this.writeEnv({
       [platform.token]: token,
+      ...(platform.appToken === undefined ? {} : { [platform.appToken.key]: appToken }),
       [platform.users]: users.join(","),
       ...channels,
     });
@@ -332,14 +392,14 @@ export class Messaging {
       );
     }
     if (home !== "" && !platform.idShape.test(home)) {
-      throw new MessagingError(`The channel must be a numeric ${platform.label} ID.`);
+      throw new MessagingError(`The channel must be a ${platform.channelIdText}.`);
     }
     const request = home === "" ? undefined : home;
     const single = (value: string | undefined, what: string): string | undefined => {
       const id = value?.trim() ?? "";
       if (id === "") return undefined;
       if (!platform.idShape.test(id)) {
-        throw new MessagingError(`The ${what} must be a numeric ${platform.label} ID.`);
+        throw new MessagingError(`The ${what} must be a ${platform.channelIdText}.`);
       }
       return id;
     };
@@ -350,7 +410,7 @@ export class Messaging {
     const wrong = listed.find((id) => !platform.idShape.test(id));
     if (wrong !== undefined) {
       throw new MessagingError(
-        `${wrong} is not a ${platform.label} channel ID. Give numeric IDs, separated by commas.`,
+        `${wrong} is not a ${platform.label} channel ID. Give ${platform.channelIdsText}, separated by commas.`,
       );
     }
     const reads = [...new Set(listed)].filter((id) => id !== request);
@@ -377,6 +437,7 @@ export class Messaging {
     const platform = PLATFORMS[name];
     this.writeEnv({
       [platform.token]: undefined,
+      ...(platform.appToken === undefined ? {} : { [platform.appToken.key]: undefined }),
       [platform.users]: undefined,
       [platform.home]: undefined,
       [platform.readGate]: undefined,
@@ -413,7 +474,9 @@ export class Messaging {
    * is neutralized, so outside text cannot attach one.
    */
   async sendTo(name: PlatformName, chat: string, text: string, attachments = false): Promise<void> {
-    if (!PLATFORMS[name].idShape.test(chat)) throw new MessagingError(`${chat} is not a chat ID.`);
+    const platform = PLATFORMS[name];
+    if (!(platform.chatShape ?? platform.idShape).test(chat))
+      throw new MessagingError(`${chat} is not a chat ID.`);
     try {
       // The token stays in the profile's .env; the command line carries only the target. Hermes
       // reports why a send failed only without --quiet.
@@ -422,7 +485,7 @@ export class Messaging {
       });
     } catch (error) {
       throw new MessagingError(
-        `${PLATFORMS[name].label} did not take the message: ${this.scrub(error instanceof Error ? error.message : String(error))}`,
+        `${platform.label} did not take the message: ${this.scrub(error instanceof Error ? error.message : String(error))}`,
       );
     }
   }
@@ -571,8 +634,11 @@ export class Messaging {
   /** Removes any bot token from a message before it is shown or logged. */
   private scrub(text: string): string {
     let clean = text;
+    const tokens = new Set(
+      Object.values(PLATFORMS).flatMap((platform) => [platform.token, platform.appToken?.key]),
+    );
     for (const [key, value] of this.readEnv()) {
-      if (Object.values(PLATFORMS).some((platform) => platform.token === key) && value !== "") {
+      if (tokens.has(key) && value !== "") {
         clean = clean.split(value).join("[token]");
       }
     }
