@@ -10,7 +10,7 @@ Write the failing test before the code, for every behavior the task changes. Wri
 ## Loop
 
 1. Read the issue and the brief, and list each behavior they ask for. Each one gets its own test. Stay inside that list: a change the issue does not ask for goes in the PR body under "Found, not fixed", not in the code.
-2. Pick the seam. Drive the real entry point a user or caller hits (the CLI, the endpoint, the public function), not a private helper. Prefer a test of the whole path over narrow unit tests.
+2. Pick the seam. Prefer an end-to-end test that drives the real entry point a user or caller hits (the CLI, the endpoint, the public function), not a private helper, whenever one is feasible. Write a narrower unit test only when an end-to-end test cannot reach the behavior or would be impractical, such as a rare error path that needs a fault the whole path cannot produce, and say why in the PR body.
 3. When the repository has no harness for that seam, build it first, in its own commit.
 4. Red. Write one test and run it. Confirm it fails because the behavior is missing, not because of an import error, a typo, or a missing fixture. Copy the test name and the failure message into your notes for the PR.
 5. Green. Write the least code that makes it pass.
@@ -26,6 +26,16 @@ A bug fix starts from a test that reproduces the bug: it fails before the fix an
 - Expected values come from the issue or the domain, never from running the code under test.
 - Fake only an external system the test cannot run, such as a third-party API, and only where the code already puts a boundary in front of it. When the code calls one directly, add that boundary as part of the change, so production uses the real client and the test a fake.
 - No unseeded randomness, real clocks, sleeps, test order dependence, or real network calls.
+
+## Keep only tests worth having
+
+Do not add redundant, trivial, or low-value tests. Leave out:
+
+- a test that covers what another test, new or existing, already covers,
+- a test that restates the implementation, such as one that asserts the code calls what it calls, or that copies the code's own logic to compute the expected value,
+- a test of a getter, a constructor, plain wiring, or a mock, which checks the test setup rather than the behavior.
+
+Before you push, read every test your change adds and remove each one of these. One test per behavior that would fail if the behavior broke is the goal, not a count of tests.
 
 Documentation, comments, formatting, and renames that existing tests cover need no new test. A dependency upgrade rests on the existing suite.
 
