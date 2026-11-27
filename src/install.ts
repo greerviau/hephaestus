@@ -1,3 +1,4 @@
+import { recordInstalledStarterSkills } from "./config/starter-skills.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import {
@@ -97,12 +98,14 @@ export async function install(options: InstallOptions): Promise<void> {
     try {
       writePasswordHash(db, hashPassword(password));
       const store = new ConfigStore(db);
+      const document = defaultConfig(options.skills);
       const first = store.createVersion({
-        document: defaultConfig(options.skills),
+        document,
         author: "install",
-        message: "First version from the shipped templates and imported skills",
+        message: "First version from the starter skills and imported skills",
       });
       store.approve(first.id);
+      recordInstalledStarterSkills(db, document);
     } finally {
       db.close();
     }

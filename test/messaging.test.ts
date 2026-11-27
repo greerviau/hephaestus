@@ -451,12 +451,17 @@ describe("proposalAlerts", () => {
       { id: 4, author: "improver", state: "draft" },
       { id: 5, author: "improver", state: "rejected" },
       { id: 6, author: "owner", state: "draft" },
+      { id: 7, author: "hephaestus", state: "draft" },
     ]);
 
     expect(alerts).toEqual([
       {
         key: "proposal-4",
         text: "Config version 4 is proposed and waits for your approval on Proposals.",
+      },
+      {
+        key: "proposal-7",
+        text: "Config version 7 is proposed and waits for your approval on Proposals.",
       },
     ]);
     expect(alerts[0]?.text).not.toMatch(/planner|lead|improver/i);

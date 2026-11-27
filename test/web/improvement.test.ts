@@ -42,6 +42,25 @@ async function withProposal(
 }
 
 describe("Proposals", () => {
+  it("lists the starter skills an update brings as a proposal from Hephaestus", async () => {
+    const started = await startDashboard({ deploy });
+    dashboard = started;
+    const base = started.store.current();
+    if (base === undefined) throw new Error("no version");
+    const document = structuredClone(base.document);
+    document.skills["test-first"] = { "SKILL.md": "---\nname: test-first\n---\n" };
+    const version = started.store.createVersion({
+      document,
+      author: "hephaestus",
+      message: "Add the starter skill test-first",
+      parentId: base.id,
+    });
+
+    const { html } = await started.get("/proposals");
+    expect(html).toContain(`<a class="row" href="/proposals/${String(version.id)}">`);
+    expect((await started.get(`/proposals/${String(version.id)}`)).status).toBe(200);
+  });
+
   it("lists each waiting proposal as a row that links to its page", async () => {
     const { dashboard, id } = await withProposal();
 
