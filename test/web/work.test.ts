@@ -3,6 +3,7 @@ import { MERGE_CONFLICT_DETAIL } from "../../src/factory/tasks.js";
 import { decideMerge } from "../../src/factory/gate.js";
 import { PRESETS } from "../../src/config/policy.js";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
+import { STYLESHEET } from "../../src/web/style.js";
 import { MERGE_STEP_REASONS, checksPassedAtGate } from "../../src/factory/pipeline.js";
 import type { WorkerView } from "../../src/workers/manager.js";
 import { SHA, pr, type Harness } from "../factory/harness.js";
@@ -892,6 +893,23 @@ describe("Task page", () => {
       ":Verifying",
       ":Done",
     ]);
+  });
+
+  it("keeps the same gap under the tracker at every stage, with or without a note", async () => {
+    dashboard = await startDashboard();
+    const pages = [runningTask(dashboard.h), doneTask(dashboard.h), escalatedTask(dashboard.h)];
+
+    for (const task of pages) {
+      const { html } = await dashboard.get(`/work/${String(task)}`);
+      // The tracker and its note sit in one block, so the space below it does not
+      // depend on whether the stage has a note.
+      expect(html).toMatch(
+        /<div class="tracker"><ol class="track"[^>]*>.*?<\/ol>(<p class="track-note">.*?<\/p>)?<\/div>/s,
+      );
+    }
+    expect(STYLESHEET).toContain(".tracker { margin-bottom: 24px; }");
+    expect(STYLESHEET).toContain("ol.track { list-style: none; margin: 0;");
+    expect(STYLESHEET).toContain(".track-note { max-width: none; margin: 8px 0 0;");
   });
 
   it("shows Testing until the gate's wait says the head's checks passed, then Merging", async () => {

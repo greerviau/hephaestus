@@ -253,7 +253,9 @@ dl.kv dt { color: var(--muted); font-size: 13px; }
 dl.kv dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
 
 /* stage track */
-ol.track { list-style: none; margin: 0 0 8px; padding: 0; display: flex; flex-wrap: nowrap; font-size: 13px; color: var(--muted); }
+/* One block for the tracker and its note keeps the gap above Details and Threads the same at every stage. */
+.tracker { margin-bottom: 24px; }
+ol.track { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: nowrap; font-size: 13px; color: var(--muted); }
 ol.track li { display: flex; align-items: center; flex: 0 0 auto; white-space: nowrap; }
 ol.track li + li { flex: 1 1 auto; min-width: 0; }
 ol.track .pip { display: none; width: 8px; height: 8px; border: 1px solid var(--ctl); border-radius: 50%; }
@@ -268,7 +270,7 @@ ol.track li.done .lbl { font-weight: 700; }
 ol.track li.now .lbl { color: var(--ink); font-weight: 700; border-bottom-color: var(--accent); }
 ol.track li.now.hold .lbl { border-bottom-color: var(--warn); }
 ol.track li.now.stop .lbl { border-bottom-color: var(--crit); }
-.track-note { max-width: none; margin: 0 0 24px; font-size: 13px; color: var(--muted); }
+.track-note { max-width: none; margin: 8px 0 0; font-size: 13px; color: var(--muted); }
 .track-note strong { color: var(--ink-2); font-weight: 500; }
 
 /* timeline, transcript, diff */
