@@ -367,6 +367,9 @@ const MIGRATIONS: Migration[] = [
      FROM queued_on_upgrade;
    DROP TABLE queued_on_upgrade;
    ALTER TABLE tasks DROP COLUMN queued_at;`,
+  // A version's short title, apart from the message that describes it. A version saved before
+  // keeps an empty title, and reads with one made from its message.
+  `ALTER TABLE config_versions ADD COLUMN title TEXT NOT NULL DEFAULT '';`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

@@ -17,7 +17,7 @@ import {
   when,
   type StatusTone,
 } from "./html.js";
-import { changeDiffs } from "./improvement.js";
+import { changeDiffs, description } from "./improvement.js";
 import { redirect, sendHtml, sendJson, type Route, type RouteContext } from "./http.js";
 
 const STATES: Record<ConfigVersion["state"], readonly [StatusTone, string]> = {
@@ -107,7 +107,7 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     const all = context.url.searchParams.get("all") === "1";
     const shown = all ? versions : versions.slice(0, SHOWN);
     const rows = shown.map((version) => ({
-      title: `v${String(version.id)} ${version.message}`.trim(),
+      title: `v${String(version.id)} ${version.title}`.trim(),
       href: href(version.id),
       wholeRow: true,
       sub: `${escapeHtml(version.author)}${SEP}${when(version.createdAt, Date.now())}`,
@@ -222,10 +222,10 @@ export function versionRoutes(factory: FactoryPages): Route[] {
         context.shell,
         `Version ${String(version.id)}`,
         `${pageHead({
-          title: `${v} ${version.message}`.trim(),
+          title: `${v} ${version.title}`.trim(),
           lede: `${statusText(...STATES[version.state])}${SEP}by ${escapeHtml(version.author)}, ${when(version.createdAt, Date.now())}${built}`,
           ...(actions.length === 0 ? {} : { actions: actions.join("") }),
-        })}${notes}${section({
+        })}${notes}${description(version)}${section({
           title: "Changes",
           count: diff.length,
           body: changeDiffs(diff),
@@ -286,6 +286,7 @@ function summary(version: ConfigVersion): Omit<ConfigVersion, "document"> {
     parentId: version.parentId,
     state: version.state,
     author: version.author,
+    title: version.title,
     message: version.message,
     createdAt: version.createdAt,
   };

@@ -10,7 +10,7 @@ import type { Database } from "better-sqlite3";
 import { z } from "zod";
 import { ROLE_NAMES, type RoleName } from "../config/document.js";
 import { shippedInstructions } from "../config/shipped.js";
-import type { ConfigStore } from "../config/store.js";
+import { MAX_TITLE_LENGTH, type ConfigStore } from "../config/store.js";
 import { formatHostHealth, hostHealth, type HostHealth } from "../host-health.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import { finalMessage } from "../workers/scripts.js";
@@ -139,7 +139,18 @@ const TOOL_SHAPES = {
       .describe("how far back to look for recent errors, such as 24h or 7d; default 24h"),
   },
   propose_version: {
-    message: z.string().min(1).describe("the problem and the change"),
+    title: z
+      .string()
+      .trim()
+      .min(1)
+      .max(MAX_TITLE_LENGTH)
+      .describe(
+        `a short name for the change, at most ${String(MAX_TITLE_LENGTH)} characters, such as "Name the files in each brief"`,
+      ),
+    message: z
+      .string()
+      .min(1)
+      .describe("what the change does and why: the problem and the threads that show it"),
     config: z
       .record(z.string(), z.unknown())
       .describe("the whole config, as get_config returns it, edited"),
@@ -658,7 +669,7 @@ export class FactoryMcp {
     register(
       "propose_version",
       "Propose a new config version: the whole config, edited, with the factory threads that motivated the change. Nothing changes until the owner approves it.",
-      ({ message, config, evidence }) => {
+      ({ title, message, config, evidence }) => {
         for (const item of evidence) {
           const thread = events.thread(item.environment_id, item.thread_id);
           if (thread === undefined || thread.kind === "setup") {
@@ -670,6 +681,7 @@ export class FactoryMcp {
         const version = store.createVersion({
           document: config as never,
           author: "improver",
+          title,
           message,
           parentId: deployed.id,
         });
@@ -680,6 +692,7 @@ export class FactoryMcp {
           insert.run(version.id, item.environment_id, item.thread_id, item.note ?? "");
         return {
           version: version.id,
+          title: version.title,
           state: version.state,
           changes: store.diff(version.id).length,
         };
