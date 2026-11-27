@@ -16,6 +16,7 @@ import {
   callout,
   escapeHtml,
   externalLink,
+  lookup,
   menu,
   postButton,
   statusText,
@@ -362,6 +363,11 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     text: "The project was removed while the issue was filed, so it was not admitted. Add the project back on Projects to work on it, or reject the issue.",
   },
   dismissed: { kind: "info", title: "Notification dismissed", text: "It no longer needs you." },
+  "too-large": {
+    kind: "err",
+    title: "That did not work",
+    text: "The form was too large to read, so nothing was changed.",
+  },
   "action-failed": {
     kind: "err",
     title: "That did not work",
@@ -396,7 +402,7 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
 
 /** The banner for `?notice=` after an action, or nothing. */
 export function notice(url: URL): string {
-  const found = NOTICES[url.searchParams.get("notice") ?? ""];
+  const found = lookup(NOTICES, url.searchParams.get("notice"));
   return found === undefined ? "" : callout(found.kind, found.title, escapeHtml(found.text));
 }
 
@@ -416,12 +422,16 @@ export function here(url: URL): string {
 
 const MAX_FORM_BYTES = 16 * 1024;
 
-/** The fields of a posted form. A body over `maxBytes` reads as no fields. */
+/**
+ * The fields of a posted form, or undefined when its body is over `maxBytes`.
+ * The caller says so: a form too large to read is not an empty form.
+ */
 export async function form(
   { request }: Pick<RouteContext, "request">,
   maxBytes = MAX_FORM_BYTES,
-): Promise<URLSearchParams> {
-  return new URLSearchParams((await readBody(request, maxBytes)) ?? "");
+): Promise<URLSearchParams | undefined> {
+  const body = await readBody(request, maxBytes);
+  return body === undefined ? undefined : new URLSearchParams(body);
 }
 
 /**
@@ -453,6 +463,10 @@ async function act(
   failed: NoticeKey,
 ): Promise<void> {
   const fields = await form(context);
+  if (fields === undefined) {
+    redirect(context.response, withNotice(fallback, "too-large"));
+    return;
+  }
   const back = backTo(fields.get("back"), fallback);
   try {
     await run(fields);

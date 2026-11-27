@@ -120,7 +120,11 @@ export function configRoutes(factory: FactoryPages): Route[] {
   }
 
   async function saveJson(context: RouteContext): Promise<void> {
-    const form = await readForm(context, MAX_EDIT_BYTES);
+    const form = await readForm(context, MAX_EDIT_BYTES, {
+      reason: `A config holds at most ${String(MAX_CONFIG_BYTES / 1024 / 1024)} MB as JSON, and this one is larger.`,
+      back: "/config/json",
+      backLabel: "Back to the JSON tab",
+    });
     if (form === undefined) return;
     const text = form.get("document") ?? "";
     const parent = form.get("parentId") ?? "";

@@ -22,6 +22,7 @@ import {
   fold,
   input,
   layout,
+  lookup,
   menu,
   pageHead,
   rowList,
@@ -164,7 +165,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     const active = read("cards", () =>
       factory.cards.list().filter((card) => ACTIVE_STAGES.includes(card.stage)),
     );
-    const notice = NOTICES[url.searchParams.get("notice") ?? ""];
+    const notice = lookup(NOTICES, url.searchParams.get("notice"));
     const parentId = version.value?.id;
     const dialogs: string[] = [];
     const rows = projects.map(([repo, project], index) => {

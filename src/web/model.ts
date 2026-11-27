@@ -19,6 +19,7 @@ import {
   field,
   input,
   layout,
+  lookup,
   pageHead,
   section,
   selectControl,
@@ -47,10 +48,17 @@ const NOTICES: Record<string, { title: string; text: string }> = {
   },
 };
 
+/** What a form that stopped on a warning comes back with. */
+interface Warned {
+  model: string;
+  /** The endpoint URL to show again; undefined when it held a user name or password. */
+  baseUrl: string | undefined;
+}
+
 /** Why a change did not happen; a warning keeps what the owner typed so they can save it anyway. */
 type Problem = {
   text: string;
-  warning?: { model: string; baseUrl: string };
+  warning?: Warned;
   /** The change was saved but the gateway did not restart. */
   saved?: boolean;
   /** Hermes refused partway, after some of the factory was written. */
@@ -58,6 +66,46 @@ type Problem = {
 };
 
 type Model = NonNullable<FactoryPages["model"]>;
+
+const HIDDEN = "[hidden]";
+
+/** The user name and password in a URL's address, each as typed and as it reads decoded. */
+function urlCredentials(text: string): string[] {
+  let parts: string[];
+  try {
+    const url = new URL(text);
+    parts = [url.username, url.password];
+  } catch {
+    // Not a URL a browser sends from the form; whatever sits before an @ is treated as a secret.
+    const at = text.lastIndexOf("@");
+    parts = at < 0 ? [] : text.slice(text.indexOf("://") + 1, at).split(":");
+  }
+  return parts
+    .filter((part) => part.replace(/^\/+/, "") !== "")
+    .flatMap((part) => {
+      const typed = part.replace(/^\/+/, "");
+      try {
+        return [typed, decodeURIComponent(typed)];
+      } catch {
+        return [typed];
+      }
+    });
+}
+
+/**
+ * `text` without the secrets the form sent. An endpoint URL may carry a user
+ * name and password, which Hermes stores with the URL, and Hermes's reply can
+ * quote the URL or the key; neither may reach the page.
+ */
+function withoutSecrets(text: string, secrets: readonly string[]): string {
+  const longestFirst = [...new Set(secrets)].sort((a, b) => b.length - a.length);
+  let shown = text;
+  for (const secret of longestFirst) {
+    // The whole user:password pair reads as one hidden part, then any that stand alone.
+    shown = shown.replaceAll(secret, HIDDEN);
+  }
+  return shown.replaceAll(`${HIDDEN}:${HIDDEN}`, HIDDEN);
+}
 
 /** What the Models tab says about the planning and chat model. */
 export type PlanningState =
@@ -118,6 +166,11 @@ export function modelRoutes(factory: FactoryPages): Route[] {
     const form = new URLSearchParams(body);
     const provider = form.get("provider") ?? "";
     const back = `${PLANNING_PATH}?provider=${encodeURIComponent(provider)}`;
+    const baseUrl = form.get("base_url")?.trim() ?? "";
+    const credentials = urlCredentials(baseUrl);
+    const key = form.get("key")?.trim() ?? "";
+    const shown = (text: string): string =>
+      withoutSecrets(text, [...credentials, ...(key === "" ? [] : [key])]);
     try {
       if (provider === "") throw new ModelError("Pick a provider first.");
       if (params[0] === "key") {
@@ -127,8 +180,6 @@ export function modelRoutes(factory: FactoryPages): Route[] {
         await model.startDeviceLogin(provider);
         redirect(response, back);
       } else {
-        const baseUrl = form.get("base_url")?.trim() ?? "";
-        const key = form.get("key")?.trim() ?? "";
         const chosen = form.get("model") ?? "";
         try {
           await model.setModel({
@@ -140,7 +191,10 @@ export function modelRoutes(factory: FactoryPages): Route[] {
           });
         } catch (error) {
           if (!(error instanceof ModelWarning)) throw error;
-          const problem = { text: error.message, warning: { model: chosen, baseUrl } };
+          const problem = {
+            text: shown(error.message),
+            warning: { model: chosen, baseUrl: credentials.length === 0 ? baseUrl : undefined },
+          };
           sendHtml(response, 400, await page(context, provider, "", problem));
           return;
         }
@@ -151,7 +205,7 @@ export function modelRoutes(factory: FactoryPages): Route[] {
         sendHtml(
           response,
           400,
-          await page(context, provider, "", { text: error.message, saved: true }),
+          await page(context, provider, "", { text: shown(error.message), saved: true }),
         );
         return;
       }
@@ -159,7 +213,7 @@ export function modelRoutes(factory: FactoryPages): Route[] {
         response,
         400,
         await page(context, provider, "", {
-          text: messageOf(error),
+          text: shown(messageOf(error)),
           ...(error instanceof ModelPartial ? { partial: true } : {}),
         }),
       );
@@ -209,7 +263,7 @@ export function modelRoutes(factory: FactoryPages): Route[] {
       catalog.providers.find((row) => row.slug === chosen) ??
       catalog.providers.find((row) => row.slug === catalog.provider) ??
       catalog.providers[0];
-    const shown = Object.hasOwn(NOTICES, notice) ? NOTICES[notice] : undefined;
+    const shown = lookup(NOTICES, notice);
     const waiting = login?.status === "waiting" && login.provider === provider?.slug;
     // An error page is rendered at the POST's address, which has no GET route to refresh to.
     const refresh = waiting && problem === undefined;
@@ -326,7 +380,7 @@ function signInSection(
 function modelSection(
   catalog: ModelCatalog,
   provider: ProviderRow,
-  warned: { model: string; baseUrl: string } | undefined,
+  warned: Warned | undefined,
 ): string {
   const custom = provider.slug === "custom";
   const models = provider.models
@@ -338,7 +392,10 @@ function modelSection(
         type: "url",
         placeholder: "http://localhost:8080/v1",
         value: warned?.baseUrl ?? "",
-        hint: "An OpenAI-compatible API.",
+        hint:
+          warned !== undefined && warned.baseUrl === undefined
+            ? "An OpenAI-compatible API. The URL you sent held a user name or password, so it is not shown again. Enter it again."
+            : "An OpenAI-compatible API.",
       })}${input("key", "API key (optional)", {
         id: "custom-key",
         type: "password",

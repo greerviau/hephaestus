@@ -2,7 +2,9 @@ import { defineOwn } from "./diff.js";
 import {
   ConfigValidationError,
   ROLE_NAMES,
+  insideFileProblem,
   isSafeRelativePath,
+  pathsInsideFiles,
   type FactoryConfig,
   type RoleName,
 } from "./document.js";
@@ -118,6 +120,24 @@ export function withNewSkill(
   return next;
 }
 
+/**
+ * Why `path` cannot be a file of the skill, or undefined when it can: it must
+ * stay in the skill folder, and no file can lie inside another file. The
+ * config's own validation refuses the same, for edits made as JSON.
+ */
+export function skillPathProblem(
+  config: FactoryConfig,
+  name: string,
+  path: string,
+): string | undefined {
+  if (!isSafeRelativePath(path)) {
+    return `skills.${name}.${JSON.stringify(path)} must be a relative path`;
+  }
+  const others = Object.keys(skillFiles(config, name) ?? {}).filter((other) => other !== path);
+  const [clash] = pathsInsideFiles([...others, path]);
+  return clash === undefined ? undefined : insideFileProblem(name, ...clash);
+}
+
 /** A copy of `config` with one file of a skill written, which creates the file when it is new. */
 export function withSkillFile(
   config: FactoryConfig,
@@ -126,9 +146,8 @@ export function withSkillFile(
   text: string,
 ): FactoryConfig {
   requireSkill(config, name);
-  if (!isSafeRelativePath(path)) {
-    refuse(`skills.${name}.${JSON.stringify(path)} must be a relative path`);
-  }
+  const problem = skillPathProblem(config, name, path);
+  if (problem !== undefined) refuse(problem);
   const next = structuredClone(config);
   defineOwn(requireSkill(next, name), path, text);
   return next;

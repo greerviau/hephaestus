@@ -306,6 +306,62 @@ describe("Planning model page", () => {
     expect(model.choices).toEqual([{ provider: "anthropic", model: "clade-opus", force: true }]);
   });
 
+  it("never shows the user name and password of an endpoint URL again", async () => {
+    const url = "https://bob:s3cr%40t@llm.example/v1";
+    const model = fakeModel({
+      warn: "Could not reach https://bob:s3cr%40t@llm.example/v1/models (key sk-local-1, password s3cr@t).",
+    });
+    dashboard = await startDashboard({ model });
+
+    const warned = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: url,
+      key: "sk-local-1",
+    });
+    const html = await warned.text();
+
+    expect(warned.status).toBe(400);
+    expect(html).toContain("Hermes warned");
+    expect(html).toContain('value="llama-3"');
+    for (const secret of ["s3cr", "bob", "sk-local-1"]) expect(html).not.toContain(secret);
+    expect(html).not.toContain('value="https://');
+    expect(html).toContain("Could not reach https://[hidden]@llm.example/v1/models");
+    expect(html).toContain("The URL you sent held a user name or password, so it is not shown");
+    expect(model.choices).toEqual([]);
+  });
+
+  it("keeps an endpoint URL without a user name or password when Hermes warns", async () => {
+    dashboard = await startDashboard({ model: fakeModel({ warn: "Not listed." }) });
+
+    const warned = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: "http://localhost:8080/v1",
+    });
+
+    expect(await warned.text()).toContain('value="http://localhost:8080/v1"');
+  });
+
+  it("hides an endpoint URL's password in Hermes's refusal too", async () => {
+    dashboard = await startDashboard({
+      model: fakeModel({
+        refuse: "Hermes refused the model: 401 from https://bob:hunter22@x.example",
+      }),
+    });
+
+    const refused = await dashboard.post("/config/models/planning/set", {
+      provider: "custom",
+      model: "llama-3",
+      base_url: "https://bob:hunter22@x.example/v1",
+    });
+    const html = await refused.text();
+
+    expect(refused.status).toBe(400);
+    expect(html).toContain("Hermes refused the model: 401 from");
+    expect(html).not.toContain("hunter22");
+  });
+
   it("warns when parts of the factory use another model", async () => {
     dashboard = await startDashboard({
       model: fakeModel({

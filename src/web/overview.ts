@@ -166,9 +166,13 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           }
         }
         if (notifications.ok) {
+          // The tasks read above are the chosen project's, so they say which notifications are too.
+          const shown = new Set((cards.ok ? cards.value : []).map((item) => item.id));
           for (const item of notifications.value) {
             // Escalations are listed from the task's state above; their notifications stay in Activity.
             if (item.kind === "escalation") continue;
+            // A notification about another project's task is left out, as on Activity; one about no task stays.
+            if (project !== undefined && item.cardId !== null && !shown.has(item.cardId)) continue;
             needs.push({
               kind: "notice",
               title: item.text,

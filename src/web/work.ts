@@ -5,7 +5,7 @@ import {
   type CardEvent,
 } from "../factory/cards.js";
 import type { TrackedIssue } from "../factory/intake.js";
-import { checksPassedAtGate } from "../factory/pipeline.js";
+import { VALIDATION_FAILED, checksPassedAtGate, escalationReason } from "../factory/pipeline.js";
 import type { Stage } from "../hermes/board.js";
 import type { StoredThread } from "../t3/events.js";
 import {
@@ -49,6 +49,7 @@ import {
   input,
   keyValues,
   layout,
+  lookup,
   menu,
   pageHead,
   rowList,
@@ -69,9 +70,18 @@ import { redirect, sendHtml, type Route, type RouteContext } from "./http.js";
 
 /** How often Work, the task page, and the transcript reload, so they follow the factory. */
 const RELOAD_SECONDS = 10;
-/** A work request's form: its details can be long, and form encoding can triple their bytes. */
-const MAX_REQUEST_BYTES = 128 * 1024;
 const MAX_TITLE = 256;
+const MAX_DETAILS = 10_000;
+/** The longest note for the lead, and the longest reason to abandon. */
+const MAX_NOTE = 2000;
+/**
+ * A browser counts `maxlength` in UTF-16 units, and form encoding sends one
+ * unit as up to 9 bytes. Each form reads that much for its fields at their
+ * limits, plus room for the rest, so a field within its limit is never cut off.
+ */
+const WORST_BYTES_PER_UNIT = 9;
+const MAX_REQUEST_BYTES = WORST_BYTES_PER_UNIT * (MAX_TITLE + MAX_DETAILS) + 8 * 1024;
+const MAX_NOTE_BYTES = WORST_BYTES_PER_UNIT * MAX_NOTE + 8 * 1024;
 const DOT = ' <span aria-hidden="true">&middot;</span> ';
 
 const WITH_LEAD = "With the lead";
@@ -111,7 +121,7 @@ const SENT_BACK: Record<string, string> = {
 };
 
 function isSentBack(event: CardEvent): boolean {
-  return event.kind === "stage:Implementing" && event.detail in SENT_BACK;
+  return event.kind === "stage:Implementing" && lookup(SENT_BACK, event.detail) !== undefined;
 }
 
 const EVENT_TITLES: Record<string, string> = {
@@ -132,7 +142,7 @@ export function eventTitle(event: CardEvent): string {
   if (event.kind.startsWith("stage:")) {
     return `Moved to ${stageName(event.kind.slice("stage:".length))}`;
   }
-  return EVENT_TITLES[event.kind] ?? event.kind;
+  return lookup(EVENT_TITLES, event.kind) ?? event.kind;
 }
 
 export function isBad(event: CardEvent): boolean {
@@ -150,13 +160,22 @@ export function eventDetail(event: CardEvent): string {
   return event.kind === "error" ? "A step failed; the service log has the error." : event.detail;
 }
 
+function sha(value: string): string {
+  return `<code title="${escapeHtml(value)}">${shortSha(value)}</code>`;
+}
+
+/** Text the pipeline recorded, as HTML, with each full commit SHA in the short form the page uses. */
+function withShortShas(text: string): string {
+  return escapeHtml(text).replace(/\b[0-9a-f]{40}\b/g, sha);
+}
+
 /** A task's events, newest first. */
 function history(events: CardEvent[], now: number): string {
   return `<ol class="tl">${[...events]
     .reverse()
     .map(
       (event) =>
-        `<li${isBad(event) ? ' class="bad"' : ""}><span class="t">${when(event.at, now)}</span><div><strong>${escapeHtml(eventTitle(event))}</strong>${eventDetail(event) === "" ? "" : `<span class="d">${escapeHtml(eventDetail(event))}</span>`}</div></li>`,
+        `<li${isBad(event) ? ' class="bad"' : ""}><span class="t">${when(event.at, now)}</span><div><strong>${escapeHtml(eventTitle(event))}</strong>${eventDetail(event) === "" ? "" : `<span class="d">${withShortShas(eventDetail(event))}</span>`}</div></li>`,
     )
     .join("")}</ol>`;
 }
@@ -260,7 +279,23 @@ function heldStage(item: Card, events: CardEvent[] | undefined): Stage | undefin
   return "Admitted";
 }
 
-function stepIndex(item: Card, held: Stage): number {
+/**
+ * Whether a task held at the merge gate got past its head commit's checks. An
+ * abandoned task keeps the gate's last wait, and its reason says only why it
+ * was abandoned; a task that escalated from the gate recorded why in that
+ * event, which a note to the lead does not replace.
+ */
+function pastChecks(item: Card, events: CardEvent[]): boolean {
+  if (item.stage === "Merging") return checksPassedAtGate(item.waiting);
+  const left = events.findLast(
+    (event) => event.kind.startsWith("stage:") && event.kind !== "stage:Abandoned",
+  );
+  return left?.kind === "stage:Escalated"
+    ? checksPassedAtGate(escalationReason(left.detail))
+    : checksPassedAtGate(item.waiting);
+}
+
+function stepIndex(item: Card, held: Stage, events: CardEvent[]): number {
   switch (held) {
     case "Admitted":
       return 0;
@@ -269,7 +304,7 @@ function stepIndex(item: Card, held: Stage): number {
     case "Reviewing":
       return 2;
     case "Merging":
-      return checksPassedAtGate(item.stage === "Merging" ? item.waiting : item.reason) ? 4 : 3;
+      return pastChecks(item, events) ? 4 : 3;
     case "Done":
       return 6;
     default:
@@ -279,8 +314,8 @@ function stepIndex(item: Card, held: Stage): number {
 }
 
 /** The one-line stage tracker, and the name of the step the task is at. */
-function tracker(item: Card, held: Stage): { html: string; step: string } {
-  const current = stepIndex(item, held);
+function tracker(item: Card, held: Stage, events: CardEvent[]): { html: string; step: string } {
+  const current = stepIndex(item, held, events);
   const finished = item.stage === "Done";
   const stopped = item.stage === "Abandoned";
   const holding = item.stage === "Escalated" || item.stage === "Reverting" || item.waiting !== null;
@@ -320,10 +355,6 @@ function elapsed(from: string, to: string): string {
   if (!Number.isFinite(minutes) || minutes <= 0) return "";
   const hours = Math.floor(minutes / 60);
   return hours === 0 ? `${String(minutes)}m` : `${String(hours)}h ${String(minutes % 60)}m`;
-}
-
-function sha(value: string): string {
-  return `<code title="${escapeHtml(value)}">${shortSha(value)}</code>`;
 }
 
 /** The line under the tracker: which attempt this is, or how the task ended. */
@@ -368,8 +399,8 @@ function attempts(item: Card, events: CardEvent[], now: number): string {
   const sentBack = events.filter(isSentBack).slice(-item.rounds);
   const rows = sentBack.map((event, index) => ({
     title: `Attempt ${String(index + 1)}`,
-    sub: `${when(event.at, now)}${DOT}${escapeHtml(event.detail)}`,
-    aside: statusText("back", SENT_BACK[event.detail] ?? "Sent back"),
+    sub: `${when(event.at, now)}${DOT}${withShortShas(event.detail)}`,
+    aside: statusText("back", lookup(SENT_BACK, event.detail) ?? "Sent back"),
   }));
   const max = item.policy?.maxReviewRounds;
   return section({
@@ -395,12 +426,35 @@ function checkName(id: string): string {
 }
 
 /**
+/**
+ * How the checks on the current merge commit ended. A task keeps its revert
+ * PR after the work merges again, so an earlier rollback says nothing about
+ * this merge: only what was recorded since the task last began validating does.
+ */
+function checksAfterMerge(item: Card, events: CardEvent[]): string {
+  if (item.foreignMerge) return statusText("off", "Not checked");
+  if (item.mergeSha === null) return statusText("off", "Not started");
+  if (item.stage === "Done") return statusText("done", "Passed");
+  if (item.stage === "Validating") return statusText("run", "Running");
+  const since = events.slice(events.findLastIndex((event) => event.kind === "stage:Validating"));
+  const failed =
+    item.reverting ||
+    since.some(
+      (event) =>
+        event.kind === "stage:Reverting" ||
+        (event.kind === "stage:Escalated" &&
+          escalationReason(event.detail).startsWith(VALIDATION_FAILED)),
+    );
+  return failed ? statusText("bad", "Failed") : statusText("off", "Not finished");
+}
+
+/**
  * What Hephaestus holds as proof for the head commit: whether the other
  * provider approved it, and how the merge commit's checks ended. It stores no
  * result for single checks and no list of the implementer's evidence files,
  * so the page shows neither.
  */
-function proof(item: Card, approved: Read<boolean>): string {
+function proof(item: Card, approved: Read<boolean>, events: CardEvent[]): string {
   if (item.prNumber === null || item.headSha === null) return "";
   const reviewNote =
     item.policy?.requireReview === false
@@ -416,17 +470,7 @@ function proof(item: Card, approved: Read<boolean>): string {
         ? statusText("run", "In review")
         : statusText("off", "No approval at this commit");
   const names = (item.expectedChecks ?? []).map(checkName);
-  const after = item.foreignMerge
-    ? statusText("off", "Not checked")
-    : item.mergeSha === null
-      ? statusText("off", "Not started")
-      : item.reverting || item.revertPr !== null
-        ? statusText("bad", "Failed")
-        : item.stage === "Done"
-          ? statusText("done", "Passed")
-          : item.stage === "Validating"
-            ? statusText("run", "Running")
-            : statusText("off", "Not finished");
+  const after = checksAfterMerge(item, events);
   const afterNote = item.foreignMerge
     ? "The PR was merged outside Hephaestus, which does not check such a merge."
     : item.mergeSha === null
@@ -445,7 +489,7 @@ function proof(item: Card, approved: Read<boolean>): string {
 /** The callout under the tracker: what the task waits on, and the owner's actions when it waits on them. */
 function taskCallout(item: Card, back: string): string {
   const id = String(item.id);
-  const reason = escapeHtml(item.reason ?? "");
+  const reason = withShortShas(item.reason ?? "");
   if (needsOwner(item)) {
     const actions = cardActions(item);
     return callout(
@@ -457,11 +501,17 @@ function taskCallout(item: Card, back: string): string {
   }
   if (item.stage === "Escalated") return callout("info", "With the lead", reason);
   if (item.stage === "Abandoned") return callout("info", "Abandoned", reason);
-  if (item.waiting !== null) return callout("info", "Waiting", escapeHtml(item.waiting));
+  if (item.waiting !== null) return callout("info", "Waiting", withShortShas(item.waiting));
   return "";
 }
 
-function details(item: Card, now: number): string {
+/** Each worker's label by its environment ID. A worker with no label on record keeps its ID. */
+function workerLabels(factory: FactoryPages): Map<string, string> {
+  const workers = read("workers", () => factory.workers?.views() ?? []);
+  return new Map((workers.ok ? workers.value : []).map((view) => [view.environmentId, view.label]));
+}
+
+function details(item: Card, labels: Map<string, string>, now: number): string {
   const head = item.headSha === null ? "" : ` at ${sha(item.headSha)}`;
   const main: [string, string][] = [
     [
@@ -484,7 +534,12 @@ function details(item: Card, now: number): string {
       externalLink(issueUrl(item.repo, item.issueNumber), `#${String(item.issueNumber)}`),
     ]);
   }
-  main.push(["Worker", escapeHtml(item.workerEnv ?? "Not chosen")]);
+  main.push([
+    "Worker",
+    escapeHtml(
+      item.workerEnv === null ? "Not chosen" : (labels.get(item.workerEnv) ?? item.workerEnv),
+    ),
+  ]);
   if (item.mergeSha !== null) {
     main.push([
       "Merge commit",
@@ -556,6 +611,15 @@ function noFormPage(
   return layout(title, `${pageHead({ title })}${html}`, { section: "/work", shell, crumbs });
 }
 
+/**
+ * What was typed in a text field, trimmed, with a browser's line ends turned
+ * back into newlines: it counts a line break as one character against
+ * `maxlength` and sends two.
+ */
+function typedText(value: string | null): string {
+  return (value ?? "").replace(/\r\n?/g, "\n").trim();
+}
+
 interface RequestValues {
   repo: string;
   title: string;
@@ -597,7 +661,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
     shell: Shell | undefined,
     back: string,
     values: RequestValues,
-    errors: { repo?: string; title?: string; problem?: string } = {},
+    errors: { repo?: string; title?: string; body?: string; problem?: string } = {},
   ): string => {
     const crumbs: Crumb[] = [["Work", "/work"], ["Request work"]];
     const config = requestRepos();
@@ -636,7 +700,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
       })}${textarea("body", "Details (optional)", {
         value: values.body,
         rows: 6,
+        maxlength: MAX_DETAILS,
         required: false,
+        error: errors.body,
         hint: "What done looks like, and anything the engineer should know. Past the project's cap of factory-filed issues, the request waits for you to admit it.",
       })}`,
       submit: "File the issue",
@@ -645,7 +711,13 @@ export function workRoutes(factory: FactoryPages): Route[] {
     });
   };
 
-  const leadPage = (shell: Shell | undefined, item: Card, back: string, error?: string): string => {
+  const leadPage = (
+    shell: Shell | undefined,
+    item: Card,
+    back: string,
+    error?: string,
+    typed = "",
+  ): string => {
     const id = String(item.id);
     const crumbs = taskCrumbs(item.id, "Send to lead");
     if (!cardActions(item).sendToLead) {
@@ -667,8 +739,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
       action: `/work/${id}/send-to-lead`,
       fields: { version: String(item.version) },
       body: textarea("note", "Note for the lead", {
+        value: typed,
         rows: 4,
-        maxlength: 2000,
+        maxlength: MAX_NOTE,
         autofocus: true,
         hint: "What to change. The lead picks the task up with it.",
         error,
@@ -683,6 +756,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
     item: Card,
     back: string,
     error?: string,
+    typed = "",
   ): string => {
     const id = String(item.id);
     const crumbs = taskCrumbs(item.id, "Abandon");
@@ -704,7 +778,12 @@ export function workRoutes(factory: FactoryPages): Route[] {
       intro: `<p class="muted">${escapeHtml(cardLabel(item))}</p><p>No more threads start for it. The PR and the issue stay as they are.</p>`,
       action: `/work/${id}/abandon`,
       fields: { version: String(item.version) },
-      body: input("reason", "Why abandon it", { maxlength: 2000, autofocus: true, error }),
+      body: input("reason", "Why abandon it", {
+        value: typed,
+        maxlength: MAX_NOTE,
+        autofocus: true,
+        error,
+      }),
       submit: "Abandon task",
       danger: true,
       back,
@@ -897,14 +976,34 @@ export function workRoutes(factory: FactoryPages): Route[] {
       path: /^\/work\/issues\/file$/,
       handle: async (context) => {
         const fields = await form(context, MAX_REQUEST_BYTES);
+        if (fields === undefined) {
+          // Nothing of an unread body can be shown again, so the form comes back empty and says why.
+          sendHtml(
+            context.response,
+            413,
+            requestPage(
+              context.shell,
+              "/work",
+              { repo: context.shell?.project ?? "", title: "", body: "" },
+              {
+                problem: callout(
+                  "err",
+                  "The request is too long",
+                  `Nothing was filed. The title takes ${String(MAX_TITLE)} characters and the details ${String(MAX_DETAILS)}. Go back in your browser to shorten what you typed.`,
+                ),
+              },
+            ),
+          );
+          return;
+        }
         const back = backTo(fields.get("back"), "/work");
         const values: RequestValues = {
           repo: fields.get("repo") ?? "",
           title: (fields.get("title") ?? "").trim(),
-          body: (fields.get("body") ?? "").trim(),
+          body: typedText(fields.get("body")),
         };
         const config = requestRepos();
-        const errors: { repo?: string; title?: string } = {};
+        const errors: { repo?: string; title?: string; body?: string } = {};
         if (config.ok && !config.value.repos.includes(values.repo)) {
           errors.repo = "Choose one of the factory's projects.";
         }
@@ -912,7 +1011,10 @@ export function workRoutes(factory: FactoryPages): Route[] {
         else if (values.title.length > MAX_TITLE) {
           errors.title = `The title has ${String(values.title.length)} characters. GitHub allows ${String(MAX_TITLE)} characters.`;
         }
-        if (!config.ok || errors.repo !== undefined || errors.title !== undefined) {
+        if (values.body.length > MAX_DETAILS) {
+          errors.body = `The details have ${String(values.body.length)} characters. The form takes ${String(MAX_DETAILS)}.`;
+        }
+        if (!config.ok || Object.keys(errors).length > 0) {
           sendHtml(
             context.response,
             config.ok ? 422 : 503,
@@ -974,19 +1076,30 @@ export function workRoutes(factory: FactoryPages): Route[] {
       handle: async (context) => {
         const id = Number(context.params[0]);
         const lead = context.params[1] === "send-to-lead";
-        const fields = await form(context);
-        const back = backTo(fields.get("back"), `/work/${String(id)}`);
-        const typed = (fields.get(lead ? "note" : "reason") ?? "").trim();
-        const version = (fields.get("version") ?? "").trim();
-        if (typed === "") {
+        const fields = await form(context, MAX_NOTE_BYTES);
+        const back = backTo(fields?.get("back") ?? null, `/work/${String(id)}`);
+        const typed = typedText(fields?.get(lead ? "note" : "reason") ?? null);
+        const version = (fields?.get("version") ?? "").trim();
+        const limit = `It takes ${String(MAX_NOTE)} characters.`;
+        const problem =
+          fields === undefined || typed.length > MAX_NOTE
+            ? lead
+              ? `The note is too long. ${limit}`
+              : `The reason is too long. ${limit}`
+            : typed !== ""
+              ? undefined
+              : lead
+                ? "Write a note for the lead."
+                : "Say why you abandon it.";
+        if (problem !== undefined) {
           const item = taskFor(factory, context, lead ? "Send to lead" : "Abandon task");
           if (item === undefined) return;
           sendHtml(
             context.response,
-            422,
+            fields === undefined ? 413 : 422,
             lead
-              ? leadPage(context.shell, item, back, "Write a note for the lead.")
-              : abandonPage(context.shell, item, back, "Say why you abandon it."),
+              ? leadPage(context.shell, item, back, problem, typed)
+              : abandonPage(context.shell, item, back, problem, typed),
           );
           return;
         }
@@ -1037,9 +1150,11 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const approved = read("the review", () =>
           item.headSha === null ? false : factory.cards.approvedAt(id, item.headSha),
         );
+        const labels = workerLabels(factory);
         const back = `/work/${String(id)}`;
         const held = heldStage(item, events.ok ? events.value : undefined);
-        const track = held === undefined ? undefined : tracker(item, held);
+        const track =
+          held === undefined ? undefined : tracker(item, held, events.ok ? events.value : []);
         const actions = cardActions(item);
 
         const threadRows = !threads.ok
@@ -1052,7 +1167,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
                   href: threadHref(thread),
                   wholeRow: true,
                   sub: escapeHtml(
-                    `${thread.environmentId}, ${providerName(thread.providerInstanceId)}, ${thread.model}`,
+                    `${labels.get(thread.environmentId) ?? thread.environmentId}, ${providerName(thread.providerInstanceId)}, ${thread.model}`,
                   ),
                   aside: threadStatus(thread),
                 })),
@@ -1080,12 +1195,12 @@ export function workRoutes(factory: FactoryPages): Route[] {
                 : `${track.html}<p class="track-note">${trackNote(item, track.step, events.ok ? events.value : [], now())}</p>`
             }${taskCallout(item, back)}<div class="cols">${section({
               title: "Details",
-              body: details(item, now()),
+              body: details(item, labels, now()),
             })}${section({
               title: "Threads",
               count: threads.ok ? threads.value.length : undefined,
               body: threadRows,
-            })}</div>${proof(item, approved)}${events.ok ? attempts(item, events.value, now()) : ""}${section(
+            })}</div>${proof(item, approved, events.ok ? events.value : [])}${events.ok ? attempts(item, events.value, now()) : ""}${section(
               {
                 title: "History",
                 body: !events.ok
@@ -1173,7 +1288,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             `${pageHead({
               title: record.title,
               lede: `${threadStatus(record)}${DOT}${escapeHtml(
-                `${record.environmentId}, ${providerName(record.providerInstanceId)}, ${record.model}`,
+                `${workerLabels(factory).get(record.environmentId) ?? record.environmentId}, ${providerName(record.providerInstanceId)}, ${record.model}`,
               )}${DOT}config v${String(record.configVersion)}`,
             })}${section({
               title: "Transcript",

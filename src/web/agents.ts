@@ -4,6 +4,7 @@ import {
   isInstructionSet,
   skillDescription,
   skillFiles,
+  skillPathProblem,
   skillUsers,
   withInstructionSet,
   withNewSkill,
@@ -12,6 +13,7 @@ import {
   withoutSkill,
   type InstructionSetName,
 } from "../config/agents.js";
+import { MAX_SKILL_FILE_BYTES } from "../config/defaults.js";
 import {
   ConfigValidationError,
   isSafeRelativePath,
@@ -19,6 +21,7 @@ import {
 } from "../config/document.js";
 import type { ConfigVersion } from "../config/store.js";
 import {
+  MAX_FORM_BYTES,
   STALE,
   baseOf,
   configPage,
@@ -33,6 +36,7 @@ import {
 } from "./config-page.js";
 import type { FactoryPages } from "./factory.js";
 import {
+  callout,
   dialog,
   dialogButton,
   empty,
@@ -68,8 +72,18 @@ const SEP = " &middot; ";
 const AGENTS = "/config/agents";
 const SKILL_NAME = "[A-Za-z0-9][A-Za-z0-9_.-]*";
 const SKILL_FILE = "SKILL.md";
-/** Room for the largest skill file a folder import takes, form-encoded, and the rest of the form. */
-const MAX_TEXT_FORM_BYTES = 1024 * 1024;
+/** Form encoding at most triples a text's UTF-8 bytes, so this fits the largest file and the rest of the form. */
+const MAX_TEXT_FORM_BYTES = 3 * MAX_SKILL_FILE_BYTES + MAX_FORM_BYTES;
+const TEXT_LIMIT = `${String(MAX_SKILL_FILE_BYTES / 1024)} KB`;
+const TEXT_TOO_LARGE = `The text is larger than ${TEXT_LIMIT}, the most one file holds.`;
+
+function textTooLarge(back: string): { reason: string; back: string; backLabel: string } {
+  return {
+    reason: `One file holds at most ${TEXT_LIMIT} of text, and this form holds more.`,
+    back,
+    backLabel: "Back to the editor",
+  };
+}
 
 function count(n: number, one: string): string {
   return `${String(n)} ${one}${n === 1 ? "" : "s"}`;
@@ -108,6 +122,47 @@ function versionChoice(id: string, base: ConfigVersion): string {
 interface Refused {
   errors: string[];
   form?: URLSearchParams;
+  /**
+   * The editor form was built on an older version. Its text is shown beside
+   * the editor, never in it: the form that comes back builds on the current
+   * version, so its fields must hold what that version saved.
+   */
+  stale?: boolean;
+}
+
+/** The error a stale editor form comes back with. `saved` is escaped. */
+function conflict(current: ConfigVersion, typed: URLSearchParams, saved: string): string {
+  const parent = typed.get("parentId") ?? "";
+  const from = /^\d{1,9}$/.test(parent) ? `version ${parent}` : "an older version";
+  const id = String(current.id);
+  return callout(
+    "err",
+    "Not saved: the config changed",
+    `The config changed since the page was loaded. Version ${id} is now the current one, and this form was built from ${from}. The form now shows ${escapeHtml(saved)} saved in version ${id}. What you typed is under it and was not saved: copy what you still want into the form, then save.`,
+  );
+}
+
+/** What the owner typed into a stale editor form, where it can be copied but not sent. `note` must be safe HTML. */
+function typedText(typed: URLSearchParams, note?: string): string {
+  return section({
+    title: "What you typed",
+    body: field(
+      "typed-text",
+      "Not saved. Copy what you still want from here.",
+      // No name, so no form sends it; the newline keeps the text's own first one.
+      `<textarea id="typed-text" class="config" readonly spellcheck="false">\n${escapeHtml(formText(typed, "text"))}</textarea>`,
+      { hint: note },
+    ),
+  });
+}
+
+/**
+ * The version a form that comes back builds on. A refused form that keeps
+ * what was typed keeps the version it was built from, so a change made
+ * meanwhile makes it stale; any other form builds on the current version.
+ */
+function builtFrom(current: ConfigVersion, kept: URLSearchParams | undefined): string {
+  return kept?.get("parentId") ?? String(current.id);
 }
 
 /** Runs an edit of the config document; an edit the document refuses gives its reasons. */
@@ -265,7 +320,11 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const config = current.document;
     const saved = instructionSet(config, name);
     const typed = refused?.form;
-    const loaded = typed === undefined ? saved.skills : typed.getAll("skills");
+    const stale = typed !== undefined && refused?.stale === true;
+    // A stale form's text and ticks are not put back in the form.
+    const kept = stale ? undefined : typed;
+    const loaded = kept === undefined ? saved.skills : kept.getAll("skills");
+    const ticked = typed?.getAll("skills") ?? [];
     const choices = Object.keys(config.skills)
       .map((skill) => {
         const description = skillDescription(skillFiles(config, skill) ?? {});
@@ -278,10 +337,10 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       configPage(
         context.shell,
         `${title} instructions`,
-        `${pageHead({ title: `${title} instructions`, lede: does })}${savedNotice(context.url)}${problems("Not saved", refused?.errors)}<form class="form wide" method="post" action="${AGENTS}/${name}"><input type="hidden" name="parentId" value="${String(current.id)}">${editor(
+        `${pageHead({ title: `${title} instructions`, lede: does })}${savedNotice(context.url)}${stale ? conflict(current, typed, "the instructions and skills") : ""}${problems("Not saved", refused?.errors)}<form class="form wide" method="post" action="${AGENTS}/${name}"><input type="hidden" name="parentId" value="${escapeHtml(builtFrom(current, kept))}">${editor(
           "instructions",
           "Instructions",
-          typed === undefined ? saved.text : formText(typed, "text"),
+          kept === undefined ? saved.text : formText(kept, "text"),
         )}<fieldset class="sec"><legend>Skills it loads</legend><div class="checks">${
           choices === ""
             ? `<p class="hint">No skills yet. Add one on <a href="${AGENTS}">Agents</a>.</p>`
@@ -289,7 +348,16 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
         }</div></fieldset>${input("message", "What changed", {
           value: typed?.get("message") ?? "",
           hint: "Shown in the version list.",
-        })}${versionSaveBar("Save instructions", current, typed)}</form>`,
+        })}${versionSaveBar("Save instructions", current, typed)}</form>${
+          stale
+            ? typedText(
+                typed,
+                ticked.length === 0
+                  ? "You had ticked no skills."
+                  : `You had ticked: ${escapeHtml(ticked.join(", "))}.`,
+              )
+            : ""
+        }`,
         crumbs(title),
       ),
     );
@@ -301,11 +369,15 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       notFound(context, "agent");
       return;
     }
-    const form = await readForm(context, MAX_TEXT_FORM_BYTES);
+    const form = await readForm(context, MAX_TEXT_FORM_BYTES, textTooLarge(`${AGENTS}/${name}`));
     if (form === undefined) return;
     const base = baseOf(factory, form);
     if (base === undefined) {
-      showSet(context, { errors: [STALE], form });
+      showSet(context, { errors: [], form, stale: true });
+      return;
+    }
+    if (Buffer.byteLength(formText(form, "text")) > MAX_SKILL_FILE_BYTES) {
+      showSet(context, { errors: [TEXT_TOO_LARGE], form });
       return;
     }
     const errors = await saveVersion(factory, context, {
@@ -349,7 +421,10 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const description = skillDescription(files);
     const typed = refused?.form;
     // Only the editor's own form carries the file's text; a refused dialog leaves the editor as saved.
-    const editing = typed?.has("text") === true ? typed : undefined;
+    const sent = typed?.has("text") === true ? typed : undefined;
+    const stale = sent !== undefined && refused?.stale === true;
+    // A stale form's text is not put back in the editor.
+    const editing = stale ? undefined : sent;
     const picker = segmented(
       "File",
       [...Object.keys(files), ...(isNew ? [file] : [])].map((path) => ({
@@ -416,14 +491,14 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
             ],
             "Skill actions",
           ),
-        })}${savedNotice(context.url)}${problems("Not saved", refused?.errors)}<div class="bar"><div class="files">${picker}</div>${dialogButton("add-file", "Add file")}</div><form class="form wide" method="post" action="${here}"><input type="hidden" name="parentId" value="${String(current.id)}"><input type="hidden" name="file" value="${escapeHtml(file)}">${editor(
+        })}${savedNotice(context.url)}${stale ? conflict(current, sent, `the text of ${file}`) : ""}${problems("Not saved", refused?.errors)}<div class="bar"><div class="files">${picker}</div>${dialogButton("add-file", "Add file")}</div><form class="form wide" method="post" action="${here}"><input type="hidden" name="parentId" value="${escapeHtml(builtFrom(current, editing))}"><input type="hidden" name="file" value="${escapeHtml(file)}">${editor(
           "skill-text",
           file,
           editing === undefined ? (isNew ? "" : (files[file] ?? "")) : formText(editing, "text"),
         )}${input("message", "What changed", {
-          value: editing?.get("message") ?? "",
+          value: sent?.get("message") ?? "",
           hint: "Shown in the version list.",
-        })}${versionSaveBar("Save skill", current, editing)}</form>${dialogs}`,
+        })}${versionSaveBar("Save skill", current, sent)}</form>${stale ? typedText(sent) : ""}${dialogs}`,
         crumbs(name),
       ),
     );
@@ -433,7 +508,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const found = withSkill(context);
     if (found === undefined) return;
     const { name } = found;
-    const form = await readForm(context, MAX_TEXT_FORM_BYTES);
+    const form = await readForm(context, MAX_TEXT_FORM_BYTES, textTooLarge(skillHref(name)));
     if (form === undefined) return;
     const file = form.get("file") ?? SKILL_FILE;
     const base = baseOf(factory, form);
@@ -441,11 +516,19 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     // A path the page could not show is refused on the SKILL.md page, with the reason.
     const shown = Object.hasOwn(files, file) || isSafeRelativePath(file) ? file : SKILL_FILE;
     if (base === undefined) {
-      showSkill(context, shown === file ? { errors: [STALE], form } : { errors: [STALE] }, shown);
+      showSkill(
+        context,
+        shown === file ? { errors: [], form, stale: true } : { errors: [STALE] },
+        shown,
+      );
       return;
     }
     const isNew = !Object.hasOwn(files, file);
-    const edited = edit(() => withSkillFile(base.document, name, file, formText(form, "text")));
+    const text = formText(form, "text");
+    const edited =
+      Buffer.byteLength(text) > MAX_SKILL_FILE_BYTES
+        ? { errors: [TEXT_TOO_LARGE] }
+        : edit(() => withSkillFile(base.document, name, file, text));
     const errors =
       "errors" in edited
         ? edited.errors
@@ -475,6 +558,12 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
           `${JSON.stringify(path)} must be a relative path inside the skill folder, such as examples/good.md.`,
         ],
       });
+      return;
+    }
+    // A path the skill's files leave no room for is refused here, before its text is typed.
+    const problem = skillPathProblem(found.current.document, found.name, path);
+    if (problem !== undefined) {
+      showSkill(context, { errors: [problem] });
       return;
     }
     // Nothing is saved yet: the editor opens on the new path, and saving its text creates the file.

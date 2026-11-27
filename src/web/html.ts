@@ -13,6 +13,15 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (char) => ESCAPES[char] ?? char);
 }
 
+/**
+ * The entry of `table` that `key` names. A key that comes from a request can
+ * name a property every object inherits, such as `constructor`, which is not
+ * an entry.
+ */
+export function lookup<T>(table: Readonly<Record<string, T>>, key: string | null): T | undefined {
+  return key !== null && Object.hasOwn(table, key) ? table[key] : undefined;
+}
+
 export const STYLESHEET_PATH = "/assets/app.css";
 
 /**

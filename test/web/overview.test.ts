@@ -212,6 +212,44 @@ describe("Home", () => {
     expect(filtered).toContain("Finished tasks appear here");
   });
 
+  it("leaves out a notification about another project's task, and still counts it in the sidebar", async () => {
+    dashboard = await startDashboard(setUp());
+    const { h } = dashboard;
+    const mine = runningCard(h);
+    const other = h.cards.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
+    h.cards.transition(other, "Implementing", "work started");
+    h.cards.notify("Reverted PR #4 in octo/other", other);
+    h.cards.notify("Reverted PR #2 in octo/app", mine);
+    h.cards.notify("Something factory-wide happened");
+
+    const all = (await dashboard.get("/")).html;
+    expect(all).toContain("Reverted PR #4 in octo/other");
+    expect(all).toContain("3 things need you.");
+
+    const filtered = await getFor(dashboard, "octo/app");
+    expect(filtered).not.toContain("Reverted PR #4 in octo/other");
+    expect(filtered).toContain("Reverted PR #2 in octo/app");
+    expect(filtered).toContain("Something factory-wide happened");
+    expect(filtered).toContain("2 things need you.");
+    // The badge next to Home counts every project.
+    expect(filtered).toMatch(
+      /<span class="count">3<span class="sr-only"> need you<\/span><\/span>/,
+    );
+  });
+
+  it("does not act on a form larger than it reads", async () => {
+    dashboard = await startDashboard();
+
+    const response = await dashboard.post("/factory/pause", {
+      back: "/",
+      junk: "x".repeat(20_000),
+    });
+
+    expect(response.headers.get("location")).toBe("/?notice=too-large");
+    expect(dashboard.h.pipeline.paused()).toBe(false);
+    expect((await dashboard.get("/?notice=too-large")).html).toContain("The form was too large");
+  });
+
   it("reloads itself every 10 seconds", async () => {
     dashboard = await startDashboard(setUp());
 

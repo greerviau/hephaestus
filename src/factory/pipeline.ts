@@ -120,6 +120,18 @@ export const MERGE_STEP_REASONS = {
   outcomeUnknown: "GitHub may have merged",
 } as const;
 
+/**
+ * How the escalation starts when the merge commit's checks failed and the
+ * policy does not revert, so a page can tell that failure from any other
+ * escalation after a merge.
+ */
+export const VALIDATION_FAILED = "checks failed on the merge commit";
+
+/** The reason an escalation recorded, from the detail of its stage event. */
+export function escalationReason(detail: string): string {
+  return detail.replace(/^to the (?:owner|lead): /, "");
+}
+
 const AFTER_CHECKS: readonly string[] = [
   ...Object.values(PAST_CHECKS),
   ...Object.values(MERGE_STEP_REASONS),
@@ -1246,7 +1258,7 @@ export class Pipeline {
       return this.escalate(
         card,
         "owner",
-        `checks failed on the merge commit ${card.mergeSha}: ${checks.failed.join(", ")}`,
+        `${VALIDATION_FAILED} ${card.mergeSha}: ${checks.failed.join(", ")}`,
       );
     }
     const revertPr = await this.options.github.revertPullRequest(card.repo, card.prNumber);

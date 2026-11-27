@@ -15,6 +15,7 @@ import {
   externalLink,
   input,
   layout,
+  lookup,
   menu,
   pageHead,
   postButton,
@@ -209,7 +210,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
     if (messaging === undefined || blocked !== undefined) {
       return layout("Chat", `${head}${blocked ?? ""}`, { section: "/chat", shell });
     }
-    const shown = NOTICES[notice];
+    const shown = lookup(NOTICES, notice);
     const live = read("the chat connections", () => ({
       states: messaging.states(),
       alerts: messaging.alertsOn(),

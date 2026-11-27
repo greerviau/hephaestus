@@ -163,10 +163,27 @@ export function versionSaveBar(
   );
 }
 
-/** A posted form's fields, or undefined after answering that the form is too large. */
+/** What the page says when a form is larger than its route reads, and where it leads back to. */
+export interface TooLarge {
+  /** The limit the owner can act on, as a sentence. */
+  reason: string;
+  back: string;
+  backLabel: string;
+}
+
+/**
+ * A posted form's fields, or undefined after answering that the form is too
+ * large. Nothing of an unread body can be shown again, so the answer says what
+ * the limit is and that the browser still has the text.
+ */
 export async function readForm(
   context: RouteContext,
   limit = MAX_FORM_BYTES,
+  tooLarge: TooLarge = {
+    reason: "The form is too large to save.",
+    back: "/config",
+    backLabel: "Back to Config",
+  },
 ): Promise<URLSearchParams | undefined> {
   const body = await readBody(context.request, limit);
   if (body === undefined) {
@@ -176,9 +193,9 @@ export async function readForm(
       refusal(
         context.shell,
         "Too large",
-        "The form is too large to save.",
-        "/config",
-        "Back to Config",
+        `${tooLarge.reason} Nothing was saved. Go back in your browser to get what you typed.`,
+        tooLarge.back,
+        tooLarge.backLabel,
       ),
     );
     return undefined;

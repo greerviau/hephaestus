@@ -63,6 +63,205 @@ function newest(): { id: number; state: string; message: string; document: Facto
   return version;
 }
 
+function unescape(text: string): string {
+  return text
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&#39;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+/** What a browser sends when the owner presses Save on the editor form of a page, as the page came back. */
+function editorFields(html: string, action: string): Record<string, string | string[]> {
+  const form =
+    new RegExp(`<form class="form wide" method="post" action="${action}">(.*?)</form>`, "s").exec(
+      html,
+    )?.[1] ?? "";
+  const fields: Record<string, string | string[]> = {};
+  for (const [, name, value] of form.matchAll(
+    /<input type="hidden" name="([^"]*)" value="([^"]*)">/g,
+  )) {
+    fields[name ?? ""] = unescape(value ?? "");
+  }
+  fields.text = unescape(
+    /<textarea[^>]* name="text"[^>]*>\n(.*?)<\/textarea>/s.exec(form)?.[1] ?? "no editor",
+  );
+  fields.message = unescape(/ name="message" value="([^"]*)"/.exec(form)?.[1] ?? "");
+  fields.skills = [
+    ...form.matchAll(/<input type="checkbox" name="skills" value="([^"]*)" checked>/g),
+  ].map(([, skill]) => unescape(skill ?? ""));
+  if (form.includes('name="deploy" value="on" checked')) fields.deploy = "on";
+  return fields;
+}
+
+/** Another edit that lands while a form is open: a deployed version on top of `base`. */
+function editMeanwhile(change: (config: FactoryConfig) => void): number {
+  const document = agentsConfig();
+  change(document);
+  const version = dashboard.store.createVersion({
+    document,
+    author: "owner",
+    message: "Meanwhile",
+    parentId: base,
+  });
+  dashboard.store.approve(version.id);
+  dashboard.store.markDeployed(version.id);
+  return version.id;
+}
+
+describe("A stale editor form", () => {
+  it("comes back with the saved skill text, so saving again cannot undo a newer edit", async () => {
+    const newer = editMeanwhile((config) => {
+      const files = config.skills.triage;
+      if (files !== undefined) files["SKILL.md"] = "# Triage, rewritten\n";
+    });
+
+    const refused = await post("/config/skills/triage", {
+      parentId: String(base),
+      file: "SKILL.md",
+      text: "# Triage, my <stale> draft\n",
+      message: "Mine",
+      deploy: "on",
+    });
+    const html = await refused.text();
+
+    expect(refused.status).toBe(400);
+    expect(newest().id).toBe(newer);
+    // The editor holds the saved text; what was typed is kept where it cannot be sent.
+    const again = editorFields(html, "/config/skills/triage");
+    expect(again.parentId).toBe(String(newer));
+    expect(again.text).toBe("# Triage, rewritten\n");
+    expect(html).toContain("The config changed since the page was loaded");
+    expect(html).toContain(
+      `Version ${String(newer)} is now the current one, and this form was built from version ${String(base)}`,
+    );
+    expect(html).toMatch(
+      /<textarea id="typed-text" class="config" readonly[^>]*>\n# Triage, my &lt;stale&gt; draft\n<\/textarea>/,
+    );
+    expect(html).not.toMatch(/<textarea[^>]*name="text"[^>]*>\n# Triage, my/);
+
+    await post("/config/skills/triage", again);
+
+    expect(newest().document.skills.triage?.["SKILL.md"]).toBe("# Triage, rewritten\n");
+    for (const version of dashboard.store.list()) {
+      expect(version.document.skills.triage?.["SKILL.md"]).not.toContain("my <stale> draft");
+    }
+  });
+
+  it("comes back with the saved instructions and skills, so saving again drops no skill a newer edit added", async () => {
+    const newer = editMeanwhile((config) => {
+      config.roles.lead.persona = "Lead, rewritten.";
+      config.roles.lead.skills = ["brief"];
+    });
+
+    const refused = await post("/config/agents/lead", {
+      parentId: String(base),
+      text: "Lead, my stale draft.",
+      skills: ["triage"],
+      message: "Mine",
+      deploy: "on",
+    });
+    const html = await refused.text();
+
+    expect(refused.status).toBe(400);
+    expect(html).toContain("The config changed since the page was loaded");
+    const again = editorFields(html, "/config/agents/lead");
+    expect(again).toMatchObject({
+      parentId: String(newer),
+      text: "Lead, rewritten.",
+      skills: ["brief"],
+    });
+    expect(html).toMatch(
+      /<textarea id="typed-text" class="config" readonly[^>]*>\nLead, my stale draft\.<\/textarea>/,
+    );
+    expect(html).toContain("You had ticked: triage.");
+
+    await post("/config/agents/lead", again);
+
+    expect(newest().document.roles.lead).toMatchObject({
+      persona: "Lead, rewritten.",
+      skills: ["brief"],
+    });
+  });
+
+  it("keeps the version a form was built from when it is refused for another reason", async () => {
+    const refused = await post("/config/agents/lead", {
+      parentId: String(base),
+      text: "Typed.",
+      skills: ["ghost"],
+      message: "m",
+    });
+    const again = editorFields(await refused.text(), "/config/agents/lead");
+    expect(again).toMatchObject({ parentId: String(base), text: "Typed." });
+
+    // An edit lands before the owner corrects the form; the corrected form is stale, not current.
+    const newer = editMeanwhile((config) => {
+      config.roles.lead.persona = "Lead, rewritten.";
+    });
+    const corrected = await post("/config/agents/lead", { ...again, skills: [] });
+
+    expect(corrected.status).toBe(400);
+    expect(newest().id).toBe(newer);
+  });
+
+  it("does not delete or rename a skill from a dialog built on an older version", async () => {
+    const newer = editMeanwhile((config) => {
+      config.roles.lead.skills = ["brief"];
+    });
+
+    const deleted = await post("/config/skills/brief/delete", { parentId: String(base) });
+    const renamed = await post("/config/skills/brief/rename", {
+      parentId: String(base),
+      name: "briefing",
+    });
+    const created = await post("/config/skills", { parentId: String(base), name: "fresh" });
+
+    expect([deleted.status, renamed.status, created.status]).toEqual([400, 400, 400]);
+    expect(newest().id).toBe(newer);
+    // The confirm that comes back describes the skill as it is now.
+    expect(await deleted.text()).toContain("Lead loads it; deleting it unloads it from Lead.");
+  });
+});
+
+describe("Text too large to save", () => {
+  it("refuses text over the limit of a skill file, says the limit, and keeps the text", async () => {
+    const text = "x".repeat(256 * 1024 + 1);
+
+    const skill = await post("/config/skills/brief", {
+      parentId: String(base),
+      file: "SKILL.md",
+      text,
+      message: "Big",
+      deploy: "on",
+    });
+    const html = await skill.text();
+    expect(skill.status).toBe(400);
+    expect(html).toContain("The text is larger than 256 KB, the most one file holds.");
+    expect(html).toContain(`${text}</textarea>`);
+
+    const set = await post("/config/agents/lead", { parentId: String(base), text, message: "Big" });
+    expect(set.status).toBe(400);
+    expect(await set.text()).toContain("The text is larger than 256 KB");
+    expect(newest().id).toBe(base);
+  });
+
+  it("says a form larger than it reads holds too much text, with the limit", async () => {
+    const response = await post("/config/skills/brief", {
+      parentId: String(base),
+      file: "SKILL.md",
+      text: "x".repeat(2 * 1024 * 1024),
+      message: "Huge",
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(413);
+    expect(html).toContain("One file holds at most 256 KB of text");
+    expect(html).toContain('href="/config/skills/brief"');
+    expect(newest().id).toBe(base);
+  });
+});
+
 describe("Agents tab", () => {
   it("lists each instruction set with how many skills it loads", async () => {
     const { status, html } = await dashboard.get("/config/agents");
@@ -291,6 +490,31 @@ describe("Skill editor", () => {
     expect(saved.status).toBe(400);
     expect(newest().id).toBe(base);
     expect((await dashboard.get("/config/skills/brief?file=..%2Fescape.md")).status).toBe(404);
+  });
+
+  it("refuses a file path that needs another file to be a folder, or the reverse", async () => {
+    const inside = await post("/config/skills/brief/files", { path: "SKILL.md/notes.md" });
+    expect(inside.status).toBe(400);
+    expect(await inside.text()).toContain(
+      "&quot;SKILL.md/notes.md&quot; is inside &quot;SKILL.md&quot;, which is a file, not a folder",
+    );
+
+    const above = await post("/config/skills/triage/files", { path: "examples" });
+    expect(above.status).toBe(400);
+    expect(await above.text()).toContain(
+      "&quot;examples/good.md&quot; is inside &quot;examples&quot;, which is a file, not a folder",
+    );
+
+    const saved = await post("/config/skills/brief", {
+      parentId: String(base),
+      file: "SKILL.md/notes.md",
+      text: "x",
+      message: "m",
+      deploy: "on",
+    });
+    expect(saved.status).toBe(400);
+    expect(await saved.text()).toContain("which is a file, not a folder");
+    expect(newest().id).toBe(base);
   });
 
   it("creates a skill with a SKILL.md that carries its name and description", async () => {

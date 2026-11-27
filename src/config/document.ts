@@ -116,6 +116,29 @@ export function isSafeRelativePath(path: string): boolean {
     );
 }
 
+/**
+ * Each path in `paths` that lies inside another path of the list, with that
+ * other path. A skill is written to disk as a folder, where one name cannot
+ * be both a file and a folder.
+ */
+export function pathsInsideFiles(paths: readonly string[]): [path: string, file: string][] {
+  const all = new Set(paths);
+  const found: [string, string][] = [];
+  for (const path of paths) {
+    const segments = path.split("/");
+    for (let depth = 1; depth < segments.length; depth += 1) {
+      const above = segments.slice(0, depth).join("/");
+      if (all.has(above)) found.push([path, above]);
+    }
+  }
+  return found;
+}
+
+/** What the config says about a skill file that lies inside another file. */
+export function insideFileProblem(skill: string, path: string, file: string): string {
+  return `skills.${skill}.${JSON.stringify(path)} is inside ${JSON.stringify(file)}, which is a file, not a folder`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -296,6 +319,9 @@ export function validateConfig(value: unknown): FactoryConfig {
         problems.push(`skills.${name}.${JSON.stringify(path)} must be a relative path`);
       }
       string(`skills.${name}.${path}`, text);
+    }
+    for (const [path, file] of pathsInsideFiles(Object.keys(contents))) {
+      problems.push(insideFileProblem(name, path, file));
     }
   }
   const threadSkills = (factory as { threadSkills?: unknown } | undefined)?.threadSkills;

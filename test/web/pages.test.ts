@@ -294,6 +294,19 @@ describe("Every page", () => {
     }
   });
 
+  it("ignores a notice named after a property every object has", async () => {
+    dashboard = await fullDashboard();
+    await populate(dashboard);
+
+    for (const path of ["/", "/work", "/activity", "/projects", "/proposals", "/chat"]) {
+      for (const key of ["constructor", "toString", "__proto__"]) {
+        const { status, html } = await dashboard.get(`${path}?notice=${key}`);
+        expect(status, `${path} ${key}`).toBe(200);
+        expect(html, `${path} ${key}`).not.toContain("undefined");
+      }
+    }
+  });
+
   it("has one h1 and headings in order when it shows a store error", async () => {
     dashboard = await fullDashboard();
     const tasks = await populate(dashboard);

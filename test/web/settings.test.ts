@@ -366,6 +366,38 @@ describe("JSON tab", () => {
     expect(dashboard.store.count()).toBe(1);
   });
 
+  it("refuses a skill file that needs another file to be a folder", async () => {
+    await start();
+    const document = sampleConfig();
+    document.skills.triage = { "SKILL.md": "x", "SKILL.md/notes.md": "y" };
+
+    const response = await dashboard.post("/config/json", {
+      document: JSON.stringify(document),
+      message: "Clash",
+      parentId: "1",
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.text()).toContain("which is a file, not a folder");
+    expect(dashboard.store.count()).toBe(1);
+  });
+
+  it("says a config larger than the form reads is too large, with the limit", async () => {
+    await start();
+
+    const response = await dashboard.post("/config/json", {
+      document: "x".repeat(7 * 1024 * 1024),
+      message: "Huge",
+      parentId: "1",
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(413);
+    expect(html).toContain("A config holds at most 2 MB as JSON");
+    expect(html).toContain('href="/config/json"');
+    expect(dashboard.store.count()).toBe(1);
+  });
+
   it("keeps the submitted parent and message when it refuses an edit", async () => {
     await start();
     deployVersion();
