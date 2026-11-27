@@ -109,6 +109,16 @@ describe("the page shell", () => {
     expect(form).not.toContain("selected");
   });
 
+  it("serves the script that applies a picked project at once", async () => {
+    dashboard = await startDashboard();
+
+    const response = await fetch(`${dashboard.base}/assets/project-filter.js`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("javascript");
+    expect(await response.text()).toContain("data-submit-on-change");
+  });
+
   it("pauses from the sidebar of any page and comes back to it", async () => {
     dashboard = await startDashboard();
 

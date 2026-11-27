@@ -10,7 +10,7 @@ Every page has the same sidebar. It lists the pages in two groups: Factory (Home
 
 While `origin/main` has new commits, every page except Update opens with an Update available notice. It has an Update now button that starts the update, or, when the service cannot update itself, the command to run on the Hermes host. While an update runs, from the dashboard or a shell, the notice says so and links to the Update page.
 
-The Project picker at the top of the sidebar lists the factory's projects. Choosing one and pressing Apply stores the choice in a cookie for a year, and "All projects" clears it. A choice that names a repo that is no longer a factory project is ignored. The picker narrows Home, Work, Activity, and Analytics, and no other page.
+The Project picker at the top of the sidebar lists the factory's projects. Choosing one applies it at once and stores the choice in a cookie for a year, and "All projects" clears it. A choice that names a repo that is no longer a factory project is ignored. The picker narrows Home, Work, Activity, and Analytics, and no other page.
 
 ## Pages
 
