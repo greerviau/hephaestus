@@ -11,6 +11,8 @@ import { harness, type Harness } from "./harness.js";
 const TOKENS = { planner: "planner-token", lead: "lead-token", improver: "improver-token" };
 
 let server: Server | undefined;
+/** The MCP server's clock, so a test can let time pass between a proposal and its approval. */
+const clock = { now: Date.parse("2026-11-27T10:00:00Z") };
 
 afterEach(async () => {
   const running = server;
@@ -31,6 +33,11 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
     pipeline: h.pipeline,
     store,
     events: h.events,
+    deploy: (id) => {
+      store.markDeployed(id);
+      return Promise.resolve({});
+    },
+    now: () => new Date(clock.now),
     tokens: () => TOKENS,
   });
   server = mcp.listen(0);
@@ -197,5 +204,128 @@ describe("FactoryMcp", () => {
       h.db.prepare("SELECT thread_id, note FROM version_evidence WHERE version_id = 2").all(),
     ).toEqual([{ thread_id: "impl", note: "missed X" }]);
     await c.close();
+  });
+
+  it("lets only the chat agent change the factory's own config, through a proposal and an approval", async () => {
+    const { url, store, mcp, h } = await start();
+    const chat = "discord:thread-9";
+    const planner = await client(url, TOKENS.planner);
+    for (const role of ["lead", "improver"] as const) {
+      const other = await client(url, TOKENS[role]);
+      const names = (await other.listTools()).tools.map((tool) => tool.name);
+      expect(names).not.toContain("propose_change");
+      expect(names).not.toContain("apply_change");
+      await other.close();
+    }
+
+    const read = json(
+      await planner.callTool({
+        name: "read_target",
+        arguments: { target: "skill:triage/SKILL.md" },
+      }),
+    );
+    expect(read.content).toBe("# Triage\n");
+
+    const proposed = json(
+      await planner.callTool({
+        name: "propose_change",
+        arguments: {
+          target: "skill:triage/SKILL.md",
+          content: "# Triage\nAsk for logs.\n",
+          summary: "Ask for logs",
+          conversation: chat,
+        },
+      }),
+    );
+    expect(proposed.diff).toContain("+Ask for logs.");
+    expect(store.count()).toBe(1);
+
+    // The call log keeps the size of the proposed text, not the text.
+    const logged = mcp.calls()[0];
+    expect(logged).toMatchObject({ role: "planner", tool: "propose_change", ok: true });
+    expect(logged?.arguments).toContain("<23 characters>");
+    expect(logged?.arguments).not.toContain("Ask for logs.");
+
+    clock.now += 60_000;
+    const applied = json(
+      await planner.callTool({
+        name: "apply_change",
+        arguments: { change_id: proposed.change_id, conversation: chat, approval: "yes, apply it" },
+      }),
+    );
+    expect(applied).toMatchObject({ state: "applied", version: 2, conversation: chat });
+    expect(store.get(2).document.skills.triage?.["SKILL.md"]).toBe("# Triage\nAsk for logs.\n");
+
+    const listed = (await planner.callTool({ name: "list_changes", arguments: {} })) as unknown;
+    expect(JSON.stringify(listed)).toContain("Ask for logs");
+
+    clock.now += 60_000;
+    const reverted = json(
+      await planner.callTool({
+        name: "revert_change",
+        arguments: { change_id: proposed.change_id, conversation: chat, request: "undo that" },
+      }),
+    );
+    expect(reverted).toMatchObject({ state: "reverted", revert_version: 3 });
+    expect(store.get(3).document.skills.triage?.["SKILL.md"]).toBe("# Triage\n");
+    expect(h.db.prepare("SELECT COUNT(*) AS n FROM chat_changes").get()).toEqual({ n: 1 });
+    await planner.close();
+  });
+
+  it("refuses a disallowed target and a secret without keeping the secret", async () => {
+    const { url, store, mcp } = await start();
+    const planner = await client(url, TOKENS.planner);
+    const refused = await planner.callTool({
+      name: "propose_change",
+      arguments: { target: "projects:octo/app", content: "{}", summary: "s", conversation: "c" },
+    });
+    expect(refused.isError).toBe(true);
+    const secret = "token: ghp_abcdefghijklmnopqrstuvwxyz0123456789";
+    const leaked = await planner.callTool({
+      name: "propose_change",
+      arguments: {
+        target: "instruction:factory",
+        content: secret,
+        summary: "s",
+        conversation: "c",
+      },
+    });
+    expect(leaked.isError).toBe(true);
+    expect(JSON.stringify(leaked)).not.toContain("ghp_");
+    expect(mcp.calls().map((call) => call.ok)).toEqual([false, false]);
+    expect(JSON.stringify(mcp.calls())).not.toContain("ghp_");
+    expect(store.count()).toBe(1);
+    await planner.close();
+  });
+
+  it("changes nothing for a declined proposal", async () => {
+    const { url, store } = await start();
+    const planner = await client(url, TOKENS.planner);
+    const proposed = json(
+      await planner.callTool({
+        name: "propose_change",
+        arguments: {
+          target: "persona:lead",
+          content: "Be brief.",
+          summary: "s",
+          conversation: "c",
+        },
+      }),
+    );
+    const declined = json(
+      await planner.callTool({
+        name: "decline_change",
+        arguments: { change_id: proposed.change_id, conversation: "c" },
+      }),
+    );
+    expect(declined.state).toBe("declined");
+    clock.now += 60_000;
+    const late = await planner.callTool({
+      name: "apply_change",
+      arguments: { change_id: proposed.change_id, conversation: "c", approval: "yes" },
+    });
+    expect(late.isError).toBe(true);
+    expect(store.count()).toBe(1);
+    await planner.close();
   });
 });

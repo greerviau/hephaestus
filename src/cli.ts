@@ -276,6 +276,7 @@ function factoryEngine(
     pipeline,
     store,
     events,
+    deploy: (id) => workers.deployVersion(id),
     tokens: () =>
       Object.fromEntries(ROLE_NAMES.map((role) => [role, secrets.get(mcpTokenSecret(role))])),
   });
