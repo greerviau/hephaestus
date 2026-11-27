@@ -247,6 +247,26 @@ test "$(main_pid)" != "$pid" || fail "the service was not restarted"
 test "$(systemctl --user is-active hephaestus.service)" = active || fail "service not active"
 wait_for_dashboard
 
+echo "== the dashboard runs an update that outlives the service's restart"
+pid=$(main_pid)
+push "add a second marker" 'echo "export const MARK2 = 2;" > "$0/src/mark2.ts"'
+cookie=$(curl --silent --output /dev/null --dump-header - --data-urlencode "password=$password" "$base/login" \
+  | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p')
+test -n "$cookie" || fail "login set no cookie"
+test "$(status --header "cookie: $cookie" --data '' "$base/update")" = 303 || fail "the update did not start"
+for _ in $(seq 1 300); do
+  grep -q "Update finished with exit code" "$HOME/.hephaestus/update.log" 2>/dev/null && break
+  sleep 1
+done
+cat "$HOME/.hephaestus/update.log" || true
+grep -q "Update finished with exit code 0" "$HOME/.hephaestus/update.log" \
+  || fail "the dashboard's update did not finish"
+test -f "$co/dist/mark2.js" || fail "the dashboard's update did not build the new commit"
+test "$(main_pid)" != "$pid" || fail "the dashboard's update did not restart the service"
+wait_for_dashboard
+curl --silent --header "cookie: $cookie" "$base/update" | grep -q "The last update finished" \
+  || fail "the update page does not show the finished update"
+
 echo "== a build that fails is rolled back, and the old build keeps running"
 pid=$(main_pid)
 built=$(git -C "$co" rev-parse HEAD)

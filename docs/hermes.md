@@ -34,7 +34,7 @@ The agent you talk to is a general communicator, not only an issue filer. It dec
 
 - Conversation, such as "what do you think about adding a retry to the sync?": it gives a direct answer. It files nothing and does not ask whether to file.
 - A question about the factory or a stats request, such as "what is in review right now?" or "how many PRs merged this week?": it answers from the factory's record, which it reads through the status, card list, and thread tools. When the record does not say, it says so.
-- A suggestion to improve the factory: it discusses the idea. It cannot change the factory's skills, instructions, or settings itself.
+- A suggestion to improve the factory, or a request to change its skills, instructions, or settings: it discusses the idea. When you ask for the change, it shows you the diff and applies it only after you approve in the conversation (see Changes agreed in chat in [Factory](factory.md)). It does not file an issue for such a change.
 - A request for work, such as "add a --json flag to the export command in you/your-repo": it files the issue and replies as described below.
 
 It files an issue only when you ask for work or agree when it offers. It also checks the factory's status first, so it does not file a duplicate or pass a project's cap on open issues.

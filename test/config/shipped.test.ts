@@ -23,15 +23,92 @@ const FIRST_PLANNER =
   "File issues only with the `file_issue` tool. Ask the requester when the goal or scope is unclear, and do not guess. Check `get_status` before filing, so you do not file a duplicate or pass the project's cap on open factory issues.\n\n" +
   "When a request comes in a chat, reply in that conversation once you have filed its issues: link each issue, and include the `tracking` line that `file_issue` returns exactly as given, on a line of its own. Hephaestus finds the conversation by that line and posts the work's progress there, so you do not need to report progress yourself. Keep replies short, and never claim work is done before Hephaestus says so.\n";
 
+/**
+ * The rules that keep the communicator from filing issues it was not asked for. Each is one
+ * sentence of the shipped instructions, checked with its whitespace collapsed.
+ */
+const FILING_RULES: Record<string, RegExp> = {
+  conversationFilesNothing:
+    /Open conversation, such as "what do you think about X\?" or a half-formed idea: discuss it and give your view\. File nothing\./,
+  noIssueBecauseDiscussed: /Do not file an issue just because something was discussed\./,
+  needsRequestOrAgreement:
+    /File only when the person asked for the work to be done, or agreed when you offered to file it\./,
+  asksWhenUnclear: /When it is unclear whether they want work filed, ask in one short line\./,
+  noFilingQuestionForConversation: /Never ask about filing when the message is only conversation\./,
+  workRequestBecomesIssues:
+    /A request for work to be done on a project: turn it into one or more GitHub issues/,
+  noTrackingWhenNothingFiled: /Do not add a `tracking` line to a reply that filed nothing\./,
+};
+
+const collapse = (text: string): string => text.replace(/\s+/g, " ");
+
+/** The filing rules a version of the instructions no longer holds. */
+function brokenRules(text: string): string[] {
+  return Object.entries(FILING_RULES)
+    .filter(([, rule]) => !rule.test(collapse(text)))
+    .map(([name]) => name);
+}
+
 describe("the planner's shipped instructions", () => {
-  it("describe a communicator that talks beyond filing issues and files only on request", () => {
+  it("keep every filing rule that the communicator needs", () => {
+    expect(brokenRules(shippedInstructions("planner"))).toEqual([]);
+  });
+
+  it("fail the filing rules when conversation is made to file, to ask about filing, or to file unasked", () => {
+    const text = collapse(shippedInstructions("planner"));
+    const reversals: { from: string; to: string; breaks: string }[] = [
+      // A conversational message must get an answer and no issue.
+      {
+        from: "discuss it and give your view. File nothing.",
+        to: "discuss it and give your view. Then file an issue for it.",
+        breaks: "conversationFilesNothing",
+      },
+      {
+        from: "Do not file an issue just because something was discussed.",
+        to: "File an issue whenever something was discussed.",
+        breaks: "noIssueBecauseDiscussed",
+      },
+      // No filing question for a message that is only conversation.
+      {
+        from: "Never ask about filing when the message is only conversation.",
+        to: "Always ask whether to file an issue, even when the message is only conversation.",
+        breaks: "noFilingQuestionForConversation",
+      },
+      // An issue needs a work request or the person's agreement.
+      {
+        from: "File only when the person asked for the work to be done, or agreed when you offered to file it.",
+        to: "File an issue for every message, whether or not the person asked for work.",
+        breaks: "needsRequestOrAgreement",
+      },
+      {
+        from: "File only when the person asked for the work to be done, or agreed when you offered to file it.",
+        to: "File when you think the work is worth doing.",
+        breaks: "needsRequestOrAgreement",
+      },
+    ];
+
+    for (const { from, to, breaks } of reversals) {
+      expect(text, from).toContain(from);
+      expect(brokenRules(text.replace(from, to)), to).toContain(breaks);
+    }
+  });
+
+  it("fail the filing rules when any one of them is removed", () => {
+    const text = collapse(shippedInstructions("planner"));
+
+    for (const [name, rule] of Object.entries(FILING_RULES)) {
+      const sentence = rule.exec(text)?.[0];
+      expect(sentence, name).toBeDefined();
+      expect(brokenRules(text.replace(sentence ?? "", "")), name).toContain(name);
+    }
+  });
+
+  it("describe a communicator that answers from its tools and still files by the same rules", () => {
     const text = shippedInstructions("planner");
 
     expect(text).toContain("general communicator");
     expect(text).not.toMatch(/^Turn each request/m);
-    // The conversations that file nothing, and the tools that answer them.
     for (const tool of ["get_status", "list_cards", "read_thread"]) expect(text).toContain(tool);
-    expect(text).toMatch(/do not file an issue/i);
     expect(text).toMatch(/say so/i);
     // Merge counts use the recorded merge time, never a card's last update, and admit when they are partial.
     expect(text).toContain("merged_at");
@@ -39,11 +116,12 @@ describe("the planner's shipped instructions", () => {
     expect(text).toMatch(/at most 100 cards/);
     expect(text).toMatch(/at least that many/);
     // The filing rules stay: file_issue only, a status check first, and the tracking line on its own.
-    expect(text).toContain("file_issue");
-    expect(text).toMatch(/duplicate/);
-    expect(text).toMatch(/cap/);
-    expect(text).toMatch(/`tracking` line/);
-    expect(text).toMatch(/on a line of its own/);
+    expect(text).toMatch(/use only the `file_issue` tool/);
+    expect(text).toMatch(/Check `get_status` before filing, so you do not file a duplicate/);
+    expect(text).toMatch(/pass the project's cap on open factory issues/);
+    expect(text).toMatch(
+      /include the `tracking` line that `file_issue` returns exactly as given, on a line of its own/,
+    );
   });
 
   it("reach an install whose persona still holds the old planner text, which is left out of what the planner gets", () => {

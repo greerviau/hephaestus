@@ -11,6 +11,15 @@ import type { ConfigStore } from "../config/store.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import { finalMessage } from "../workers/scripts.js";
 import type { Card, CardStore } from "./cards.js";
+import {
+  CHANGE_SHAPES,
+  CHANGE_TOOLS,
+  redactChangeArgs,
+  registerChangeTools,
+  type ChangeRegister,
+  type ChangeTool,
+} from "./chat-change-tools.js";
+import { ChatChanges, type Deploy } from "./chat-changes.js";
 import type { Intake } from "./intake.js";
 import type { Pipeline } from "./pipeline.js";
 
@@ -21,8 +30,12 @@ export interface FactoryMcpOptions {
   pipeline: Pipeline;
   store: ConfigStore;
   events: ThreadEvents;
+  /** Publishes and deploys a config version, for changes agreed in chat. */
+  deploy?: Deploy;
   /** The bearer token of each factory profile. */
   tokens: () => Partial<Record<RoleName, string>>;
+  /** Where a role's chat gateway caches the files a requester sends; the only places attachments may come from. */
+  attachmentRoots?: (role: RoleName) => readonly string[];
   now?: () => Date;
 }
 
@@ -35,14 +48,22 @@ type Tool =
   | "list_cards"
   | "list_threads"
   | "read_thread"
-  | "get_config";
+  | "get_config"
+  | ChangeTool;
 
 /** Each tool's argument schema, shared by its handler and the check at the request boundary. */
 const TOOL_SHAPES = {
+  ...CHANGE_SHAPES,
   file_issue: {
     repo: z.string().describe("owner/repo of a factory project"),
     title: z.string().min(1),
     body: z.string(),
+    attachments: z
+      .array(z.string())
+      .optional()
+      .describe(
+        "absolute paths of files the requester sent in the chat, as the chat gave them to you; at most 10 files of 10 MB each",
+      ),
   },
   start_work: { card_id: z.number().int(), brief: z.string().min(1) },
   escalate: { card_id: z.number().int(), reason: z.string().min(1) },
@@ -70,7 +91,7 @@ const TOOL_SHAPES = {
 
 /** The tools each role may call. Factory threads never call this server. */
 export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
-  planner: ["file_issue", "get_status", "list_cards", "read_thread"],
+  planner: ["file_issue", "get_status", "list_cards", "read_thread", ...CHANGE_TOOLS],
   lead: ["start_work", "escalate", "file_issue", "get_status", "list_cards", "read_thread"],
   improver: [
     "propose_version",
@@ -125,9 +146,11 @@ function sameToken(given: string, expected: string): boolean {
  */
 export class FactoryMcp {
   private readonly now: () => Date;
+  private readonly changes: ChatChanges;
 
   constructor(private readonly options: FactoryMcpOptions) {
     this.now = options.now ?? (() => new Date());
+    this.changes = new ChatChanges({ ...options, now: this.now });
   }
 
   /** The role a request's bearer token belongs to, or undefined. */
@@ -234,7 +257,7 @@ export class FactoryMcp {
       .run(
         role,
         tool,
-        JSON.stringify(args).slice(0, MAX_TEXT),
+        JSON.stringify(redactChangeArgs(tool, args)).slice(0, MAX_TEXT),
         ok ? 1 : 0,
         JSON.stringify(result).slice(0, MAX_TEXT),
         this.now().toISOString(),
@@ -325,9 +348,16 @@ export class FactoryMcp {
 
     register(
       "file_issue",
-      "File a GitHub issue on a factory project. Hephaestus admits it and creates a card unless the project's cap on open factory issues is reached; then it waits for the owner.",
-      async ({ repo, title, body }) => {
-        const issue = await intake.fileIssue(role, repo, title, body);
+      "File a GitHub issue on a factory project. Hephaestus admits it and creates a card unless the project's cap on open factory issues is reached; then it waits for the owner. To hand files from the request to the engineer, such as an attached image, pass their absolute paths, as the chat gave them to you, in attachments: at most 10 files, 10 MB each, any type. Only files the requester sent in the chat can be attached, not other files on the host or URLs. Hephaestus stores each file in the project's repo and links it in the issue, and the engineer can commit it. If any file is missing, unreadable, or too large, no issue is filed and the error names the file.",
+      async ({ repo, title, body, attachments }) => {
+        const issue = await intake.fileIssue(
+          role,
+          repo,
+          title,
+          body,
+          attachments,
+          this.options.attachmentRoots?.(role),
+        );
         return {
           issue: issue.number,
           url: `https://github.com/${issue.repo}/issues/${String(issue.number)}`,
@@ -468,6 +498,7 @@ export class FactoryMcp {
         };
       },
     );
+    registerChangeTools(register as ChangeRegister, this.changes);
     return server;
   }
 }
