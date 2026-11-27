@@ -33,6 +33,42 @@ describe("versionFiles", () => {
       "codex/skills/triage/SKILL.md": "# Triage\n",
     });
   });
+
+  it("leaves out the coding thread instructions earlier builds shipped, and keeps the owner's", () => {
+    const config = sampleConfig();
+    // What install copied into version 1, with one rule the owner added to the list.
+    config.instructions.factory = `# Factory thread instructions
+
+You are working in a factory thread started by Hephaestus. Nobody watches this thread while it runs.
+
+- Do the task in the brief, and only that task.
+- Follow the repository's own contribution rules, tests, and checks.
+- Before you push, run the repository's full set of checks.
+- Do not merge pull requests. Hephaestus merges them.
+- If you cannot finish, say what blocked you instead of guessing.
+
+End your final message with a result block that Hephaestus reads:
+
+\`\`\`hephaestus-result
+{"status": "done", "pr": 123, "headSha": "<full commit SHA>"}
+\`\`\`
+
+Use \`"status": "blocked"\` with a \`"reason"\` when you could not finish. A reviewer reports \`"verdict": "approve"\` or \`"verdict": "changes"\` and the \`"headSha"\` it reviewed.
+`;
+    const files = versionFiles(3, config);
+    expect(files["claude/CLAUDE.md"]).toBe(
+      "- Before you push, run the repository's full set of checks.\n",
+    );
+    expect(files["codex/AGENTS.md"]).toBe(files["claude/CLAUDE.md"]);
+
+    // A copy that lost its code marks is still a copy.
+    config.instructions.factory =
+      'Use "status": "blocked" with a "reason" when you could not finish. A reviewer reports "verdict": "approve" or "verdict": "changes" and the "headSha" it reviewed.\n';
+    expect(versionFiles(3, config)["claude/CLAUDE.md"]).toBe("");
+
+    config.instructions.factory = "# Factory thread instructions\n";
+    expect(versionFiles(3, config)["claude/CLAUDE.md"]).toBe("");
+  });
 });
 
 describe("ConfigRepo", () => {

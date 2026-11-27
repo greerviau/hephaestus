@@ -92,6 +92,8 @@ describe("Pipeline", () => {
     });
     expect(implement?.message).toContain("Please add --flag.");
     expect(implement?.message).toContain("Closes #5");
+    expect(implement?.message).toContain("Nobody watches this thread");
+    expect(implement?.message).toContain("--force-with-lease");
     expect(implement?.message).toContain("refs/hephaestus/evidence/0123abcd-card-1");
     expect(h.cards.get(id).stage).toBe("Implementing");
 
@@ -102,6 +104,7 @@ describe("Pipeline", () => {
     const review = h.t3.launches[1];
     expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
     expect(review?.message).toContain(SHA);
+    expect(review?.message).toContain("Nobody watches this thread");
     expect(review?.workspace).toMatchObject({ branch: "review/0123abcd-card-1-1" });
 
     h.finish("t2", reviewResult("approve", SHA));

@@ -1,6 +1,5 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 import { defineOwn } from "./diff.js";
 import {
@@ -11,18 +10,12 @@ import {
   type RoleName,
 } from "./document.js";
 
-/** `templates/` in the repo; the same relative path works from `src/` and `dist/`. */
-const TEMPLATES = fileURLToPath(new URL("../../templates/", import.meta.url));
 /** The most text one skill file holds, in UTF-8 bytes, imported from a folder or typed on the Agents tab. */
 export const MAX_SKILL_FILE_BYTES = 256 * 1024;
 
 export interface ImportedSkill {
   name: string;
   files: Record<string, string>;
-}
-
-function template(path: string): string {
-  return readFileSync(join(TEMPLATES, path), "utf8");
 }
 
 /**
@@ -57,7 +50,8 @@ export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
     factory: structuredClone(DEFAULT_FACTORY),
     projects: {},
     roles,
-    instructions: { factory: template("instructions/factory.md") },
+    // The coding threads' own rules ship in the messages that start them.
+    instructions: { factory: "" },
     skills: Object.fromEntries(skills.map((skill) => [skill.name, skill.files])),
   };
 }

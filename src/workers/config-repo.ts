@@ -1,3 +1,4 @@
+import { SHIPPED_THREAD_TEXT, ownInstructions } from "../config/shipped.js";
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -39,7 +40,9 @@ export function isRepoSlug(slug: string): boolean {
 
 /** The files a version puts on a worker, keyed by path in the config repo. */
 export function versionFiles(version: number, config: FactoryConfig): Record<string, string> {
-  const instructions = config.instructions.factory ?? "";
+  // The owner's instructions only: the rules every thread needs come in its first message.
+  const own = ownInstructions(config.instructions.factory ?? "", SHIPPED_THREAD_TEXT).text;
+  const instructions = own === "" ? "" : `${own}\n`;
   const files: Record<string, string> = {
     VERSION: `${String(version)}\n`,
     "claude/CLAUDE.md": instructions,

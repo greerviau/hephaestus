@@ -57,7 +57,7 @@ describe("rolePrompt", () => {
     for (const role of ROLE_NAMES) {
       for (const paragraph of shippedInstructions(role).split(/\n\s*\n/)) {
         const hash = createHash("sha256")
-          .update(paragraph.replace(/\s+/g, " ").trim())
+          .update(paragraph.replace(/`/g, "").replace(/\s+/g, " ").trim())
           .digest("hex");
         expect(SHIPPED_PARAGRAPHS, `add ${hash} for a paragraph of ${role}`).toContain(hash);
       }
