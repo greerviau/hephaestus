@@ -277,6 +277,8 @@ export interface Harness {
   hermes: FakeBoardState;
   /** The board the pipeline calls, which records into `board`; a test may replace its methods. */
   hermesBoard: PipelineBoard;
+  /** A new pipeline on the same store, as after a service restart; it keeps nothing in memory. */
+  restart(): Pipeline;
   setClock(ms: number): void;
   /** Ends a thread with a final assistant message. */
   finish(threadId: string, text: string, status?: string): void;
@@ -342,20 +344,22 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
       return Promise.resolve();
     },
   };
-  const pipeline = new Pipeline({
-    db,
-    tasks,
-    github,
-    workers,
-    t3: t3,
-    threads,
-    events,
-    config: () => ({ id: 3, document: config }),
-    install: "0123abcd-ffff-4fff-8fff-ffffffffffff",
-    board: () => recordingBoard,
-    now,
-    checksSettleMs: 0,
-  });
+  const build = (): Pipeline =>
+    new Pipeline({
+      db,
+      tasks,
+      github,
+      workers,
+      t3: t3,
+      threads,
+      events,
+      config: () => ({ id: 3, document: config }),
+      install: "0123abcd-ffff-4fff-8fff-ffffffffffff",
+      board: () => recordingBoard,
+      now,
+      checksSettleMs: 0,
+    });
+  const pipeline = build();
   let item = 0;
   return {
     db,
@@ -370,6 +374,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     board,
     hermes,
     hermesBoard: recordingBoard,
+    restart: build,
     setClock: (ms) => {
       clock = ms;
     },

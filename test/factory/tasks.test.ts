@@ -15,6 +15,7 @@ function taskIn(store: TaskStore, stage: Stage): number {
     Validating: ["Queued", "Implementing", "Reviewing", "Merging", "Validating"],
     Reverting: ["Queued", "Implementing", "Reviewing", "Merging", "Validating", "Reverting"],
     Escalated: ["Escalated"],
+    Parked: ["Escalated", "Parked"],
     Done: ["Queued", "Implementing", "Reviewing", "Merging", "Validating", "Done"],
     Abandoned: ["Abandoned"],
   };

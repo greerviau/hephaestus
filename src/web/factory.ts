@@ -6,7 +6,12 @@ import type { Analytics } from "../factory/analytics.js";
 import type { Task, TaskStore } from "../factory/tasks.js";
 import type { FactoryMcp } from "../factory/mcp.js";
 import type { Intake, TrackedIssue } from "../factory/intake.js";
-import { MergeSettledError, checksPassedAtGate, type Pipeline } from "../factory/pipeline.js";
+import {
+  MergeSettledError,
+  checksPassedAtGate,
+  parkRefusal,
+  type Pipeline,
+} from "../factory/pipeline.js";
 import type { Stage } from "../hermes/board.js";
 import { ENDED_STATUSES, type StoredThread, type ThreadEvents } from "../t3/events.js";
 import type { WorkerManager, WorkerView } from "../workers/manager.js";
@@ -43,6 +48,8 @@ export interface FactoryPages {
     | "setPaused"
     | "approveMerge"
     | "sendToLead"
+    | "park"
+    | "unpark"
     | "abandon"
     | "blockedBecause"
     | "runningThreads"
@@ -104,6 +111,7 @@ const ABANDONABLE: readonly Stage[] = [
   "Reviewing",
   "Merging",
   "Escalated",
+  "Parked",
 ];
 
 export type Read<T> = { ok: true; value: T } | { ok: false };
@@ -181,6 +189,8 @@ export function stagePill(task: Task): string {
         : statusText("wait", REPLANNING);
     case "Reverting":
       return statusText("bad", "Reverting");
+    case "Parked":
+      return statusText("wait", "Parked");
     case "Admitted":
       return statusText("wait", task.deferReason === null ? "Admitted" : "Deferred");
     case "Queued":
@@ -220,6 +230,10 @@ export function providerName(providerInstanceId: string): string {
 interface TaskActions {
   approveMerge: boolean;
   sendToLead: boolean;
+  /** Set aside until a re-alert time; only for a task that waits on the owner's answer. */
+  park: boolean;
+  /** Taken up again with the owner's answer. */
+  unpark: boolean;
   abandon: boolean;
 }
 
@@ -229,6 +243,8 @@ export function taskActions(task: Task): TaskActions {
     approveMerge: withOwner && task.ownerAction !== null && task.headSha !== null,
     // A rollback stays with the owner; the lead's restart would rebuild the reverted work.
     sendToLead: withOwner && !task.reverting,
+    park: parkRefusal(task) === undefined,
+    unpark: task.stage === "Parked",
     abandon: ABANDONABLE.includes(task.stage),
   };
 }
@@ -262,6 +278,7 @@ export function escalationActions(item: Task, back: string): string {
   const lead = { label: "Send to lead", href: formHref(`/work/${id}/lead`, back) };
   const abandon = { label: "Abandon", href: formHref(`/work/${id}/abandon`, back) };
   const rest: MenuItem[] = [];
+  if (actions.park) rest.push({ label: "Park", href: formHref(`/work/${id}/park`, back) });
   let primary = mergeButton(item, back);
   if (primary !== "") {
     if (actions.sendToLead) rest.push(lead);
@@ -346,6 +363,26 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     text: "It is no longer escalated, or the Hermes board could not be updated. The service log has the error.",
   },
   abandoned: { kind: "info", title: "Task abandoned", text: "No more threads start for it." },
+  parked: {
+    kind: "info",
+    title: "Task parked",
+    text: "It waits under Parked, with its branch and PR kept, and comes back to you when its time is up.",
+  },
+  "park-failed": {
+    kind: "err",
+    title: "The task was not parked",
+    text: "It no longer waits on your answer. The page shows its current state.",
+  },
+  unparked: {
+    kind: "info",
+    title: "Task resumed",
+    text: "The work goes on with your answer.",
+  },
+  "unpark-failed": {
+    kind: "err",
+    title: "The task was not resumed",
+    text: "It is no longer parked, or a step failed. The service log has the error.",
+  },
   "merge-validating": {
     kind: "info",
     title: "The PR has already merged",

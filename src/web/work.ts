@@ -5,7 +5,14 @@ import {
   type TaskEvent,
 } from "../factory/tasks.js";
 import type { TrackedIssue } from "../factory/intake.js";
-import { VALIDATION_FAILED, checksPassedAtGate, escalationReason } from "../factory/pipeline.js";
+import {
+  DEFAULT_PARK_HOURS,
+  VALIDATION_FAILED,
+  checksPassedAtGate,
+  escalationReason,
+  parkRefusal,
+} from "../factory/pipeline.js";
+import { utcMinute } from "../time.js";
 import type { Stage } from "../hermes/board.js";
 import type { StoredThread } from "../t3/events.js";
 import {
@@ -199,6 +206,28 @@ function needsOwner(item: Task): boolean {
   return item.stage === "Escalated" && item.escalatedTo === "owner";
 }
 
+function isParked(item: Task): boolean {
+  return item.stage === "Parked";
+}
+
+/** When a parked task comes back to the owner, and why it waits on them. */
+function parkText(item: Task): string {
+  const until =
+    item.deferUntil === null
+      ? "Comes back to you on the next pass"
+      : `Comes back to you at ${utcMinute(Date.parse(item.deferUntil))}`;
+  return item.reason === null ? until : `${until}: ${item.reason}`;
+}
+
+/** The re-alert times the park form offers, in hours, with a day first chosen. */
+const PARK_HOURS: readonly (readonly [string, string])[] = [
+  ["1", "In 1 hour"],
+  ["4", "In 4 hours"],
+  [String(DEFAULT_PARK_HOURS), "In 1 day"],
+  ["72", "In 3 days"],
+  ["168", "In 1 week"],
+];
+
 /** Admitted or queued: no thread has started for it yet. */
 function waitingToStart(item: Task): boolean {
   return item.stage === "Admitted" || item.stage === "Queued";
@@ -229,7 +258,7 @@ function times(count: number): string {
   return `${String(count)} ${count === 1 ? "time" : "times"}`;
 }
 
-type TabName = "needs" | "queue" | "active" | "finished" | "all";
+type TabName = "needs" | "parked" | "queue" | "active" | "finished" | "all";
 
 function tabHref(tab: TabName): string {
   return tab === "active" ? "/work" : `/work?tab=${tab}`;
@@ -332,17 +361,20 @@ const STEPS = [
   "Done",
 ] as const;
 
+/** Stages that hold a task where it left off, which the tracker shows at the stage before. */
+const HOLDS: readonly Stage[] = ["Escalated", "Parked", "Abandoned"];
+
 /**
  * The internal stage the task is at for the tracker. An escalated or
  * abandoned task is shown at the stage it left, which only its events record.
  */
 function heldStage(item: Task, events: TaskEvent[] | undefined): Stage | undefined {
-  if (item.stage !== "Escalated" && item.stage !== "Abandoned") return item.stage;
+  if (!HOLDS.includes(item.stage)) return item.stage;
   if (events === undefined) return undefined;
   for (const event of [...events].reverse()) {
     if (!event.kind.startsWith("stage:")) continue;
     const stage = event.kind.slice("stage:".length) as Stage;
-    if (stage !== "Escalated" && stage !== "Abandoned") return stage;
+    if (!HOLDS.includes(stage)) return stage;
   }
   return "Admitted";
 }
@@ -390,6 +422,7 @@ function tracker(item: Task, held: Stage, events: TaskEvent[]): { html: string; 
   const stopped = item.stage === "Abandoned";
   const holding =
     item.stage === "Escalated" ||
+    item.stage === "Parked" ||
     item.stage === "Reverting" ||
     item.waiting !== null ||
     (item.stage === "Admitted" && item.deferReason !== null);
@@ -564,7 +597,15 @@ function taskCallout(item: Task, back: string, place: number | undefined): strin
       "warn",
       NEEDS_DECISION,
       reason,
-      `${mergeButton(item, back)}${actions.sendToLead ? buttonLink(formHref(`/work/${id}/lead`, back), "Send to lead") : ""}${actions.abandon ? buttonLink(formHref(`/work/${id}/abandon`, back), "Abandon", { variant: "danger" }) : ""}`,
+      `${mergeButton(item, back)}${actions.sendToLead ? buttonLink(formHref(`/work/${id}/lead`, back), "Send to lead") : ""}${actions.park ? buttonLink(formHref(`/work/${id}/park`, back), "Park") : ""}${actions.abandon ? buttonLink(formHref(`/work/${id}/abandon`, back), "Abandon", { variant: "danger" }) : ""}`,
+    );
+  }
+  if (isParked(item)) {
+    return callout(
+      "info",
+      "Parked",
+      withShortShas(parkText(item)),
+      `${buttonLink(formHref(`/work/${id}/unpark`, back), "Resume", { variant: "primary" })}${buttonLink(formHref(`/work/${id}/abandon`, back), "Abandon", { variant: "danger" })}`,
     );
   }
   if (item.stage === "Escalated") return callout("info", REPLANNING, reason);
@@ -830,6 +871,87 @@ export function workRoutes(factory: FactoryPages): Route[] {
     });
   };
 
+  const parkPage = (
+    shell: Shell | undefined,
+    item: Task,
+    back: string,
+    typed: { hours?: string; note?: string } = {},
+    errors: { hours?: string; note?: string } = {},
+  ): string => {
+    const id = String(item.id);
+    const crumbs = taskCrumbs(item.id, "Park");
+    const refused = parkRefusal(item);
+    if (refused !== undefined) {
+      return noFormPage(
+        shell,
+        "Park task",
+        crumbs,
+        callout(
+          "info",
+          "This task cannot be parked",
+          `${escapeHtml(refused)} <a href="/work/${id}">Back to the task</a>`,
+        ),
+      );
+    }
+    return formPage(shell, {
+      title: "Park task",
+      crumbs,
+      intro: `<p class="muted">${escapeHtml(taskLabel(item))}</p><p>It waits under Parked and frees its worker. Its branch and PR stay. When its time is up, it comes back to you with the same reason: ${escapeHtml(item.reason ?? "")}</p>`,
+      action: `/work/${id}/park`,
+      fields: { version: String(item.version) },
+      body: `${select("hours", "Alert me again", PARK_HOURS, typed.hours ?? String(DEFAULT_PARK_HOURS), { error: errors.hours })}${textarea(
+        "note",
+        "Note (optional)",
+        {
+          value: typed.note ?? "",
+          rows: 3,
+          maxlength: MAX_NOTE,
+          required: false,
+          hint: "Why you set it aside, for when it comes back.",
+          error: errors.note,
+        },
+      )}`,
+      submit: "Park task",
+      back,
+    });
+  };
+
+  const unparkPage = (
+    shell: Shell | undefined,
+    item: Task,
+    back: string,
+    error?: string,
+    typed = "",
+  ): string => {
+    const id = String(item.id);
+    const crumbs = taskCrumbs(item.id, "Resume");
+    if (!taskActions(item).unpark) {
+      return noFormPage(
+        shell,
+        "Resume task",
+        crumbs,
+        callout("info", "This task is not parked", `<a href="/work/${id}">Back to the task</a>`),
+      );
+    }
+    return formPage(shell, {
+      title: "Resume task",
+      crumbs,
+      intro: `<p class="muted">${escapeHtml(taskLabel(item))}</p><p>${escapeHtml(item.reason ?? "")}</p>`,
+      action: `/work/${id}/unpark`,
+      fields: { version: String(item.version) },
+      body: textarea("answer", "Your answer", {
+        value: typed,
+        rows: 4,
+        maxlength: MAX_NOTE,
+        autofocus: true,
+        hint: "Work already started goes on from its branch and PR with your answer. A task with no work started is queued again as new.",
+        error,
+      }),
+      submit: "Resume task",
+      back,
+    });
+  };
+
   const abandonPage = (
     shell: Shell | undefined,
     item: Task,
@@ -878,6 +1000,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const requested = url.searchParams.get("tab");
         const tab: TabName =
           requested === "needs" ||
+          requested === "parked" ||
           requested === "queue" ||
           requested === "finished" ||
           requested === "all"
@@ -893,8 +1016,10 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const all = tasks.ok ? tasks.value : [];
         const mine = all.filter(needsOwner);
         const upcoming = all.filter(waitingToStart);
+        const parked = all.filter(isParked);
         const active = all.filter(
-          (item) => !isFinished(item) && !needsOwner(item) && !waitingToStart(item),
+          (item) =>
+            !isFinished(item) && !needsOwner(item) && !waitingToStart(item) && !isParked(item),
         );
         const finished = all.filter(isFinished);
         const waiting = (issues.ok ? issues.value : []).filter(
@@ -952,6 +1077,19 @@ export function workRoutes(factory: FactoryPages): Route[] {
                 ));
         } else if (!tasks.ok) {
           body = empty("Tasks could not be read.");
+        } else if (tab === "parked") {
+          body =
+            parked.length === 0
+              ? empty(
+                  "No task is parked. Park a task that waits on your answer to be alerted again later.",
+                )
+              : gridRows(
+                  [...parked].sort((a, b) =>
+                    (a.deferUntil ?? "").localeCompare(b.deferUntil ?? ""),
+                  ),
+                  parkText,
+                  now(),
+                );
         } else if (tab === "queue") {
           const places = read("the queue", () => queuePlaces(factory));
           failed ||= !places.ok;
@@ -1029,6 +1167,12 @@ export function workRoutes(factory: FactoryPages): Route[] {
                 label: "Needs you",
                 count: mine.length + waiting.length,
                 current: tab === "needs",
+              },
+              {
+                href: tabHref("parked"),
+                label: "Parked",
+                count: parked.length,
+                current: tab === "parked",
               },
               {
                 href: tabHref("queue"),
@@ -1170,6 +1314,94 @@ export function workRoutes(factory: FactoryPages): Route[] {
       },
     },
     {
+      method: "GET",
+      path: /^\/work\/(\d+)\/(park|unpark)$/,
+      handle: (context) => {
+        const park = context.params[1] === "park";
+        const item = taskFor(factory, context, park ? "Park task" : "Resume task");
+        if (item === undefined) return;
+        const back = backTo(context.url.searchParams.get("back"), `/work/${String(item.id)}`);
+        sendHtml(
+          context.response,
+          200,
+          park ? parkPage(context.shell, item, back) : unparkPage(context.shell, item, back),
+        );
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/work\/(\d+)\/park$/,
+      handle: async (context) => {
+        const id = Number(context.params[0]);
+        const fields = await form(context, MAX_NOTE_BYTES);
+        const back = backTo(fields?.get("back") ?? null, `/work/${String(id)}`);
+        const hours = (fields?.get("hours") ?? "").trim();
+        const note = typedText(fields?.get("note") ?? null);
+        const version = (fields?.get("version") ?? "").trim();
+        const errors: { hours?: string; note?: string } = {};
+        if (fields === undefined || note.length > MAX_NOTE) {
+          errors.note = `The note is too long. It takes ${String(MAX_NOTE)} characters.`;
+        }
+        if (!PARK_HOURS.some(([value]) => value === hours)) {
+          errors.hours = "Choose when to be alerted again.";
+        }
+        if (Object.keys(errors).length > 0) {
+          const item = taskFor(factory, context, "Park task");
+          if (item === undefined) return;
+          sendHtml(
+            context.response,
+            fields === undefined ? 413 : 422,
+            parkPage(context.shell, item, back, { hours, note }, errors),
+          );
+          return;
+        }
+        let key: NoticeKey = "parked";
+        try {
+          if (version === "") throw new Error("The version is empty.");
+          await factory.pipeline.park(id, { hours: Number(hours), note, version });
+        } catch (error) {
+          console.error(`Parking task ${String(id)} from the dashboard failed`, error);
+          key = "park-failed";
+        }
+        redirect(context.response, withNotice(back, key));
+      },
+    },
+    {
+      method: "POST",
+      path: /^\/work\/(\d+)\/unpark$/,
+      handle: async (context) => {
+        const id = Number(context.params[0]);
+        const fields = await form(context, MAX_NOTE_BYTES);
+        const back = backTo(fields?.get("back") ?? null, `/work/${String(id)}`);
+        const typed = typedText(fields?.get("answer") ?? null);
+        const version = (fields?.get("version") ?? "").trim();
+        const problem =
+          fields === undefined || typed.length > MAX_NOTE
+            ? `The answer is too long. It takes ${String(MAX_NOTE)} characters.`
+            : typed === ""
+              ? "Give your answer, so the work can go on with it."
+              : undefined;
+        if (problem !== undefined) {
+          const item = taskFor(factory, context, "Resume task");
+          if (item === undefined) return;
+          sendHtml(
+            context.response,
+            fields === undefined ? 413 : 422,
+            unparkPage(context.shell, item, back, problem, typed),
+          );
+          return;
+        }
+        let key: NoticeKey = "unparked";
+        try {
+          if (version === "") throw new Error("The version is empty.");
+          await factory.pipeline.unpark(id, typed, version);
+        } catch (error) {
+          key = failureNotice(error, "unpark-failed");
+        }
+        redirect(context.response, withNotice(back, key));
+      },
+    },
+    {
       method: "POST",
       path: /^\/work\/(\d+)\/(send-to-lead|abandon)$/,
       handle: async (context) => {
@@ -1284,7 +1516,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
               title: taskLabel(item),
               lede: `${stagePill(item)}${DOT}<code>${escapeHtml(item.repo)}</code>`,
               // A task that waits for you has Abandon in its callout instead.
-              ...(actions.abandon && !needsOwner(item)
+              ...(actions.abandon && !needsOwner(item) && !isParked(item)
                 ? {
                     actions: menu([
                       { label: "Abandon", href: formHref(`/work/${String(id)}/abandon`, back) },

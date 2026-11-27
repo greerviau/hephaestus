@@ -419,6 +419,100 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
+  describe("parking from chat", () => {
+    /** A task the engineer had a question on, handed to the owner, as the lead's escalate leaves it. */
+    async function askedOwner(h: Harness): Promise<number> {
+      h.github.issues.set(5, { number: 5, title: "t", body: "b", author: "o", state: "OPEN" });
+      const id = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "t" }).id;
+      await h.pipeline.queue(id, "Do it");
+      h.finish("t1", "", "waiting");
+      await h.pipeline.tick();
+      await h.pipeline.escalateToOwner(id, "Which format?");
+      return id;
+    }
+
+    it("parks a task for the owner with a re-alert time, and counts it apart from escalations", async () => {
+      const { h, url } = await start();
+      const id = await askedOwner(h);
+      const c = await client(url, TOKENS.communicator);
+
+      const parked = json(
+        await c.callTool({ name: "park_task", arguments: { task_id: id, hours: 6 } }),
+      );
+      expect(parked).toMatchObject({
+        stage: "Parked",
+        reason: "Which format?",
+        deferred: { until: "2026-11-25T18:00:00.000Z" },
+      });
+
+      const status = json(await c.callTool({ name: "get_status", arguments: {} }));
+      expect(status.projects).toEqual([
+        expect.objectContaining({ repo: "octo/app", tasks_by_stage: { Parked: 1 } }),
+      ]);
+      const listed = JSON.parse(
+        (
+          (await c.callTool({ name: "list_tasks", arguments: { stage: "Parked" } })) as {
+            content: { text: string }[];
+          }
+        ).content[0]?.text ?? "[]",
+      ) as { task_id: number }[];
+      expect(listed.map((task) => task.task_id)).toEqual([id]);
+      const escalated = JSON.parse(
+        (
+          (await c.callTool({ name: "list_tasks", arguments: { stage: "Escalated" } })) as {
+            content: { text: string }[];
+          }
+        ).content[0]?.text ?? "[]",
+      ) as unknown[];
+      expect(escalated).toEqual([]);
+      const stats = json(await c.callTool({ name: "get_factory_stats", arguments: {} }));
+      expect(stats.tasksByStage).toEqual({ Parked: 1 });
+      await c.close();
+    });
+
+    it("unparks a task with the owner's answer, which goes on to the engineer", async () => {
+      const { h, url } = await start();
+      const id = await askedOwner(h);
+      const c = await client(url, TOKENS.communicator);
+      await c.callTool({ name: "park_task", arguments: { task_id: id } });
+
+      const resumed = json(
+        await c.callTool({ name: "unpark_task", arguments: { task_id: id, answer: "Use JSON." } }),
+      );
+
+      expect(resumed).toMatchObject({ stage: "Implementing", pr: null });
+      expect(h.t3.sends.at(-1)?.message).toContain("Use JSON.");
+      await c.close();
+    });
+
+    it("refuses to park a task that waits for a merge approval, with the reason", async () => {
+      const { h, url, mcp } = await start();
+      const id = await askedOwner(h);
+      h.tasks.update(id, { ownerAction: "merge", ownerQuestion: false });
+      const c = await client(url, TOKENS.communicator);
+
+      const refused = await c.callTool({ name: "park_task", arguments: { task_id: id } });
+
+      expect(refused.isError).toBe(true);
+      expect(json(refused).error).toMatch(/cannot be parked: it waits for you to approve a merge/);
+      expect(JSON.stringify(json(refused))).not.toMatch(/\b(lead|communicator|improver)\b/i);
+      expect(mcp.calls()[0]).toMatchObject({ tool: "park_task", ok: false });
+      expect(h.tasks.get(id).stage).toBe("Escalated");
+      await c.close();
+    });
+
+    it("is offered to the communicator only", async () => {
+      const { url } = await start();
+      for (const [role, token] of Object.entries(TOKENS)) {
+        const c = await client(url, token);
+        const names = (await c.listTools()).tools.map((tool) => tool.name);
+        expect(names.includes("park_task")).toBe(role === "communicator");
+        expect(names.includes("unpark_task")).toBe(role === "communicator");
+        await c.close();
+      }
+    });
+  });
+
   it("files a proposal for the improver only with factory threads as evidence", async () => {
     const { h, url, store } = await start();
     h.events.recordThread({

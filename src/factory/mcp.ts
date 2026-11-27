@@ -27,7 +27,7 @@ import { chartData, CHART_METRICS } from "./chart.js";
 import { renderBarChart } from "./chart-image.js";
 import { ChatChanges, type Deploy } from "./chat-changes.js";
 import type { Intake } from "./intake.js";
-import type { Pipeline } from "./pipeline.js";
+import { DEFAULT_PARK_HOURS, MAX_PARK_HOURS, type Pipeline } from "./pipeline.js";
 import { factoryStats, formatFactoryStats, formatUsageStats, usageStats } from "./stats.js";
 
 export interface FactoryMcpOptions {
@@ -58,6 +58,8 @@ type Tool =
   | "start_work"
   | "get_status"
   | "escalate"
+  | "park_task"
+  | "unpark_task"
   | "propose_version"
   | "list_tasks"
   | "list_threads"
@@ -110,6 +112,26 @@ const TOOL_SHAPES = {
   },
   start_work: { task_id: z.number().int(), brief: z.string().min(1) },
   escalate: { task_id: z.number().int(), reason: z.string().min(1) },
+  park_task: {
+    task_id: z.number().int(),
+    hours: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_PARK_HOURS)
+      .optional()
+      .describe(
+        `hours until the owner is alerted again, 1 to ${String(MAX_PARK_HOURS)}; leave it out for ${String(DEFAULT_PARK_HOURS)}`,
+      ),
+    note: z.string().optional().describe("why the owner sets it aside, in their words"),
+  },
+  unpark_task: {
+    task_id: z.number().int(),
+    answer: z
+      .string()
+      .min(1)
+      .describe("the owner's answer, in their words, which the work goes on with"),
+  },
   get_status: { task_id: z.number().int().optional() },
   list_tasks: { stage: z.string().optional() },
   list_threads: { since: z.string().describe("ISO 8601 time") },
@@ -171,6 +193,8 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
   communicator: [
     "file_issue",
     "comment_issue",
+    "park_task",
+    "unpark_task",
     "get_status",
     "list_tasks",
     "read_thread",
@@ -232,10 +256,15 @@ function taskSummary(
     stage: task.stage,
     // 1 launches next.
     queue_position: queuePosition,
+    // A lead's deferral ends when a task finishes; a parked task's at a time.
     deferred:
       task.deferReason === null
         ? null
-        : { reason: task.deferReason, until_task_id: task.deferAfter },
+        : {
+            reason: task.deferReason,
+            until_task_id: task.deferAfter,
+            ...(task.deferUntil === null ? {} : { until: task.deferUntil }),
+          },
     escalated_to: task.escalatedTo,
     reason: task.reason,
     waiting: task.waiting,
@@ -523,6 +552,16 @@ export class FactoryMcp {
       "escalate",
       "Hand a task to the owner with the reason. Use it when the decision belongs to the owner.",
       async ({ task_id, reason }) => summary(await pipeline.escalateToOwner(task_id, reason)),
+    );
+    register(
+      "park_task",
+      `Set aside a task that waits on the owner's answer, only when the owner asks for it in the conversation. Its worker is freed and its branch and PR stay. The owner is alerted again after the hours given, ${String(DEFAULT_PARK_HOURS)} when none are, and the task waits on them again. A task that waits for a merge approval, or for a decision on a failed step, cannot be parked; relay the error as given.`,
+      async ({ task_id, hours, note }) => summary(await pipeline.park(task_id, { hours, note })),
+    );
+    register(
+      "unpark_task",
+      "Take a parked task up again with the owner's answer, only when the owner gives it in the conversation; quote it as the answer. Work already started goes on from its branch and PR, and a task with no work started is queued again as new.",
+      async ({ task_id, answer }) => summary(await pipeline.unpark(task_id, answer)),
     );
     register(
       "get_status",

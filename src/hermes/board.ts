@@ -9,6 +9,7 @@ export const STAGES = [
   "Validating",
   "Reverting",
   "Escalated",
+  "Parked",
   "Done",
   "Abandoned",
 ] as const;

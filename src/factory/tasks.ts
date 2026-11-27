@@ -7,6 +7,8 @@ import type { Stage } from "../hermes/board.js";
 export const MERGE_CONFLICT_DETAIL = "the PR conflicts with its base branch";
 /** The task event detail when a PR is sent back because its reviewer asked for changes. */
 export const CHANGES_REQUESTED_DETAIL = "the reviewer asked for changes";
+/** The task event detail when the owner unparks a task and its work goes on with their answer. */
+export const UNPARKED_DETAIL = "the owner answered, and the work goes on";
 
 export type Provider = "claude" | "codex";
 export type EscalationTarget = "lead" | "owner";
@@ -66,6 +68,11 @@ export interface Task {
   queueOrder: number | null;
   /** Why the lead deferred the admitted task; null when it is not deferred. */
   deferReason: string | null;
+  /**
+   * When a parked task comes back to the owner. A lead's deferral ends when a task finishes
+   * instead, so it has none.
+   */
+  deferUntil: string | null;
   /** The task whose finish ends the deferral; null ends it when any task finishes. */
   deferAfter: number | null;
   /** The last task event when the task was deferred, so only later finishes end the deferral. */
@@ -76,6 +83,12 @@ export interface Task {
   triageAlerted: boolean;
   /** A queued task whose board task may still be on the lead's ready list, such as one an upgrade queued. */
   parkPending: boolean;
+  /**
+   * Whether the task's escalation to the owner asks for their answer, from the lead's escalate
+   * tool or a hold on the board, rather than a merge to approve or a failure. Only such a task
+   * can be parked.
+   */
+  ownerQuestion: boolean;
   /** Counts every change, so a form from an earlier state of the task is refused. */
   version: number;
   createdAt: string;
@@ -105,8 +118,12 @@ export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
   Merging: ["Validating", "Implementing", "Escalated", "Abandoned", "Done"],
   Validating: ["Done", "Reverting", "Escalated"],
   Reverting: ["Implementing", "Escalated"],
-  // Queued when the lead restarts a task that never launched a thread.
-  Escalated: ["Queued", "Implementing", "Merging", "Reverting", "Abandoned", "Done"],
+  // Queued when the lead restarts a task that never launched a thread; Parked when the owner sets it aside.
+  Escalated: ["Queued", "Implementing", "Merging", "Reverting", "Parked", "Abandoned", "Done"],
+  // Escalated again when its re-alert time comes. Unparked, work already started goes on, and a
+  // task with none starts again from the queue, or from Admitted without a brief. Merging and Done
+  // only for a PR found merged meanwhile.
+  Parked: ["Escalated", "Implementing", "Queued", "Admitted", "Merging", "Abandoned", "Done"],
   Done: [],
   Abandoned: [],
 };
@@ -155,6 +172,8 @@ interface Row {
   queue_order: number | null;
   defer_reason: string | null;
   defer_after: number | null;
+  defer_until: string | null;
+  owner_question: number;
   defer_mark: number | null;
   triage_since: string | null;
   triage_alerted: number;
@@ -201,6 +220,8 @@ const COLUMNS: Record<keyof Omit<Task, "id" | "createdAt" | "updatedAt" | "versi
   queueOrder: "queue_order",
   deferReason: "defer_reason",
   deferAfter: "defer_after",
+  deferUntil: "defer_until",
+  ownerQuestion: "owner_question",
   deferMark: "defer_mark",
   triageSince: "triage_since",
   triageAlerted: "triage_alerted",
@@ -248,6 +269,8 @@ function toTask(row: Row): Task {
     queueOrder: row.queue_order,
     deferReason: row.defer_reason,
     deferAfter: row.defer_after,
+    deferUntil: row.defer_until,
+    ownerQuestion: row.owner_question === 1,
     deferMark: row.defer_mark,
     triageSince: row.triage_since,
     triageAlerted: row.triage_alerted === 1,
@@ -417,7 +440,8 @@ export class TaskStore {
         key === "foreignMerge" ||
         key === "reverting" ||
         key === "triageAlerted" ||
-        key === "parkPending"
+        key === "parkPending" ||
+        key === "ownerQuestion"
           ? value === true
             ? 1
             : 0

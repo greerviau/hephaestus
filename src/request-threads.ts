@@ -7,6 +7,7 @@ import { SlackApi, tsOrder } from "./slack.js";
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
+  UNPARKED_DETAIL,
   type Task,
   type TaskEvent,
   type TaskStore,
@@ -14,6 +15,7 @@ import {
 } from "./factory/tasks.js";
 import type { GitHub } from "./factory/github.js";
 import { getMeta, setMeta } from "./meta.js";
+import { utcMinute } from "./time.js";
 import type { Messaging } from "./messaging.js";
 
 /** The line a reply in a request's thread carries, which ties the thread to the issue. */
@@ -361,6 +363,11 @@ function sentence(reason: string): string {
   return text.length > 300 ? `${text.slice(0, 300)} (cut short; the task page has it all)` : text;
 }
 
+/** When a parked task comes back to the owner, as a UTC minute. */
+function parkedUntil(task: Task): string {
+  return task.deferUntil === null ? "later" : utcMinute(Date.parse(task.deferUntil));
+}
+
 /** What the task is doing now, in a few words, for a thread that starts following it late. */
 function stageText(task: Task, dashboard: string): string {
   const why = task.reason === null ? "" : `: ${sentence(task.reason)}`;
@@ -383,6 +390,8 @@ function stageText(task: Task, dashboard: string): string {
       return task.escalatedTo === "owner"
         ? `it needs you${why}. ${dashboard}work/${String(task.id)}`
         : `it is waiting for a decision${why}.`;
+    case "Parked":
+      return `it is set aside until ${parkedUntil(task)}, when it comes back to you${why}.`;
     case "Done":
       return "it is done.";
     case "Abandoned":
@@ -411,6 +420,7 @@ export function milestone(
       if (detail === CHANGES_REQUESTED_DETAIL) {
         return "The review asked for changes. The engineer is on them.";
       }
+      if (detail === UNPARKED_DETAIL) return "Work goes on with your answer.";
       if (detail === MERGE_CONFLICT_DETAIL) {
         return "The PR conflicts with changes merged since it opened. The engineer is updating it.";
       }
@@ -453,6 +463,10 @@ export function milestone(
     // The lead handing a task it was given on to the owner.
     case "escalated:owner":
       return `This needs you: ${sentence(detail)}.\n${dashboard}work/${String(task.id)}`;
+    case "stage:Parked": {
+      const until = /^parked until (\d{4}-\d\d-\d\d \d\d:\d\d UTC)/.exec(detail)?.[1];
+      return `Set aside. It comes back to you ${until === undefined ? "later" : `at ${until}`}.`;
+    }
     case "stage:Abandoned":
       return `Stopped: ${task.reason ?? detail}.`;
     default:
