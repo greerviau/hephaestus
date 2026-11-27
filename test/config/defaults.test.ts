@@ -27,6 +27,23 @@ describe("defaultConfig", () => {
     expect(config.projects).toEqual({});
   });
 
+  it("ships a planner persona that talks beyond filing issues and files only on request", () => {
+    const persona = defaultConfig([]).roles.planner.persona;
+
+    expect(persona).toContain("general communicator");
+    expect(persona).not.toMatch(/^Turn each request/m);
+    // The conversations that file nothing, and the tools that answer them.
+    for (const tool of ["get_status", "list_cards", "read_thread"]) expect(persona).toContain(tool);
+    expect(persona).toMatch(/do not file an issue/i);
+    expect(persona).toMatch(/say so/i);
+    // The filing rules stay: file_issue only, a status check first, and the tracking line on its own.
+    expect(persona).toContain("file_issue");
+    expect(persona).toMatch(/duplicate/);
+    expect(persona).toMatch(/cap/);
+    expect(persona).toMatch(/`tracking` line/);
+    expect(persona).toMatch(/on a line of its own/);
+  });
+
   it("refuses two imported skills with the same name", () => {
     const skill = { name: "review", files: { "SKILL.md": "# Review\n" } };
 
