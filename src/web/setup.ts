@@ -1,4 +1,4 @@
-import type { WorkerView } from "../workers/manager.js";
+import type { InstanceState, WorkerView } from "../workers/manager.js";
 import { read, type FactoryPages } from "./factory.js";
 import { buttonLink, escapeHtml } from "./html.js";
 
@@ -13,6 +13,15 @@ interface Step {
 }
 
 /**
+ * Whether an instance counts as signed in for setup. A check stopped by the
+ * provider's usage limit says nothing about the sign-in, so the limit is not a
+ * missing sign-in; Home names the limit on its own.
+ */
+function counted(state: InstanceState): boolean {
+  return state === "signed-in" || state === "limited";
+}
+
+/**
  * The setup steps a new factory needs, in order, each with its state and
  * the page that finishes it. Undefined when the config could not be read.
  */
@@ -23,12 +32,8 @@ function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[] | unde
   const projects = Object.keys(version.value?.document.projects ?? {}).length;
   const enabled = workers.filter((worker) => worker.enabled);
   // Signed in is about both factory instances, not readiness, which a routine redeploy interrupts.
-  const signedIn = enabled.filter(
-    (worker) => worker.claude === "signed-in" && worker.codex === "signed-in",
-  );
-  const waiting = enabled.find(
-    (worker) => worker.claude !== "signed-in" || worker.codex !== "signed-in",
-  );
+  const signedIn = enabled.filter((worker) => counted(worker.claude) && counted(worker.codex));
+  const waiting = enabled.find((worker) => !counted(worker.claude) || !counted(worker.codex));
   const model = factory.hermesModel?.();
   return [
     {

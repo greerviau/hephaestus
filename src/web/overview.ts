@@ -51,6 +51,23 @@ function workerStep(view: WorkerView): string {
   return view.blocker ?? "";
 }
 
+/**
+ * What Home says about a worker whose sign-in check stopped on the provider's
+ * usage limit, which is neither a missing sign-in nor the owner's to fix.
+ */
+function limitNotice(view: WorkerView): string {
+  if (!view.enabled) return "";
+  const names = [
+    ...(view.claude === "limited" ? ["Factory Claude"] : []),
+    ...(view.codex === "limited" ? ["Factory Codex"] : []),
+  ];
+  if (names.length === 0) return "";
+  const text = names.some((name) => view.blocker?.startsWith(`${name} reached`) === true)
+    ? (view.blocker ?? "")
+    : `${names.join(" and ")} reached the provider's usage limit, so the sign-in check could not run. Hephaestus checks again on its own.`;
+  return callout("info", `${view.label}: usage limit reached`, escapeHtml(text));
+}
+
 function count(n: number, one: string, many: string): string {
   return `${String(n)} ${n === 1 ? one : many}`;
 }
@@ -215,6 +232,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           isPaused && url.searchParams.get("notice") === "paused" ? "" : notice(url),
           storeFailed ? STORE_ERROR : "",
           t3.state === "error" ? t3Error(t3.reason) : "",
+          ...(workers.ok ? workers.value.map(limitNotice) : []),
           isPaused
             ? callout(
                 "warn",
