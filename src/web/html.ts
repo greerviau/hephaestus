@@ -195,7 +195,7 @@ function versionLines(version: NonNullable<Shell["version"]>): string {
   const ahead =
     behind === 0
       ? ""
-      : `<p class="hint">${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main. ${
+      : `<p class="hint side-update">${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main. ${
           version.updatable === true
             ? '<a href="/update">Update</a>'
             : `To update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.`

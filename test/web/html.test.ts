@@ -26,6 +26,7 @@ import {
   textarea,
   type Shell,
 } from "../../src/web/html.js";
+import { STYLESHEET } from "../../src/web/style.js";
 
 const SHELL: Shell = {
   paused: false,
@@ -56,6 +57,16 @@ describe("layout", () => {
     });
     expect(behind).toContain("3 new commits on origin/main");
     expect(behind).toContain(`<code>${command}</code>`);
+  });
+
+  it("insets the sidebar's update line like the other sidebar lines", () => {
+    // Issue 85: the update hint sat flush with the sidebar edge while the lines around it are inset 8px.
+    const html = layout("Home", "<h1>Home</h1>", {
+      shell: { ...SHELL, version: { commit: "abcdef1234567890", behind: 3, command: "update" } },
+    });
+    const foot = /<div class="side-foot">.*?<\/aside>/s.exec(html)?.[0] ?? "";
+    expect(foot).toMatch(/<p class="hint side-update">3 new commits on origin\/main\./);
+    expect(STYLESHEET).toContain(".side-foot .side-update { padding: 0 8px; }");
   });
 
   it("groups the pages under Factory and Setup, at the new paths", () => {
