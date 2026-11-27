@@ -1670,3 +1670,241 @@ describe("Pipeline", () => {
     await expect(h.pipeline.startWork(id, "brief")).rejects.toThrow(/with the owner/);
   });
 });
+
+/** Takes a card through a failed merge to its revert PR 9, whose review thread hits a usage limit. */
+async function revertReviewOnLimit(h: Harness): Promise<{ id: number; review: string }> {
+  const id = admitted(h);
+  await toReview(h, id);
+  h.finish("t2", reviewResult("approve", SHA));
+  await h.pipeline.tick();
+  h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
+  await h.pipeline.tick();
+  await h.pipeline.tick();
+  const review = `t${String(h.t3.launches.length)}`;
+  expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", reviewThread: review });
+  h.limit(review);
+  await h.pipeline.tick();
+  expect(h.cards.get(id).limitUntil).not.toBeNull();
+  return { id, review };
+}
+
+describe("Pipeline usage-limit waits", () => {
+  it("keeps a limited thread's slot from an older queued card before the limit is classified", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+    });
+    const older = admitted(h);
+    const limited = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    await h.pipeline.startWork(limited, "brief");
+    await h.pipeline.startWork(older, "brief");
+    expect(h.t3.launches).toHaveLength(1);
+    // The follower records the thread as failed before the next pass reads its result.
+    h.limit("t1");
+    await h.pipeline.tick();
+    expect(h.cards.get(limited).limitUntil).not.toBeNull();
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.cards.get(older).waiting).toMatch(/limit of 1 running factory threads/);
+  });
+
+  it("follows a thread T3 resumed and finished after the read about its usage limit failed", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.t3.stateFailures = 1;
+    h.limit("t1", undefined, "r1");
+    await h.pipeline.tick();
+    expect(h.cards.get(id).limitUntil).not.toBeNull();
+    // T3 resumes the thread once the limit resets, and the resumed run ends before the next check.
+    h.t3.states.set("t1", { status: "completed", latestRunId: "r2", snoozedUntil: null });
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    expect(h.events.thread("w1", "t1")?.status).toBe("starting");
+  });
+
+  it("follows a thread T3 had already resumed when the pipeline first read it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.t3.states.set("t1", { status: "running", latestRunId: "r2", snoozedUntil: null });
+    h.limit("t1", undefined, "r1");
+    await h.pipeline.tick();
+    h.t3.states.set("t1", { status: "completed", latestRunId: "r2", snoozedUntil: null });
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    expect(h.events.thread("w1", "t1")?.status).toBe("starting");
+  });
+
+  it("does not continue a thread T3 resumed while the continue waited in the launch queue", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.limit("t1", undefined, "r1");
+    await h.pipeline.tick();
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    // Another card's launch holds the launch queue while it reads its issue.
+    let release = (): void => undefined;
+    const issue = h.github.issue.bind(h.github);
+    h.github.issue = async (repo, number) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return issue(repo, number);
+    };
+    const other = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    const starting = h.pipeline.startWork(other, "brief");
+    await new Promise((resolve) => setImmediate(resolve));
+    const passing = h.pipeline.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    h.t3.states.set("t1", { status: "running", latestRunId: "r2", snoozedUntil: null });
+    release();
+    await starting;
+    await passing;
+    expect(h.t3.sends).toHaveLength(0);
+    expect(h.cards.get(id)).toMatchObject({ limitUntil: null, stage: "Implementing" });
+  });
+
+  it("hands the lead a run cancelled before any output after a usage limit", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.limit("t1", undefined, "r1");
+    await h.pipeline.tick();
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(1);
+    // The continue starts run r2, which is cancelled before it writes output or an error.
+    h.events.upsertItems("w1", "t1", [
+      {
+        itemId: "user-r2",
+        position: 100,
+        type: "user_message",
+        status: "completed",
+        text: "Continue the work.",
+        runId: "r2",
+      },
+    ]);
+    h.events.setStatus("w1", "t1", "cancelled");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.cards.get(id).reason).toMatch(/ended cancelled/);
+  });
+
+  it("hands the lead a resumed run T3 reports cancelled before it wrote any item", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.limit("t1", undefined, "r1");
+    await h.pipeline.tick();
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(1);
+    // Run r2 ends cancelled, and T3's activity page has no item of its own.
+    h.events.setStatusIf("w1", "t1", "starting", "cancelled", "r2");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+  });
+
+  it("sends no continue when the factory is paused, or T3 snoozes the thread, while T3 is read", async () => {
+    for (const change of ["pause", "snooze"] as const) {
+      const h = harness();
+      const id = admitted(h);
+      await h.pipeline.startWork(id, "brief");
+      h.limit("t1", undefined, "r1");
+      await h.pipeline.tick();
+      h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+      const read = h.t3.threadState.bind(h.t3);
+      let reads = 0;
+      h.t3.threadState = (environmentId: string, threadId: string) => {
+        reads += 1;
+        // The second read is the one right before the send.
+        if (reads === 2 && change === "pause") h.pipeline.setPaused(true);
+        if (reads === 2 && change === "snooze") {
+          h.t3.states.set(threadId, {
+            status: "failed",
+            latestRunId: "r1",
+            snoozedUntil: "2026-11-25T13:00:00Z",
+          });
+        }
+        return read(environmentId, threadId);
+      };
+
+      await h.pipeline.tick();
+
+      expect(h.t3.sends).toHaveLength(0);
+      if (change === "snooze") {
+        expect(h.cards.get(id).limitUntil).toBe("2026-11-25T13:05:00.000Z");
+      }
+    }
+  });
+
+  it("waits on Codex's retry error and a bare 429, and escalates GitHub's rate limit", async () => {
+    const cases = [
+      ["error", "exceeded retry limit, last status: 429 Too Many Requests", "wait"],
+      ["error", "429 Too Many Requests", "wait"],
+      ["error", "GitHub API rate limit reached", "escalate"],
+      ["reply", "GitHub API rate limit reached", "escalate"],
+    ] as const;
+    for (const [end, text, outcome] of cases) {
+      const h = harness();
+      const id = admitted(h);
+      await h.pipeline.startWork(id, "brief");
+      if (end === "error") h.limit("t1", text);
+      else h.finish("t1", text);
+      await h.pipeline.tick();
+      const card = h.cards.get(id);
+      if (outcome === "wait") {
+        expect(card, text).toMatchObject({ stage: "Implementing" });
+        expect(card.limitUntil, text).not.toBeNull();
+      } else {
+        expect(card, `${end}: ${text}`).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+      }
+    }
+  });
+
+  it("escalates another service's rate limit that resets, as a thread error or a reply", async () => {
+    for (const end of ["error", "reply"] as const) {
+      const h = harness();
+      const id = admitted(h);
+      await h.pipeline.startWork(id, "brief");
+      const text = "Blocked: GitHub API rate limit resets at 3 PM.";
+      if (end === "error") h.limit("t1", text);
+      else h.finish("t1", text);
+      await h.pipeline.tick();
+      expect(h.cards.get(id), end).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    }
+  });
+
+  it("starts the retry of a revert the owner merged while its review waited on a usage limit", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+    });
+    const { id } = await revertReviewOnLimit(h);
+    h.github.prs.set(
+      9,
+      pr(9, SHA2, { headBranch: "revert-5", state: "MERGED", mergeSha: "f".repeat(40) }),
+    );
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Implementing");
+    const launched = h.t3.launches.length;
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(launched + 1);
+    expect(h.t3.launches.at(-1)?.message).toContain("reverted");
+  });
+
+  it("reviews a revert PR's new head while the review of its old head waited on a usage limit", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+    });
+    const { id, review } = await revertReviewOnLimit(h);
+    const sha3 = "3".repeat(40);
+    h.github.prs.set(9, pr(9, sha3, { headBranch: "revert-5" }));
+    const launched = h.t3.launches.length;
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(launched + 1);
+    expect(h.t3.launches.at(-1)?.message).toContain(sha3);
+    expect(h.cards.get(id)).toMatchObject({ limitUntil: null });
+    expect(h.cards.get(id).reviewThread).not.toBe(review);
+  });
+});

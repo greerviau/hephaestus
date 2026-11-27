@@ -42,6 +42,8 @@ export interface FactoryThread {
 export interface StoredThread extends FactoryThread {
   kind: string;
   status: string;
+  /** The run T3 last reported for the thread, when a read has seen one. */
+  latestRunId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -56,6 +58,7 @@ interface ThreadRow {
   card_id: string | null;
   kind: string;
   status: string;
+  latest_run_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -71,6 +74,7 @@ function toThread(row: ThreadRow): StoredThread {
     cardId: row.card_id,
     kind: row.kind,
     status: row.status,
+    latestRunId: row.latest_run_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -168,13 +172,22 @@ export class ThreadEvents {
       .run(status, this.now().toISOString(), environmentId, threadId);
   }
 
-  /** Sets the status only if it is still `expected`, and reports whether it did. */
-  setStatusIf(environmentId: string, threadId: string, expected: string, status: string): boolean {
+  /**
+   * Sets the status only if it is still `expected`, and reports whether it did. A run id
+   * T3 reported with the status is kept with it.
+   */
+  setStatusIf(
+    environmentId: string,
+    threadId: string,
+    expected: string,
+    status: string,
+    latestRunId: string | null = null,
+  ): boolean {
     const result = this.db
       .prepare(
-        "UPDATE factory_threads SET status = ?, updated_at = ? WHERE environment_id = ? AND thread_id = ? AND status = ?",
+        "UPDATE factory_threads SET status = ?, latest_run_id = COALESCE(?, latest_run_id), updated_at = ? WHERE environment_id = ? AND thread_id = ? AND status = ?",
       )
-      .run(status, this.now().toISOString(), environmentId, threadId, expected);
+      .run(status, latestRunId, this.now().toISOString(), environmentId, threadId, expected);
     return result.changes > 0;
   }
 
@@ -198,11 +211,11 @@ export class ThreadEvents {
   upsertItems(environmentId: string, threadId: string, items: ThreadItem[]): void {
     const at = this.now().toISOString();
     const upsert = this.db.prepare(
-      `INSERT INTO thread_items (environment_id, thread_id, item_id, position, type, status, text, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO thread_items (environment_id, thread_id, item_id, position, type, status, text, run_id, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (environment_id, thread_id, item_id) DO UPDATE SET
          position = excluded.position, type = excluded.type, status = excluded.status,
-         text = excluded.text, updated_at = excluded.updated_at`,
+         text = excluded.text, run_id = excluded.run_id, updated_at = excluded.updated_at`,
     );
     this.db.transaction(() => {
       for (const item of items) {
@@ -214,6 +227,7 @@ export class ThreadEvents {
           item.type,
           item.status,
           item.text,
+          item.runId ?? null,
           at,
         );
       }
@@ -223,7 +237,7 @@ export class ThreadEvents {
   items(environmentId: string, threadId: string): ThreadItem[] {
     return this.db
       .prepare(
-        `SELECT item_id AS itemId, position, type, status, text FROM thread_items
+        `SELECT item_id AS itemId, position, type, status, text, run_id AS runId FROM thread_items
          WHERE environment_id = ? AND thread_id = ? ORDER BY position, item_id`,
       )
       .all(environmentId, threadId) as ThreadItem[];
