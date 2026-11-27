@@ -36,7 +36,7 @@ On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` 
 
 2. Open `http://<host>:7700` and sign in.
 3. At the top of **Config**, name a private repo for config versions, such as `you/hephaestus-config`. Hephaestus creates it if it does not exist. Then on **Workers**, open each machine that should run factory threads and click **Use as a worker**.
-4. On **Projects**, add each factory repo. Pick it from the list of repos your `gh` account can see, choose a policy preset (`yolo`, `standard`, the default, or `strict`), and change any setting from the preset if you need to. Adding a project creates a config version and approves and deploys it to every worker and to the factory's Hermes profiles.
+4. On **Projects**, add each factory repo. Pick it from the list of repos your `gh` account can see, choose a policy preset (`strict`, `standard`, the default, or `yolo`), and change any setting from the preset if you need to. Adding a project creates a config version and approves and deploys it to every worker and to the factory's Hermes profiles.
 5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret prompt that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
 6. On **Config**, open the Models tab and then "Plan, brief, and chat", and give the factory's Hermes a model. Pick any provider Hermes supports, sign in with an API key or the code the page shows, and choose a model. The factory's Hermes home is separate from your own `~/.hermes`.
 
@@ -46,7 +46,7 @@ On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` 
 
 Talk with the factory in the chat you connected: ask what it is doing, bounce an idea off it, or ask for work. Or ask for work with Request work on **Work**, or open an issue on a factory repo and admit it under Needs you on **Work**. The dashboard shows what needs you first on **Home**: merges waiting for your approval, issues waiting for admission, improvement proposals, and workers that need a sign-in. **Pause** at the foot of the sidebar stops new factory threads.
 
-The policy decides what merges on its own. `standard` merges when checks pass and the other provider approved the exact head commit, and stops for you when a PR touches `.github/workflows/`. `strict` stops for you on every merge, and `yolo` needs no review.
+The policy decides what merges on its own. `strict` stops for you on every merge. `standard` merges when checks pass and the other provider approved the exact head commit, and stops for you when a PR touches `.github/workflows/`. `yolo` needs no review.
 
 ## Update
 

@@ -1,4 +1,5 @@
-export const PRESET_NAMES = ["yolo", "standard", "strict"] as const;
+/** The presets from most to least strict, the order every list of them uses. */
+export const PRESET_NAMES = ["strict", "standard", "yolo"] as const;
 export type PresetName = (typeof PRESET_NAMES)[number];
 
 export interface PolicySettings {
@@ -47,12 +48,12 @@ const COMMON = {
 };
 
 export const PRESETS: Record<PresetName, PolicySettings> = {
-  yolo: {
+  strict: {
     ...COMMON,
-    autoMerge: true,
-    requireReview: false,
-    ownerApprovesEveryMerge: false,
-    escalationPaths: [],
+    autoMerge: false,
+    requireReview: true,
+    ownerApprovesEveryMerge: true,
+    escalationPaths: [".github/workflows/**"],
   },
   standard: {
     ...COMMON,
@@ -61,12 +62,12 @@ export const PRESETS: Record<PresetName, PolicySettings> = {
     ownerApprovesEveryMerge: false,
     escalationPaths: [".github/workflows/**"],
   },
-  strict: {
+  yolo: {
     ...COMMON,
-    autoMerge: false,
-    requireReview: true,
-    ownerApprovesEveryMerge: true,
-    escalationPaths: [".github/workflows/**"],
+    autoMerge: true,
+    requireReview: false,
+    ownerApprovesEveryMerge: false,
+    escalationPaths: [],
   },
 };
 

@@ -165,8 +165,12 @@ describe("Projects", () => {
     const base = dashboard.store.current()?.id ?? 0;
     const edit = await dashboard.get("/projects/octo/app");
     expect(edit.html).toContain('<input type="radio" name="preset" value="standard" checked>');
+    // The presets run from most to least strict.
+    expect(
+      [...edit.html.matchAll(/<input type="radio" name="preset" value="(\w+)"/g)].map((m) => m[1]),
+    ).toEqual(["strict", "standard", "yolo"]);
     expect(edit.html).toContain(
-      "By preset: standard: .github/workflows/**; strict: .github/workflows/**; yolo: none.",
+      "By preset: strict: .github/workflows/**; standard: .github/workflows/**; yolo: none.",
     );
     expect(edit.html).toContain('<a href="/projects">Projects</a>');
     expect(edit.html).toContain("<summary>Customize the preset</summary>");

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PRESETS, resolvePolicy } from "../../src/config/policy.js";
+import { PRESET_NAMES, PRESETS, resolvePolicy } from "../../src/config/policy.js";
 
 describe("policy presets", () => {
   it("yolo auto-merges on green checks with no review and no escalation paths", () => {
@@ -42,5 +42,11 @@ describe("policy presets", () => {
     const resolved = resolvePolicy({ preset: "standard", overrides: { maxReviewRounds: 4 } });
 
     expect(resolved).toEqual({ ...PRESETS.standard, maxReviewRounds: 4 });
+  });
+});
+
+describe("PRESET_NAMES", () => {
+  it("lists the presets from most to least strict", () => {
+    expect(PRESET_NAMES).toEqual(["strict", "standard", "yolo"]);
   });
 });
