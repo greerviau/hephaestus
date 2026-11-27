@@ -109,7 +109,7 @@ const CHECKS_SETTLE_MS = 3 * 60_000;
 const IDLE_STATUSES = ["waiting"];
 /** A thread stopped on a usage limit whose reset time T3 does not report is tried again after this. */
 const LIMIT_RECHECK_MS = 30 * 60_000;
-/** How long a thread stopped on a usage limit waits after T3 could not be read about it. */
+/** How long a thread stopped on a usage limit waits after T3 could not be read, or a pause or cap held it. */
 const LIMIT_READ_RETRY_MS = 60_000;
 /** How long after a usage limit resets T3 gets to resume the thread itself, before Hephaestus does. */
 const LIMIT_GRACE_MS = 5 * 60_000;
@@ -259,9 +259,9 @@ export class Pipeline {
   /**
    * Cards that hold a thread slot with no thread running: a card with the lead, whose work is
    * not finished, and a card whose thread stopped on a usage limit and waits for it to reset.
-   * A card with the owner is blocked on the owner, so it holds none. Leaves out `except`.
+   * A card with the owner is blocked on the owner, so it holds none.
    */
-  private heldCards(environmentId?: string, except?: number): number {
+  private heldCards(environmentId?: string): number {
     const ended = [...ENDED_STATUSES, ...IDLE_STATUSES];
     const kinds = FACTORY_KINDS.map(() => "?").join(", ");
     const env = environmentId === undefined ? "" : " AND c.worker_env = ?";
@@ -272,13 +272,13 @@ export class Pipeline {
           `SELECT COUNT(*) AS n FROM cards c
            WHERE ((c.stage = 'Escalated' AND c.escalated_to = 'lead')
              OR (c.limit_until IS NOT NULL AND c.stage IN ('Implementing', 'Reviewing', 'Reverting')))
-           AND c.id != ?${env}
+           ${env}
            AND NOT EXISTS (SELECT 1 FROM factory_threads t WHERE t.card_id = CAST(c.id AS TEXT)
              AND t.kind IN (${kinds}) AND t.status NOT IN (${ended.map(() => "?").join(", ")}))
            AND NOT EXISTS (SELECT 1 FROM factory_launches l WHERE l.card_id = CAST(c.id AS TEXT)
              AND l.kind IN (${kinds}) AND l.status = 'pending')`,
         )
-        .get(except ?? -1, ...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as {
+        .get(...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as {
         n: number;
       }
     ).n;
@@ -311,14 +311,14 @@ export class Pipeline {
   /**
    * Why no factory thread may start now on `environmentId`, or undefined
    * when one may. A resume passes its own thread as `resuming`: it needs no
-   * new slot, and it is not a new start. A card whose slot is held while it
-   * waits passes itself as `card`, so its own hold does not block it.
+   * new slot, and it is not a new start. Cards that hold a slot with no
+   * thread running count against new starts only, so work already under
+   * way can always go on.
    */
   blockedBecause(
     environmentId: string | undefined,
     resuming?: string,
     request?: string,
-    card?: number,
   ): string | undefined {
     if (this.paused()) return "The factory is paused.";
     const limits = this.options.config()?.document.factory.limits;
@@ -328,12 +328,12 @@ export class Pipeline {
     if (resuming === undefined && !replaying && this.startsToday() >= limits.startsPerDay) {
       return `The limit of ${String(limits.startsPerDay)} factory thread starts per day is reached.`;
     }
-    const held = this.heldCards(undefined, card);
+    const held = resuming === undefined ? this.heldCards() : 0;
     if (this.runningThreads(undefined, resuming, request) + held >= limits.threads) {
       return `The limit of ${String(limits.threads)} running factory threads is reached${heldNote(held)}.`;
     }
     if (environmentId !== undefined) {
-      const heldHere = this.heldCards(environmentId, card);
+      const heldHere = resuming === undefined ? this.heldCards(environmentId) : 0;
       if (
         this.runningThreads(environmentId, resuming, request) + heldHere >=
         limits.threadsPerWorker
@@ -618,7 +618,10 @@ export class Pipeline {
     }
     const candidates = ready
       .filter((worker) => worker.home !== null)
-      .map((worker) => ({ worker, load: this.runningThreads(worker.environmentId) }))
+      .map((worker) => ({
+        worker,
+        load: this.runningThreads(worker.environmentId) + this.heldCards(worker.environmentId),
+      }))
       .sort((a, b) => a.load - b.load || a.worker.label.localeCompare(b.worker.label));
     const best = candidates[0]?.worker;
     if (best?.home === undefined || best.home === null) return "No worker is ready.";
@@ -910,9 +913,7 @@ export class Pipeline {
     if (card.workerEnv === null) return false;
     const limit =
       result.status === "completed"
-        ? result.text.trim().length <= LIMIT_REPLY_CHARS
-          ? limitText(result.text)
-          : undefined
+        ? replyLimit(result.text)
         : runLimit(this.options.events.items(card.workerEnv, threadId));
     if (limit === undefined) return false;
     let state: ThreadState | undefined;
@@ -961,7 +962,8 @@ export class Pipeline {
       return;
     }
     const stopped =
-      state.status === "failed" && (card.limitRun === null || state.latestRunId === card.limitRun);
+      ENDED_STATUSES.has(state.status) &&
+      (card.limitRun === null || state.latestRunId === card.limitRun);
     if (!stopped) {
       // The follower stops at a failed run, so the thread goes back on its list to pick up T3's.
       this.options.events.setStatus(env, threadId, "starting");
@@ -982,9 +984,15 @@ export class Pipeline {
         ? `${card.repo} is no longer a factory project.`
         : typeof worker === "string"
           ? worker
-          : this.blockedBecause(env, threadId, undefined, card.id);
+          : this.blockedBecause(env, threadId);
       if (blocked !== undefined) {
-        this.wait(current, blocked);
+        // Read T3 again a minute later, not on every pass, while a pause or cap holds the send.
+        this.wait(
+          this.cards.update(card.id, {
+            limitUntil: new Date(now + LIMIT_READ_RETRY_MS).toISOString(),
+          }),
+          blocked,
+        );
         return;
       }
       const digest = createHash("sha256")
@@ -1995,6 +2003,18 @@ function runLimit(items: ThreadItem[]): string | undefined {
     .filter((item) => ["user_message", "assistant_message", "error"].includes(item.type))
     .at(-1);
   return last?.type === "error" ? limitText(last.text) : undefined;
+}
+
+/**
+ * The reply when it is the provider's own short usage-limit notice. Wording about other rate
+ * limits or quotas, such as GitHub's, is the agent's report and goes to the lead.
+ */
+function replyLimit(text: string): string | undefined {
+  const trimmed = text.trim();
+  return trimmed.length <= LIMIT_REPLY_CHARS &&
+    /usage limit|hit your (\w+ )?limit|limit reached|\blimit\b[^\n]{0,40}\bresets?\b/i.test(trimmed)
+    ? trimmed
+    : undefined;
 }
 
 /** Says how many of the slots a thread cap counts are held by cards with no thread running. */
