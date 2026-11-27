@@ -168,12 +168,15 @@ export function versionRoutes(factory: FactoryPages): Route[] {
     }
     if (deploys !== undefined && (version.state === "approved" || version.state === "deployed")) {
       const again = version.state === "deployed";
+      // A second start joins the deploy under way, so the button would do nothing.
+      const busy = deploys.has(version.id);
       actions.push(
-        dialogButton(
-          "deploy-version",
-          again ? "Deploy again" : "Deploy",
-          again ? {} : { variant: "primary" },
-        ),
+        dialogButton("deploy-version", again ? "Deploy again" : "Deploy", {
+          ...(again ? {} : { variant: "primary" as const }),
+          ...(busy
+            ? { disabled: true, title: `Version ${String(version.id)} is deploying now.` }
+            : {}),
+        }),
       );
       dialogs.push(
         dialog({
@@ -189,7 +192,18 @@ export function versionRoutes(factory: FactoryPages): Route[] {
       (version.state === "deployed" || version.state === "superseded") &&
       version.parentId !== null
     ) {
-      actions.push(dialogButton("revert-version", "Revert"));
+      actions.push(
+        dialogButton(
+          "revert-version",
+          "Revert",
+          store.canRevert(version.id)
+            ? {}
+            : {
+                disabled: true,
+                title: "Nothing to revert: reverting this version would change nothing.",
+              },
+        ),
+      );
       dialogs.push(
         dialog({
           id: "revert-version",

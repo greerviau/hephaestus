@@ -620,13 +620,13 @@ export function dialog(options: DialogOptions): string {
   return `<div class="dlg" id="${id}" popover role="dialog" aria-labelledby="${id}-title"><form method="post" action="${escapeHtml(options.action)}">${hiddenFields(options.fields)}<div class="dlg-head"><h2 id="${id}-title">${escapeHtml(options.title)}</h2><button type="button" class="icon-btn" ${close} aria-label="Close">${icon("close")}</button></div><div class="dlg-body">${options.body}</div><div class="dlg-foot"><button type="button" ${close}>Cancel</button><button type="submit" class="${options.danger === true ? "danger solid" : "primary"}">${escapeHtml(options.submit)}</button></div></form></div>`;
 }
 
-/** The button that opens the `dialog` with this id. `label` is escaped. */
+/** The button that opens the `dialog` with this id. `label` and `title`, its tooltip, are escaped. */
 export function dialogButton(
   id: string,
   label: string,
-  options: { variant?: "primary" | "danger"; disabled?: boolean } = {},
+  options: { variant?: "primary" | "danger"; disabled?: boolean; title?: string } = {},
 ): string {
-  return `<button type="button"${options.variant === undefined ? "" : ` class="${options.variant}"`} popovertarget="${escapeHtml(id)}"${options.disabled === true ? " disabled" : ""}>${escapeHtml(label)}</button>`;
+  return `<button type="button"${options.variant === undefined ? "" : ` class="${options.variant}"`} popovertarget="${escapeHtml(id)}"${options.disabled === true ? " disabled" : ""}${options.title === undefined ? "" : ` title="${escapeHtml(options.title)}"`}>${escapeHtml(label)}</button>`;
 }
 
 /** A two-column list of labels and values. Labels are escaped; values must already be safe HTML. */

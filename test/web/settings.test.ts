@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import type { FactoryConfig } from "../../src/config/document.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { startDashboard, type Dashboard, type DashboardOptions } from "./dashboard.js";
 
@@ -201,7 +202,10 @@ describe("Factory tab", () => {
   it("keeps the version a draft when Deploy now is not ticked", async () => {
     await start({}, true);
 
-    const response = await dashboard.post("/config/factory", FACTORY_FIELDS);
+    const response = await dashboard.post("/config/factory", {
+      ...FACTORY_FIELDS,
+      "limits.threads": "6",
+    });
 
     expect(response.headers.get("location")).toBe("/config/versions/2");
     expect(dashboard.store.get(2).state).toBe("draft");
@@ -668,7 +672,9 @@ describe("Version page", () => {
 
   it("offers Deploy again and Revert for a deployed version, and no Revert for the first", async () => {
     await start({}, true);
-    deployVersion();
+    const changed = sampleConfig();
+    changed.roles.lead.persona = "Lead carefully.";
+    deployVersion(changed);
 
     const second = (await dashboard.get("/config/versions/2")).html;
     expect(second).toContain('popovertarget="deploy-version">Deploy again</button>');
@@ -866,5 +872,177 @@ describe("Version page", () => {
     await start();
 
     expect((await fetch(`${dashboard.base}/api/config/versions`)).status).toBe(401);
+  });
+});
+
+describe("Saving a config that did not change", () => {
+  it.each([
+    ["/config", "/config/factory", FACTORY_FIELDS],
+    ["/config/models", "/config/models", MODEL_FIELDS],
+  ])("creates no version from %s and says nothing changed", async (tab, action, fields) => {
+    await start({}, true);
+
+    const response = await dashboard.post(action, { ...fields, deploy: "on" });
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(`${tab}?unchanged=1`);
+    expect(dashboard.store.count()).toBe(1);
+    expect(deployed).toEqual([]);
+    const { html } = await dashboard.get(`${tab}?unchanged=1`);
+    expect(html).toContain("Nothing to save");
+    expect(html).toContain("No version was created.");
+  });
+
+  it("creates no version from an instructions page that saves the same text and skills", async () => {
+    await start();
+
+    const response = await dashboard.post("/config/agents/lead", {
+      parentId: "1",
+      text: "Lead the work.",
+      message: "Only a message",
+    });
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/config/agents/lead?unchanged=1");
+    expect(dashboard.store.count()).toBe(1);
+  });
+
+  it("creates no version from JSON that differs only in key order and spacing", async () => {
+    await start();
+    const current = dashboard.store.get(1).document;
+    const reordered = Object.fromEntries(Object.entries(current).reverse());
+
+    const response = await dashboard.post("/config/json", {
+      parentId: "1",
+      message: "Same",
+      document: JSON.stringify(reordered),
+    });
+
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe("/config/json?unchanged=1");
+    expect(dashboard.store.count()).toBe(1);
+    expect((await dashboard.get("/config/json?unchanged=1")).html).toContain("Nothing to save");
+  });
+
+  it("still saves a config that changed", async () => {
+    await start();
+
+    const response = await dashboard.post("/config/factory", {
+      ...FACTORY_FIELDS,
+      "limits.threads": "6",
+    });
+
+    expect(response.headers.get("location")).toBe("/config/versions/2");
+    expect(dashboard.store.count()).toBe(2);
+  });
+
+  it.each([
+    ["/config", "Save settings"],
+    ["/config/models", "Save coding models"],
+    ["/config/agents/lead", "Save instructions"],
+    ["/config/json", "Save as a draft"],
+  ])("marks the save button on %s to wait for a change", async (path, label) => {
+    await start();
+
+    const { html } = await dashboard.get(path);
+
+    const button = new RegExp(`<button [^>]*>${label}</button>`).exec(html)?.[0] ?? "";
+    expect(button).toContain('data-unchanged="Nothing to save: this is the same as version 1."');
+    expect(button).toContain('data-unchanged-ignore="deploy message"');
+    expect(html).toContain('<script src="/assets/unchanged.js" defer></script>');
+  });
+
+  it("leaves the save button on for a refused form, which already differs from the version", async () => {
+    await start();
+
+    const refused = await dashboard.post("/config/factory", {
+      ...FACTORY_FIELDS,
+      "limits.threads": "lots",
+    });
+    const html = await refused.text();
+
+    expect(refused.status).toBe(400);
+    expect(html).toMatch(/<button type="submit" class="primary">Save settings<\/button>/);
+  });
+
+  it("serves the script that turns a save button off until something changes", async () => {
+    await start();
+
+    const response = await fetch(`${dashboard.base}/assets/unchanged.js`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("text/javascript");
+  });
+});
+
+describe("Version page buttons that would do nothing", () => {
+  function changedConfig(): FactoryConfig {
+    const changed = sampleConfig();
+    changed.roles.lead.persona = "Lead carefully.";
+    return changed;
+  }
+
+  it("turns Revert off, and says why, for a version that changed nothing", async () => {
+    await start({}, true);
+    const id = deployVersion();
+
+    const { html } = await dashboard.get(`/config/versions/${String(id)}`);
+
+    expect(html).toContain(
+      '<button type="button" popovertarget="revert-version" disabled title="Nothing to revert: reverting this version would change nothing.">Revert</button>',
+    );
+  });
+
+  it("turns Revert off for a version whose changes were already undone", async () => {
+    await start();
+    const second = deployVersion(changedConfig());
+    deployVersion(sampleConfig(), second);
+
+    const { html } = await dashboard.get(`/config/versions/${String(second)}`);
+
+    expect(html).toMatch(/popovertarget="revert-version" disabled title="Nothing to revert/);
+  });
+
+  it("keeps Revert on for a version whose revert would change the config", async () => {
+    await start();
+    const second = deployVersion(changedConfig());
+
+    const { html } = await dashboard.get(`/config/versions/${String(second)}`);
+
+    expect(html).toContain('<button type="button" popovertarget="revert-version">Revert</button>');
+  });
+
+  it("refuses a revert posted for a version whose revert would change nothing, and creates no draft", async () => {
+    await start();
+    const second = deployVersion(changedConfig());
+    deployVersion(sampleConfig(), second);
+    const before = dashboard.store.count();
+
+    const response = await dashboard.post(`/config/versions/${String(second)}/revert`);
+
+    expect(response.status).toBe(409);
+    expect(await response.text()).toContain("would change nothing");
+    expect(dashboard.store.count()).toBe(before);
+  });
+
+  it("turns Deploy again off while that version's deploy is already under way", async () => {
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((done) => {
+      release = done;
+    });
+    dashboard = await startDashboard({ deploy: () => held.then(() => ({})) });
+
+    await dashboard.post("/config/versions/1/deploy");
+    const busy = (await dashboard.get("/config/versions/1")).html;
+    release();
+    await dashboard.deploysSettled();
+    const done = (await dashboard.get("/config/versions/1")).html;
+
+    expect(busy).toContain(
+      '<button type="button" popovertarget="deploy-version" disabled title="Version 1 is deploying now.">Deploy again</button>',
+    );
+    expect(done).toContain(
+      '<button type="button" popovertarget="deploy-version">Deploy again</button>',
+    );
   });
 });

@@ -18,6 +18,7 @@ import {
   type Shell,
 } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
+import { UNCHANGED_SCRIPT_TAG } from "./unchanged.js";
 import { publishVersion } from "./versions.js";
 
 export type ConfigTab = "factory" | "models" | "agents" | "versions" | "json";
@@ -90,7 +91,7 @@ export function configTab(
     })}${repoRow(factory, here)}${tabs(
       TABS.map(([name, href, label]) => ({ href, label, current: name === tab })),
       "Config sections",
-    )}${body}`,
+    )}${body}${UNCHANGED_SCRIPT_TAG}`,
     { section: "/config", shell: context.shell },
   );
 }
@@ -102,7 +103,7 @@ export function configPage(
   body: string,
   crumbs?: readonly Crumb[],
 ): string {
-  return layout(title, body, {
+  return layout(title, `${body}${UNCHANGED_SCRIPT_TAG}`, {
     section: "/config",
     shell,
     ...(crumbs === undefined ? {} : { crumbs }),
@@ -132,8 +133,19 @@ export function problems(title: string, errors: readonly string[] | undefined): 
   return `<div class="box err" role="alert"><div class="box-title">${icon("x")}<span>${escapeHtml(title)}</span></div><ul>${errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`;
 }
 
-/** The callout a page shows after a save that started a deploy, from the `saved` query the save redirects with. */
+/**
+ * The callout a page shows after a save: one that started a deploy, from the
+ * `saved` query the save redirects with, or one that changed nothing, from `unchanged`.
+ */
 export function savedNotice(url: URL): string {
+  const same = url.searchParams.get("unchanged") ?? "";
+  if (/^\d{1,9}$/.test(same)) {
+    return callout(
+      "info",
+      "Nothing to save",
+      `The config is the same as version ${same}. No version was created.`,
+    );
+  }
   const id = url.searchParams.get("saved") ?? "";
   return /^\d{1,9}$/.test(id)
     ? callout(
@@ -152,14 +164,32 @@ export function deployChoice(submitted: URLSearchParams | undefined): string {
   });
 }
 
-/** The foot of a form that saves a config version built from `base`. `label` is escaped. */
+/**
+ * The attributes that keep a save button off until its form differs from the
+ * page as rendered. A form that came back refused already holds the owner's
+ * edit, which the page cannot tell from the version, so it gets none.
+ */
+export function unchangedAttributes(
+  base: ConfigVersion,
+  submitted: URLSearchParams | undefined,
+): string {
+  if (submitted !== undefined) return "";
+  return ` data-unchanged="Nothing to save: this is the same as version ${String(base.id)}." data-unchanged-ignore="deploy message"`;
+}
+
+/**
+ * The foot of a form that saves a config version built from `base`. `label` is
+ * escaped. `fresh` is false for a form whose rendered values already differ
+ * from `base`, such as a new skill file, which saving creates.
+ */
 export function versionSaveBar(
   label: string,
   base: ConfigVersion,
   submitted: URLSearchParams | undefined,
+  fresh = true,
 ): string {
   return saveBar(
-    `<button type="submit" class="primary">${escapeHtml(label)}</button>${deployChoice(submitted)}<span class="hint">Creates a config version built from version ${String(base.id)}.</span>`,
+    `<button type="submit" class="primary"${fresh ? unchangedAttributes(base, submitted) : ""}>${escapeHtml(label)}</button>${deployChoice(submitted)}<span class="hint">Creates a config version built from version ${String(base.id)}.</span>`,
   );
 }
 
@@ -226,14 +256,23 @@ export interface Save {
 /**
  * Saves `document` as a version, starts its deploy in the background when the
  * form asks, and redirects at once: to `saved` once a deploy is under way, else
- * to the version's page, which says what is left to do. Returns the reasons
- * instead when the config refuses the document.
+ * to the version's page, which says what is left to do. A document the same as
+ * its base creates no version and goes back to `saved` with `unchanged`.
+ * Returns the reasons instead when the config refuses the document.
  */
 export function saveVersion(
   factory: FactoryPages,
   context: RouteContext,
   save: Save,
 ): string[] | undefined {
+  // A form posted without the page's script, or twice, would otherwise save a version with no changes.
+  if (factory.store.isSameAs(save.base.id, save.document)) {
+    redirect(
+      context.response,
+      `${save.saved}${save.saved.includes("?") ? "&" : "?"}unchanged=${String(save.base.id)}`,
+    );
+    return undefined;
+  }
   let published;
   try {
     published = publishVersion({
