@@ -233,6 +233,25 @@ const MIGRATIONS = [
   // A card whose thread stopped on a provider's usage limit waits for it to reset.
   `ALTER TABLE cards ADD COLUMN limit_until TEXT;
    ALTER TABLE cards ADD COLUMN limit_run TEXT;`,
+  // Changes to the factory's own skills, instructions, and settings agreed in a chat.
+  `CREATE TABLE chat_changes (
+     id INTEGER PRIMARY KEY,
+     target TEXT NOT NULL,
+     summary TEXT NOT NULL,
+     conversation TEXT NOT NULL,
+     state TEXT NOT NULL,
+     before_text TEXT,
+     after_text TEXT NOT NULL,
+     proposed_at TEXT NOT NULL,
+     approval TEXT,
+     applied_at TEXT,
+     version_id INTEGER,
+     error TEXT,
+     revert_conversation TEXT,
+     revert_request TEXT,
+     reverted_at TEXT,
+     revert_version_id INTEGER
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */
