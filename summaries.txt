@@ -1,0 +1,3 @@
+Runs every day at 02:30, Hermes host time (UTC).
+Runs on the custom schedule every 12h, Hermes host time (UTC).
+Off: this job does not run.
