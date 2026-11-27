@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ConfigValidationError, MAX_CONFIG_BYTES } from "../../src/config/document.js";
-import { ConfigStore } from "../../src/config/store.js";
+import { ConfigStore, MAX_TITLE_LENGTH } from "../../src/config/store.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "./fixtures.js";
 
@@ -506,5 +506,75 @@ describe("second review fixes", () => {
     expect(() => {
       restored.importVersions([broken as unknown as typeof version]);
     }).toThrow(/factory\.limits must be an object/);
+  });
+});
+
+describe("titles", () => {
+  const LONG =
+    "Add a rule to the lead persona that every brief names the exact files to touch, because three implement threads this week edited the wrong module and needed extra review rounds";
+
+  it("keeps a short title apart from the message that describes the change", () => {
+    const first = deployed();
+    const version = store.createVersion({
+      document: sampleConfig(),
+      author: "improver",
+      title: "Name the files in each brief",
+      message: LONG,
+      parentId: first.id,
+    });
+
+    expect(store.get(version.id)).toMatchObject({
+      title: "Name the files in each brief",
+      message: LONG,
+    });
+  });
+
+  it("gives a version saved without a title a short one from the start of its message", () => {
+    const first = deployed();
+    const version = store.createVersion({
+      document: sampleConfig(),
+      author: "improver",
+      message: LONG,
+      parentId: first.id,
+    });
+
+    const { title, message } = store.get(version.id);
+    expect(message).toBe(LONG);
+    expect(title.length).toBeLessThanOrEqual(MAX_TITLE_LENGTH);
+    expect(title).toMatch(/^Add a rule to the lead persona that every brief .*\.\.\.$/);
+    expect(LONG.startsWith(title.slice(0, -3))).toBe(true);
+  });
+
+  it("uses the first sentence or line of a message as the title when it is short", () => {
+    const first = deployed();
+    const sentence = store.createVersion({
+      document: sampleConfig(),
+      author: "improver",
+      message: "Tighten the review skill. It missed two failing tests this week.",
+      parentId: first.id,
+    });
+    const line = store.createVersion({
+      document: sampleConfig(),
+      author: "improver",
+      message: "Shorter lead briefs\nThe briefs ran long.",
+      parentId: first.id,
+    });
+
+    expect(store.get(sentence.id).title).toBe("Tighten the review skill");
+    expect(store.get(line.id).title).toBe("Shorter lead briefs");
+  });
+
+  it("refuses a title longer than the limit", () => {
+    const first = deployed();
+
+    expect(() =>
+      store.createVersion({
+        document: sampleConfig(),
+        author: "improver",
+        title: "x".repeat(MAX_TITLE_LENGTH + 1),
+        message: "m",
+        parentId: first.id,
+      }),
+    ).toThrow(`A title is at most ${String(MAX_TITLE_LENGTH)} characters`);
   });
 });

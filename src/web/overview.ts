@@ -153,7 +153,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             const href = `/proposals/${String(version.id)}`;
             needs.push({
               kind: "proposal",
-              title: `Proposal v${String(version.id)}: ${version.message}`,
+              title: `Proposal v${String(version.id)}: ${version.title}`,
               href,
               sub: `${version.author === "improver" ? "The improver proposed a config change" : "A Hephaestus update brings starter skills"}. Approving it deploys it.`,
               aside: buttonLink(href, "Review proposal"),

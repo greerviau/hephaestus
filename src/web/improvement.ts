@@ -80,6 +80,13 @@ export function changeDiffs(changes: readonly Change[]): string {
     .join("");
 }
 
+/** What a version does, under its title, unless its message says no more than the title. */
+export function description(version: ConfigVersion): string {
+  const message = version.message.trim();
+  if (message === "" || message === version.title) return "";
+  return section({ title: "What it does", body: `<p class="desc">${escapeHtml(message)}</p>` });
+}
+
 /** The Proposals pages: the improver's proposals with their diff and evidence, and the owner's gate. */
 export function improvementRoutes(factory: FactoryPages): Route[] {
   const now = factory.now ?? Date.now;
@@ -136,7 +143,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
                     )
                   : rowList(
                       pending.value.map(({ version, changes, evidence }) => ({
-                        title: `v${String(version.id)} ${version.message}`,
+                        title: `v${String(version.id)} ${version.title}`,
                         href: `/proposals/${String(version.id)}`,
                         wholeRow: true,
                         sub: [
@@ -160,7 +167,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
                 count: past.length,
                 body: rowList(
                   past.map((version) => ({
-                    title: `v${String(version.id)} ${version.message}`,
+                    title: `v${String(version.id)} ${version.title}`,
                     href: `/config/versions/${String(version.id)}`,
                     wholeRow: true,
                     sub: when(version.createdAt, now()),
@@ -215,7 +222,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
         const name = `v${String(id)}`;
         const draft = version.state === "draft";
         const head = pageHead({
-          title: `${name} ${version.message}`,
+          title: `${name} ${version.title}`,
           lede: [
             stateText(version),
             `proposed ${when(version.createdAt, now())}`,
@@ -259,7 +266,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
           200,
           layout(
             `Proposal ${name}`,
-            `${head}${notice(url)}${section({ title: "Changes", count: diff.length, body: changeDiffs(diff) })}${section(
+            `${head}${notice(url)}${description(version)}${section({ title: "Changes", count: diff.length, body: changeDiffs(diff) })}${section(
               { title: "Evidence threads", count: evidence.length, body: threads },
             )}${dialogs}`,
             { section: "/proposals", shell, crumbs: [["Proposals", "/proposals"], [name]] },

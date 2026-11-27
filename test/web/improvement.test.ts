@@ -122,6 +122,81 @@ describe("Proposals", () => {
     expect(html).not.toContain('http-equiv="refresh"');
   });
 
+  it("lists a proposal by its short title and shows what it does on its page", async () => {
+    const started = await startDashboard({ deploy });
+    dashboard = started;
+    const base = started.store.current();
+    if (base === undefined) throw new Error("no version");
+    const document = structuredClone(base.document);
+    document.roles.lead.persona = "Name the files.";
+    const description =
+      "Briefs now name the files to touch, because two <implement> threads edited the wrong module.";
+    const version = started.store.createVersion({
+      document,
+      author: "improver",
+      title: "Name the files in each brief",
+      message: description,
+      parentId: base.id,
+    });
+    const v = `v${String(version.id)}`;
+
+    const list = (await started.get("/proposals")).html;
+    expect(list).toContain(`<span class="title">${v} Name the files in each brief</span>`);
+    expect(list).not.toContain("wrong module");
+
+    const page = (await started.get(`/proposals/${String(version.id)}`)).html;
+    expect(page).toContain(`<h1 id="page-title">${v} Name the files in each brief</h1>`);
+    expect(page).toContain("<h2>What it does</h2>");
+    expect(page).toContain(
+      '<p class="desc">Briefs now name the files to touch, because two &lt;implement&gt; threads edited the wrong module.</p>',
+    );
+
+    await started.post(`/proposals/${String(version.id)}/reject`);
+    const past = (await started.get("/proposals")).html;
+    expect(past).toContain(`<span class="title">${v} Name the files in each brief</span>`);
+    expect(past).not.toContain("wrong module");
+  });
+
+  it("gives a proposal saved with only a long message a short title and keeps the message on its page", async () => {
+    const started = await startDashboard({ deploy });
+    dashboard = started;
+    const base = started.store.current();
+    if (base === undefined) throw new Error("no version");
+    const document = structuredClone(base.document);
+    document.roles.lead.persona = "Name the files.";
+    const long =
+      "Add a rule to the lead persona that every brief names the exact files to touch, because three implement threads this week edited the wrong module and needed extra review rounds";
+    // A proposal an earlier build saved has a message and no title.
+    const version = started.store.createVersion({
+      document,
+      author: "improver",
+      message: long,
+      parentId: base.id,
+    });
+    started.h.db.prepare("UPDATE config_versions SET title = '' WHERE id = ?").run(version.id);
+
+    const list = (await started.get("/proposals")).html;
+    const title = /<span class="title">(v\d+ [^<]*)<\/span>/.exec(list)?.[1] ?? "";
+    expect(title).toMatch(/^v\d+ Add a rule to the lead persona .*\.\.\.$/);
+    expect(title.length).toBeLessThan(long.length / 2);
+    expect(list).not.toContain("extra review rounds");
+
+    const page = (await started.get(`/proposals/${String(version.id)}`)).html;
+    expect(page).toContain(`<p class="desc">${long}</p>`);
+
+    const response = await started.post(`/proposals/${String(version.id)}/approve`);
+    expect(response.headers.get("location")).toBe("/proposals?notice=approved");
+    expect(deployed).toEqual([version.id]);
+  });
+
+  it("shows no separate description when the message is the title", async () => {
+    const { dashboard, id } = await withProposal();
+
+    const { html } = await dashboard.get(`/proposals/${String(id)}`);
+
+    expect(html).not.toContain("What it does");
+  });
+
   it("shows only the lines of a long text that changed", async () => {
     const started = await startDashboard({ deploy });
     dashboard = started;

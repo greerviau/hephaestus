@@ -65,7 +65,7 @@ The factory profiles reach Hephaestus through an MCP server on `127.0.0.1`, on t
 
 The communicator is the factory's chat agent. It is general-purpose: it talks, answers questions about the factory from `get_status`, `list_tasks`, and `read_thread` (a task carries `merged_at`, its recorded merge time, which is not its last update), uses `file_issue` only when the user asks for work, and uses `comment_issue` only when the user asks for a comment on an existing issue. Besides those two its only write tools are the change tools below.
 
-Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with the factory threads it cites as evidence; it changes nothing until the owner approves it.
+Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with a short title of at most 72 characters, a message that describes the change, and the factory threads it cites as evidence; a longer title is refused. It changes nothing until the owner approves it.
 
 ### Changes agreed in chat
 

@@ -19,11 +19,31 @@ export function isProposal(version: { author: string }): boolean {
   return PROPOSERS.includes(version.author);
 }
 
+/** The longest title a version may have, so a list of versions stays one line a row. */
+export const MAX_TITLE_LENGTH = 72;
+
+/**
+ * A short title from the start of a message, for a version saved without one:
+ * its first line, then its first sentence, cut at a word to fit the limit.
+ */
+export function titleFromMessage(message: string): string {
+  const line = message.trim().split("\n")[0]?.trim() ?? "";
+  const sentence = /^(.+?[.!?])\s/.exec(`${line} `)?.[1] ?? line;
+  const text = sentence.replace(/\.$/, "");
+  if (text.length <= MAX_TITLE_LENGTH) return text;
+  const room = MAX_TITLE_LENGTH - 3;
+  const cut = text.slice(0, room + 1).lastIndexOf(" ");
+  return `${text.slice(0, cut > room / 2 ? cut : room).trimEnd()}...`;
+}
+
 export interface ConfigVersion {
   id: number;
   parentId: number | null;
   state: VersionState;
   author: string;
+  /** A short name for the change. A version saved without one has one made from its message. */
+  title: string;
+  /** What the change does and why. */
   message: string;
   createdAt: string;
   document: FactoryConfig;
@@ -34,6 +54,7 @@ interface Row {
   parent_id: number | null;
   state: VersionState;
   author: string;
+  title: string;
   message: string;
   created_at: string;
   document: string;
@@ -42,6 +63,8 @@ interface Row {
 export interface NewVersion {
   document: FactoryConfig;
   author: string;
+  /** A short name for the change, at most {@link MAX_TITLE_LENGTH} characters. Made from the message when absent. */
+  title?: string;
   message: string;
   /** The version this one was built from. Required once any version exists. */
   parentId?: number;
@@ -65,6 +88,7 @@ function toVersion(row: Row): ConfigVersion {
     parentId: row.parent_id,
     state: row.state,
     author: row.author,
+    title: row.title === "" ? titleFromMessage(row.message) : row.title,
     message: row.message,
     createdAt: row.created_at,
     // A setting added since the version was saved reads as its default.
@@ -79,7 +103,13 @@ export class ConfigStore {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  createVersion({ document, author, message, parentId }: NewVersion): ConfigVersion {
+  createVersion({ document, author, title = "", message, parentId }: NewVersion): ConfigVersion {
+    const name = title.trim();
+    if (name.length > MAX_TITLE_LENGTH) {
+      throw new Error(
+        `A title is at most ${String(MAX_TITLE_LENGTH)} characters; this one has ${String(name.length)}. Put the detail in the message.`,
+      );
+    }
     const normalized = validateConfig(normalizeConfig(document));
     // One write transaction, so two writers cannot both create a first version.
     const insert = this.db.transaction(() => {
@@ -90,12 +120,13 @@ export class ConfigStore {
       }
       return this.db
         .prepare(
-          `INSERT INTO config_versions (parent_id, state, author, message, created_at, document)
-           VALUES (?, 'draft', ?, ?, ?, ?)`,
+          `INSERT INTO config_versions (parent_id, state, author, title, message, created_at, document)
+           VALUES (?, 'draft', ?, ?, ?, ?, ?)`,
         )
         .run(
           parentId ?? null,
           author,
+          name,
           message,
           this.now().toISOString(),
           JSON.stringify(normalized),
