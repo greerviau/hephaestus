@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Park task - Hephaestus</title>
+<link rel="stylesheet" href="/assets/app.css">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/brand/favicon-32.png">
+<link rel="apple-touch-icon" href="/assets/brand/apple-touch-icon.png">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<div class="shell">
+<header class="top"><a class="brand" href="/"><img src="/assets/brand/logo-192.png" alt="" width="24" height="24">hephaestus</a><button type="button" popovertarget="side"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 4.5h11M2.5 8h11M2.5 11.5h11"/></svg>Menu</button></header>
+<aside class="side" id="side" popover>
+<div class="side-head"><a class="brand" href="/"><img src="/assets/brand/logo-192.png" alt="" width="24" height="24">hephaestus</a><button type="button" class="icon-btn side-close" popovertarget="side" popovertargetaction="hide" aria-label="Close menu"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div>
+<form class="scope" method="post" action="/project-filter"><input type="hidden" name="back" value="/work/1/park"><label class="nav-label" for="shell-project">Project</label><select id="shell-project" name="project" data-submit-on-change><option value="">All projects</option><option value="octo/app">app</option></select><noscript><button type="submit">Apply</button></noscript></form><script src="/assets/project-filter.js" defer></script>
+<nav class="side-nav" aria-label="Pages">
+<div class="nav-group"><span class="nav-label">Factory</span><a href="/"><span class="lbl">Home</span><span class="count">1<span class="sr-only"> need you</span></span></a><a href="/work" aria-current="page"><span class="lbl">Work</span></a><a href="/activity"><span class="lbl">Activity</span></a><a href="/analytics"><span class="lbl">Analytics</span></a></div>
+<div class="nav-group"><span class="nav-label">Setup</span><a href="/projects"><span class="lbl">Projects</span></a><a href="/workers"><span class="lbl">Workers</span></a><a href="/chat"><span class="lbl">Chat</span></a><a href="/proposals"><span class="lbl">Proposals</span></a><a href="/config"><span class="lbl">Config</span></a></div>
+</nav>
+<div class="side-foot"><div class="row-line"><span class="st t-run"><span class="dot"></span>Running</span><button type="button" popovertarget="pause-dialog">Pause</button></div><div class="row-line"><form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form></div></div>
+</aside>
+<main id="main" tabindex="-1"><div class="page">
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/work">Work</a><span aria-hidden="true">/</span><a href="/work/1">Task 1</a><span aria-hidden="true">/</span><span>Park</span></nav><div class="head"><div><h1 id="page-title">Park task</h1></div></div><form class="form" method="post" action="/work/1/park"><input type="hidden" name="version" value="5"><input type="hidden" name="back" value="/work/1"><p class="muted">#13 Pick a format</p><p>It waits under Parked and frees its worker. Its branch and PR stay. When its time is up, it comes back to you with the same reason: Should the flag be on by default?</p><div class="field"><label for="hours">Alert me again</label><select id="hours" name="hours"><option value="1">In 1 hour</option><option value="4">In 4 hours</option><option value="24" selected>In 1 day</option><option value="72">In 3 days</option><option value="168">In 1 week</option></select></div><div class="field"><label for="note">Note (optional)</label><textarea id="note" name="note" rows="3" maxlength="2000" aria-describedby="note-hint"></textarea><span class="hint" id="note-hint">Why you set it aside, for when it comes back.</span></div><div class="savebar"><button type="submit" class="primary">Park task</button><a href="/work/1">Cancel</a></div></form>
+</div></main>
+</div>
+<div class="dlg" id="pause-dialog" popover role="dialog" aria-labelledby="pause-dialog-title"><form method="post" action="/factory/pause"><input type="hidden" name="back" value="/work/1/park"><div class="dlg-head"><h2 id="pause-dialog-title">Pause factory</h2><button type="button" class="icon-btn" popovertarget="pause-dialog" popovertargetaction="hide" aria-label="Close"><svg class="ic" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></div><div class="dlg-body"><p>No thread starts or resumes until you resume. No thread is running now.</p></div><div class="dlg-foot"><button type="button" popovertarget="pause-dialog" popovertargetaction="hide">Cancel</button><button type="submit" class="primary">Pause factory</button></div></form></div>
+</body>
+</html>
