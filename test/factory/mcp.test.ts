@@ -8,7 +8,8 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { afterEach, describe, expect, it } from "vitest";
 import { ConfigStore, MAX_TITLE_LENGTH } from "../../src/config/store.js";
 import { chatCacheDirs } from "../../src/hermes/cache.js";
-import { FactoryMcp, ROLE_TOOLS } from "../../src/factory/mcp.js";
+import { FactoryMcp, ROLE_TOOLS, TOOL_NAMES, roleToolsDigest } from "../../src/factory/mcp.js";
+import { shippedInstructions } from "../../src/config/shipped.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { harness, type Harness } from "./harness.js";
 
@@ -1004,5 +1005,36 @@ describe("get_factory_chart", () => {
       await c.close();
     }
     expect(ROLE_TOOLS.communicator).toContain("get_factory_chart");
+  });
+});
+
+describe("the tools each role's instructions name", () => {
+  it("are tools the server offers that role, by the name it registers", async () => {
+    const { url } = await start();
+    for (const [role, token] of Object.entries(TOKENS)) {
+      const c = await client(url, token);
+      const offered = new Set((await c.listTools()).tools.map((tool) => tool.name));
+      await c.close();
+      const named = [...shippedInstructions(role as keyof typeof TOKENS).matchAll(/`(\w+)`/g)]
+        .map((match) => match[1] ?? "")
+        .filter((name) => (TOOL_NAMES as readonly string[]).includes(name));
+      expect(named.length).toBeGreaterThan(0);
+      expect(named.filter((name) => !offered.has(name))).toEqual([]);
+    }
+  });
+
+  it("include comment_issue for the communicator", () => {
+    expect(shippedInstructions("communicator")).toContain("`comment_issue`");
+  });
+});
+
+describe("roleToolsDigest", () => {
+  it("changes when a role gains or loses a tool, so a running gateway is restarted", () => {
+    const without = {
+      ...ROLE_TOOLS,
+      communicator: ROLE_TOOLS.communicator.filter((tool) => tool !== "comment_issue"),
+    };
+    expect(roleToolsDigest(without)).not.toBe(roleToolsDigest());
+    expect(roleToolsDigest({ ...ROLE_TOOLS })).toBe(roleToolsDigest());
   });
 });

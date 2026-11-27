@@ -12,6 +12,8 @@ import { installModelPlugin } from "./plugin.js";
 import { FactoryProfiles, shippedInstructionsChanged } from "./profiles.js";
 
 import { ROLE_NAMES, type RoleName } from "../config/document.js";
+import { roleToolsDigest } from "../factory/mcp.js";
+import { getMeta, setMeta } from "../meta.js";
 import {
   migratePlannerFiles,
   withProfileMoveLock,
@@ -24,6 +26,18 @@ export function mcpTokenSecret(role: RoleName): string {
   return `hermes-mcp-token-${role}`;
 }
 const MCP_TOKEN_ENV = "HEPHAESTUS_MCP_TOKEN";
+/** The factory MCP tools the gateway was last started or restarted with, as {@link roleToolsDigest} names them. */
+const GATEWAY_TOOLS_KEY = "hermes_gateway_tools";
+
+/** Whether this build offers the roles MCP tools the running factory gateway has not loaded. */
+export function gatewayToolsChanged(db: Database): boolean {
+  return getMeta(db, GATEWAY_TOOLS_KEY) !== roleToolsDigest();
+}
+
+/** Records that the factory gateway has loaded this build's MCP tools. */
+export function recordGatewayTools(db: Database): void {
+  setMeta(db, GATEWAY_TOOLS_KEY, roleToolsDigest());
+}
 
 export interface SyncOptions {
   paths: Paths;
@@ -34,7 +48,7 @@ export interface SyncOptions {
   /** Runs `hermes` against the factory root. */
   run: HermesRun;
   /** The factory gateway's unit, and the path its file lives at. */
-  service: ServiceManager & GatewayControl;
+  service: ServiceManager & GatewayControl & { restart(): void };
   gatewayUnitPath: string;
   /** Where the factory profiles reach Hephaestus's MCP server. */
   mcpUrl: string;
@@ -81,13 +95,18 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
 
   // Not while another caller has the gateway down to move the planner's profile.
   await withProfileMoveLock(paths.hermes, () => {
-    if (existsSync(options.gatewayUnitPath)) {
+    if (!existsSync(options.gatewayUnitPath)) {
+      options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
+    } else if (gatewayToolsChanged(options.db) && options.service.active()) {
+      // Hermes lists the MCP tools only when the gateway starts, and keeps them across a
+      // reconnect, so a gateway from before an update that added a tool never offers it.
+      options.service.restart();
+    } else {
       // A start that failed after the unit was written is retried here.
       options.service.start();
-    } else {
-      options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
     }
   });
+  recordGatewayTools(options.db);
   if (!moved) {
     throw new Error(
       "The planner's Hermes profile is not fully moved to the communicator; the log says what is left.",
@@ -97,7 +116,8 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
 
 /**
  * Applies the current config version to the factory Hermes root again when this build ships
- * role instructions the root has not been given, as after an update. A root without the role
+ * role instructions the root has not been given, or MCP tools the factory gateway has not
+ * loaded, as after an update. A root without the role
  * profiles is not set up yet, and its first deploy brings them. A sync that fails leaves the
  * instructions unrecorded, so the next call tries again. Returns whether it synced; `sync`
  * returns why it failed, if it did.
@@ -111,7 +131,8 @@ export async function applyShippedInstructions(options: {
   const ready = ROLE_NAMES.every((role) => existsSync(join(options.hermesRoot, "profiles", role)));
   // The sync applies the current version, which is an approved one when none is deployed.
   const deployed = options.store.current()?.state === "deployed";
-  if (!ready || !deployed || !shippedInstructionsChanged(options.db)) return false;
+  const changed = shippedInstructionsChanged(options.db) || gatewayToolsChanged(options.db);
+  if (!ready || !deployed || !changed) return false;
   const error = await options.sync();
   if (error !== undefined) console.error(`Applying the shipped role instructions failed: ${error}`);
   return true;

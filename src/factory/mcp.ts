@@ -1,5 +1,5 @@
 import { trackingLine } from "../request-threads.js";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { mkdirSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -223,6 +223,22 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
     "read_thread",
   ],
 };
+
+/** Every tool the server has, as it registers them. */
+export const TOOL_NAMES = Object.keys(TOOL_SHAPES) as readonly Tool[];
+
+/**
+ * Identifies the tools each role is offered and their arguments. Hermes lists a server's tools
+ * once, when its gateway starts, and a stateless server cannot tell it the list changed, so a
+ * sync restarts the gateway when this differs from the one it last started with.
+ */
+export function roleToolsDigest(tools: Record<RoleName, readonly Tool[]> = ROLE_TOOLS): string {
+  const surface = ROLE_NAMES.map((role) => [
+    role,
+    [...tools[role]].sort().map((tool) => [tool, Object.keys(TOOL_SHAPES[tool]).sort()]),
+  ]);
+  return createHash("sha256").update(JSON.stringify(surface)).digest("hex");
+}
 
 /** The newest chart files kept in the chart folder; older ones are removed when a new chart is written. */
 const MAX_CHARTS = 20;

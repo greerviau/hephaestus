@@ -13,7 +13,12 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { SecretsFile } from "../../src/config/secrets.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { recordShippedInstructions } from "../../src/hermes/profiles.js";
-import { applyShippedInstructions, syncFactoryHermes } from "../../src/hermes/setup.js";
+import {
+  applyShippedInstructions,
+  recordGatewayTools,
+  syncFactoryHermes,
+} from "../../src/hermes/setup.js";
+import { setMeta } from "../../src/meta.js";
 import { withProfileMoveLock } from "../../src/legacy-planner.js";
 import { resolvePaths, type Paths } from "../../src/paths.js";
 import type { GatewayControl } from "../../src/legacy-planner.js";
@@ -29,6 +34,7 @@ class FakeService implements ServiceManager, GatewayControl {
   units: string[] = [];
   starts = 0;
   stops = 0;
+  restarts = 0;
   constructor(private running = false) {}
   active(): boolean {
     return this.running;
@@ -44,8 +50,14 @@ class FakeService implements ServiceManager, GatewayControl {
     this.starts += 1;
     this.running = true;
   }
+  restart(): void {
+    this.restarts += 1;
+    this.running = true;
+  }
   install(unit: string): void {
     this.units.push(unit);
+    // Install enables and starts the unit.
+    this.running = true;
     mkdirSync(join(paths.gatewayUnit, ".."), { recursive: true });
     writeFileSync(paths.gatewayUnit, unit);
   }
@@ -224,7 +236,97 @@ describe("syncFactoryHermes while another caller moves the planner profile", () 
   });
 });
 
+describe("syncFactoryHermes when the factory's MCP tools change", () => {
+  function setup(running: boolean): {
+    options: Parameters<typeof syncFactoryHermes>[0];
+    gateway: FakeService;
+    close: () => void;
+  } {
+    const db = openStore(join(paths.root, "state.db"));
+    const store = new ConfigStore(db);
+    const first = store.createVersion({ document: sampleConfig(), author: "install", message: "" });
+    store.approve(first.id);
+    const gateway = new FakeService(running);
+    const options = {
+      paths,
+      store,
+      db,
+      secrets: new SecretsFile(paths.secrets),
+      hermesPath: "/usr/local/bin/hermes",
+      run: new FakeHermes().run,
+      service: gateway,
+      mcpUrl: "http://127.0.0.1:7701/mcp",
+      gatewayUnitPath: paths.gatewayUnit,
+    };
+    return { options, gateway, close: () => db.close() };
+  }
+
+  it("restarts a gateway that runs from before an update added a tool, once", async () => {
+    // An install from before the update: its unit is in place and its gateway loaded the old tools.
+    const { options, gateway, close } = setup(true);
+    mkdirSync(join(paths.gatewayUnit, ".."), { recursive: true });
+    writeFileSync(paths.gatewayUnit, "unit");
+
+    await syncFactoryHermes(options);
+    expect(gateway.restarts).toBe(1);
+    await syncFactoryHermes(options);
+    expect(gateway.restarts).toBe(1);
+    close();
+  });
+
+  it("restarts a running gateway when the recorded tools are not this build's", async () => {
+    const { options, gateway, close } = setup(false);
+    await syncFactoryHermes(options);
+    expect(gateway.restarts).toBe(0);
+    setMeta(options.db, "hermes_gateway_tools", "an older build's tools");
+
+    await syncFactoryHermes(options);
+    expect(gateway.restarts).toBe(1);
+    close();
+  });
+
+  it("starts a stopped gateway instead of restarting it", async () => {
+    const { options, gateway, close } = setup(false);
+    mkdirSync(join(paths.gatewayUnit, ".."), { recursive: true });
+    writeFileSync(paths.gatewayUnit, "unit");
+
+    await syncFactoryHermes(options);
+    expect(gateway.restarts).toBe(0);
+    expect(gateway.starts).toBe(1);
+    close();
+  });
+});
+
 describe("applyShippedInstructions", () => {
+  it("syncs a set-up factory Hermes root once a build offers the roles other tools", async () => {
+    const db = openStore(":memory:");
+    const store = new ConfigStore(db);
+    const version = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "m",
+    });
+    store.approve(version.id);
+    store.markDeployed(version.id);
+    const hermes = join(home, "factory-hermes");
+    for (const role of ["communicator", "lead", "improver"]) {
+      mkdirSync(join(hermes, "profiles", role), { recursive: true });
+    }
+    // The instructions are current; only the tools are not.
+    recordShippedInstructions(db);
+    let syncs = 0;
+    const sync = (): Promise<string | undefined> => {
+      syncs += 1;
+      recordGatewayTools(db);
+      return Promise.resolve(undefined);
+    };
+    const options = { db, store, hermesRoot: hermes, sync };
+    expect(await applyShippedInstructions(options)).toBe(true);
+    expect(await applyShippedInstructions(options)).toBe(false);
+    expect(syncs).toBe(1);
+    db.close();
+  });
+
   it("syncs a set-up factory Hermes root once a build ships new role instructions", async () => {
     const db = openStore(":memory:");
     const hermes = join(home, "factory-hermes");
@@ -232,6 +334,7 @@ describe("applyShippedInstructions", () => {
     const sync = (): Promise<string | undefined> => {
       syncs += 1;
       recordShippedInstructions(db);
+      recordGatewayTools(db);
       return Promise.resolve(undefined);
     };
 
@@ -277,6 +380,7 @@ describe("applyShippedInstructions", () => {
       syncs += 1;
       if (syncs === 1) return Promise.resolve("hermes exited with 1");
       recordShippedInstructions(db);
+      recordGatewayTools(db);
       return Promise.resolve(undefined);
     };
     const options = { db, store, hermesRoot: hermes, sync };
