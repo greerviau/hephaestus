@@ -59,17 +59,37 @@ describe("Analytics", () => {
     expect(page).toContain("Nov 23");
   });
 
-  it("draws without hover tooltips and hatches the reverted series", async () => {
+  it("gives every chart hover tips with each day's numbers and hatches the reverted series", async () => {
     dashboard = await startDashboard();
     shipped(dashboard.h, "octo/app", 1);
 
-    const page = main((await dashboard.get("/analytics")).html);
+    const page = main((await dashboard.get("/analytics?days=7")).html);
 
+    expect(page).toContain('<script src="/assets/chart-tip.js" defer></script>');
+    expect(page).toContain('data-tip="Nov 23\nMerged 1\nReverted 0\nAbandoned 0"');
+    expect(page).toContain('data-tip="Nov 24\nMerged 0\nReverted 0\nAbandoned 0"');
+    expect(page).toContain('data-tip="Nov 23\nPRs 1"');
+    expect(page).toContain('data-tip="Nov 23\nEscalations 0"');
+    expect(page).toContain('data-tip="Nov 23\nMedian cycle time 4.0 h"');
+    expect(page).toContain('data-tip="Nov 24\nMedian cycle time: no reading"');
+    // Seven days in each of four charts.
+    expect(page.match(/<g class="hit"/g)).toHaveLength(28);
+    // The browser's own title tips would show beside ours.
     expect(page).not.toContain("<title>");
     expect(page).toContain('<pattern id="hatch-finished"');
     expect(page).toContain(
       '<div class="chart-scroll" tabindex="0" role="region" aria-label="Finished tasks per day chart">',
     );
+  });
+
+  it("serves the script that shows the hover tips", async () => {
+    dashboard = await startDashboard();
+
+    const response = await fetch(`${dashboard.base}/assets/chart-tip.js`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("javascript");
+    expect(await response.text()).toContain("data-tip");
   });
 
   it("folds one table of every day's numbers into a focusable scroll region, newest day first", async () => {

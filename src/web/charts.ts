@@ -2,9 +2,10 @@ import { escapeHtml, fold } from "./html.js";
 
 /**
  * Charts drawn on the server as SVG: one value axis, a recessive grid, and
- * a hatched series so that no series depends on hue alone. Nothing here
- * answers a hover, because that needs a script; `tableFold` holds the exact
- * numbers.
+ * a hatched series so that no series depends on hue alone. Each label gets
+ * a transparent hover target with a `data-tip` that the chart tip script
+ * shows beside the pointer. `tableFold` holds the same numbers for the
+ * keyboard and for a browser without scripts.
  */
 
 export interface Series {
@@ -44,6 +45,19 @@ function labelIndexes(count: number, plotWidth: number, minGap: number): Set<num
     keep.push(count - 1);
   }
   return new Set(keep);
+}
+
+/**
+ * A hover target over one label's band. Its tip's first line is the label
+ * and each later line is a row. The rect has a fill, though a transparent
+ * one, because the pointer only hits painted shapes.
+ */
+function hit(
+  rect: { x: number; y: number; width: number; height: number },
+  tip: readonly string[],
+  mark = "",
+): string {
+  return `<g class="hit" data-tip="${escapeHtml(tip.join("\n"))}"><rect x="${rect.x.toFixed(1)}" y="${rect.y.toFixed(1)}" width="${rect.width.toFixed(1)}" height="${rect.height.toFixed(1)}"/>${mark}</g>`;
 }
 
 function hatchFill(color: string): string {
@@ -107,6 +121,15 @@ export function columns(options: ColumnsOptions): string {
       );
     }
   });
+  // Drawn last so they sit above the bars and gridlines and take the pointer.
+  options.labels.forEach((label, index) => {
+    parts.push(
+      hit({ x: left + band * index, y: top, width: band, height: plotHeight }, [
+        label,
+        ...options.series.map((series) => `${series.name} ${plain(series.values[index] ?? 0)}`),
+      ]),
+    );
+  });
   return `<div class="chart-scroll" tabindex="0" role="region" aria-label="${escapeHtml(options.region)}"><div class="chart"><svg class="wide" viewBox="0 0 ${String(width)} ${String(height)}" role="img" aria-label="${escapeHtml(options.aria)}">${parts.join("")}</svg></div></div>`;
 }
 
@@ -120,6 +143,10 @@ export interface LineOptions {
   aria: string;
   /** Counts: the axis ticks stay whole numbers. */
   integer?: boolean;
+  /** What a reading is, at the start of each row of the hover tip. */
+  name: string;
+  /** How the hover tip prints a reading; whole counts and tenths by default. */
+  format?: (value: number) => string;
 }
 
 /** A small trend line with the first and last labels under it. */
@@ -166,6 +193,24 @@ export function line(options: LineOptions): string {
     );
   }
   parts.push(...dots);
+  const format = options.format ?? plain;
+  const half = count <= 1 ? plotWidth / 2 : plotWidth / (count - 1) / 2;
+  options.values.forEach((value, index) => {
+    const from = Math.max(left, x(index) - half);
+    const to = Math.min(left + plotWidth, x(index) + half);
+    parts.push(
+      hit(
+        { x: from, y: top, width: to - from, height: plotHeight },
+        [
+          options.labels[index] ?? "",
+          value === null ? `${options.name}: no reading` : `${options.name} ${format(value)}`,
+        ],
+        value === null
+          ? ""
+          : `<circle class="pt" cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="4" fill="${options.color}"/>`,
+      ),
+    );
+  });
   const first = options.labels[0];
   const last = options.labels.at(-1);
   if (first !== undefined) {

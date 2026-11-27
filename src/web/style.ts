@@ -306,6 +306,14 @@ textarea.config { min-height: 420px; font-size: 13px; }
 .chart { position: relative; }
 .chart svg { display: block; width: 100%; height: auto; overflow: visible; }
 .chart text { font-size: 12px; fill: var(--muted); font-family: var(--mono); }
+.chart .hit rect { fill: var(--ink); fill-opacity: 0; }
+.chart .hit:hover rect { fill-opacity: 0.06; }
+.chart .hit .pt { opacity: 0; }
+.chart .hit:hover .pt { opacity: 1; }
+.chart-tip { position: fixed; z-index: 60; pointer-events: none; max-width: 240px; background: var(--panel); color: var(--ink); border: 1px solid var(--ctl); border-radius: var(--r); box-shadow: var(--shadow); padding: 8px 12px; font-size: 13px; display: grid; gap: 2px; }
+.chart-tip[hidden] { display: none; }
+.chart-tip b { font-weight: 500; }
+.chart-tip div { color: var(--ink-2); font-family: var(--mono); }
 .minis { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 32px; padding-top: 16px; }
 .minis h3 { color: var(--ink-2); font-weight: 500; margin-bottom: 8px; }
 .minis svg { max-width: 420px; }
