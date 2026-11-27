@@ -28,6 +28,21 @@ On Discord, the channel you give is a request channel: the bot answers there wit
 
 With alerts on, Hephaestus posts each new notification, the items that appear under Needs you, to the chat with a link to the dashboard. Alerts start from the moment you turn them on, so earlier notifications are not sent.
 
+### What you can ask
+
+The agent you talk to is a general communicator, not only an issue filer. It decides from your message what you want:
+
+- Conversation, such as "what do you think about adding a retry to the sync?": it gives a direct answer. It files nothing and does not ask whether to file.
+- A question about the factory or a stats request, such as "what is in review right now?" or "how many PRs merged this week?": it answers from the factory's record, which it reads through the status, card list, and thread tools. When the record does not say, it says so.
+- A suggestion to improve the factory, or a request to change its skills, instructions, or settings: it discusses the idea. When you ask for the change, it shows you the diff and applies it only after you approve in the conversation (see Changes agreed in chat in [Factory](factory.md)). It does not file an issue for such a change.
+- A request for work, such as "add a --json flag to the export command in you/your-repo": it files the issue and replies as described below.
+
+It files an issue only when you ask for work or agree when it offers. It also checks the factory's status first, so it does not file a duplicate or pass a project's cap on open issues.
+
+For stats, the factory's card list gives each card's stage, PR, review rounds, and recorded merge time. The agent counts merges by that merge time, never by a card's last update, which moves for other reasons. It lists at most 100 cards, so when a count reaches the end of the list it says the count is at least that many, and it says so when a card has no recorded merge time.
+
+The agent's own instructions ship with Hephaestus in `templates/roles/planner.md`, so an update brings them to an existing install, as [Configuration](configuration.md) describes. What you add to the role's persona on the Agents page comes after them.
+
 ### Requests and their threads
 
 When you ask for work in the request channel, the factory files the issue and replies in the request's thread with the issue's link and a line such as `Tracking you/your-repo#12`. Hephaestus looks for that line, in messages from the bot only, in the channel's active threads every 30 seconds. From then on it posts the work's milestones in that thread: work started, PR opened, the review's result, merged, checks passed on the default branch, reverted, stopped, and anything that needs you, with a link to the card.

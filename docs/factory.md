@@ -52,6 +52,8 @@ The factory profiles reach Hephaestus through an MCP server on `127.0.0.1`, on t
 | lead     | `start_work`, `escalate`, `file_issue`, `get_status`, `list_cards`, `read_thread`          |
 | improver | `propose_version`, `get_config`, `get_status`, `list_cards`, `list_threads`, `read_thread` |
 
+The planner is the chat agent. It is a general communicator: it talks, answers questions about the factory from `get_status`, `list_cards`, and `read_thread` (a card carries `merged_at`, its recorded merge time, which is not its last update), and uses `file_issue` only when the user asks for work. It has no write tool besides `file_issue`.
+
 Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with the factory threads it cites as evidence; it changes nothing until the owner approves it.
 
 ### Changes agreed in chat

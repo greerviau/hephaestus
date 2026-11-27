@@ -6,7 +6,7 @@ It runs as a service on one Linux host and serves a dashboard on your LAN.
 
 ## How it works
 
-Three [Hermes Agent](https://github.com/NousResearch/hermes-agent) profiles manage the work: the planner turns requests into issues, the lead starts and unblocks work, and the improver proposes config changes. Each piece of work then runs as T3 threads on your worker machines, on two provider instances that Hephaestus sets up there: Factory Claude implements, and Factory Codex reviews.
+Three [Hermes Agent](https://github.com/NousResearch/hermes-agent) profiles manage the work: the planner is the factory's general communicator: it answers questions, discusses ideas, reports stats, and turns requests for work into issues; the lead starts and unblocks work, and the improver proposes config changes. Each piece of work then runs as T3 threads on your worker machines, on two provider instances that Hephaestus sets up there: Factory Claude implements, and Factory Codex reviews.
 
 Hephaestus sits between them. It starts and watches every thread, enforces the thread limits and the merge gate, merges and reverts, keeps the record, and serves the dashboard. Nothing it adds changes your own Hermes profile, Claude and Codex config, or T3 settings, and uninstall removes it all.
 
@@ -40,11 +40,11 @@ On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` 
 5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret card that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
 6. On **Config**, open the Models tab and then "Plan, brief, and chat", and give the factory's Hermes a model. Pick any provider Hermes supports, sign in with an API key or the code the page shows, and choose a model. The factory's Hermes home is separate from your own `~/.hermes`.
 
-7. Optionally, on **Chat**, connect a Discord or Telegram bot made for the factory. You can then ask for work in the chat, follow each request in its own thread, and get alerts when something needs you.
+7. Optionally, on **Chat**, connect a Discord or Telegram bot made for the factory. You can then talk with the factory in the chat, ask for work and follow each request in its own thread, and get alerts when something needs you.
 
 ## Use it
 
-Ask for work in the chat you connected, with Request work on **Work**, or open an issue on a factory repo and admit it under Needs you on **Work**. The dashboard shows what needs you first on **Home**: merges waiting for your approval, issues waiting for admission, improvement proposals, and workers that need a sign-in. **Pause** at the foot of the sidebar stops new factory threads.
+Talk with the factory in the chat you connected: ask what it is doing, bounce an idea off it, or ask for work. Or ask for work with Request work on **Work**, or open an issue on a factory repo and admit it under Needs you on **Work**. The dashboard shows what needs you first on **Home**: merges waiting for your approval, issues waiting for admission, improvement proposals, and workers that need a sign-in. **Pause** at the foot of the sidebar stops new factory threads.
 
 The policy decides what merges on its own. `standard` merges when checks pass and the other provider approved the exact head commit, and stops for you when a PR touches `.github/workflows/`. `strict` stops for you on every merge, and `yolo` needs no review.
 

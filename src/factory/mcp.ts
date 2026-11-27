@@ -106,7 +106,7 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_TEXT = 60_000;
 
-function cardSummary(card: Card): Record<string, unknown> {
+function cardSummary(card: Card, mergedAt: string | null): Record<string, unknown> {
   return {
     card_id: card.id,
     repo: card.repo,
@@ -117,6 +117,8 @@ function cardSummary(card: Card): Record<string, unknown> {
     reason: card.reason,
     waiting: card.waiting,
     pr: card.prNumber,
+    // The recorded merge time; null when no merge is recorded, for example before merge times were kept.
+    merged_at: mergedAt,
     head_sha: card.headSha,
     review_rounds: card.rounds,
     worker: card.workerEnv,
@@ -319,6 +321,8 @@ export class FactoryMcp {
     const server = new McpServer({ name: "hephaestus", version: "1.0.0" });
     const allowed = new Set(ROLE_TOOLS[role]);
     const { cards, intake, pipeline, store, events } = this.options;
+    const summary = (card: Card): Record<string, unknown> =>
+      cardSummary(card, cards.mergedAt(card.repo, card.prNumber));
     const register = <T extends Tool>(
       tool: T,
       description: string,
@@ -369,19 +373,19 @@ export class FactoryMcp {
     register(
       "start_work",
       "Start work on an admitted card, or restart a card escalated to you, with a brief for the engineer.",
-      async ({ card_id, brief }) => cardSummary(await pipeline.startWork(card_id, brief)),
+      async ({ card_id, brief }) => summary(await pipeline.startWork(card_id, brief)),
     );
     register(
       "escalate",
       "Hand a card to the owner with the reason. Use it when the decision belongs to the owner.",
-      async ({ card_id, reason }) => cardSummary(await pipeline.escalateToOwner(card_id, reason)),
+      async ({ card_id, reason }) => summary(await pipeline.escalateToOwner(card_id, reason)),
     );
     register(
       "get_status",
       "One card's stage, PR, and threads, or with no card_id a summary of every factory project.",
       ({ card_id }) => {
         if (card_id !== undefined) {
-          return { ...cardSummary(cards.get(card_id)), events: cards.events(card_id).slice(-20) };
+          return { ...summary(cards.get(card_id)), events: cards.events(card_id).slice(-20) };
         }
         const config = store.list().find((version) => version.state === "deployed")?.document;
         const projects = Object.keys(config?.projects ?? {}).map((repo) => ({
@@ -411,7 +415,7 @@ export class FactoryMcp {
       cards
         .list(stage === undefined ? undefined : [stage as Card["stage"]])
         .slice(0, 100)
-        .map(cardSummary),
+        .map(summary),
     );
     register(
       "list_threads",
