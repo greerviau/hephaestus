@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { beforeEach, describe, expect, it } from "vitest";
 import { ConfigValidationError, MAX_CONFIG_BYTES } from "../../src/config/document.js";
-import { ConfigStore, MAX_TITLE_LENGTH } from "../../src/config/store.js";
+import { ConfigStore, MAX_TITLE_LENGTH, NothingToRevertError } from "../../src/config/store.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "./fixtures.js";
 
@@ -154,6 +154,7 @@ describe("revert", () => {
     const first = deployed();
     const tuned = sampleConfig();
     tuned.roles.lead.persona = "Lead carefully.";
+    tuned.instructions.factory = "# Tuned instructions\n";
     const second = store.createVersion({
       document: tuned,
       author: "improver",
@@ -177,6 +178,7 @@ describe("revert", () => {
 
     expect(conflicts.map((change) => change.path)).toEqual([["roles", "lead", "persona"]]);
     expect(version.document.roles.lead.persona).toBe("Lead very carefully.");
+    expect(version.document.instructions.factory).toBe("# Factory instructions\n");
   });
 
   it("removes a value the reverted version added", () => {
@@ -195,6 +197,58 @@ describe("revert", () => {
     const { version } = store.revert(second.id, "owner");
 
     expect(Object.keys(version.document.projects)).toEqual(["octo/app"]);
+  });
+
+  it("refuses to revert a version whose changes a later version already undid, and saves nothing", () => {
+    const first = deployed();
+    const tuned = sampleConfig();
+    tuned.roles.lead.persona = "Lead carefully.";
+    const second = store.createVersion({
+      document: tuned,
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(second.id);
+    store.markDeployed(second.id);
+    expect(store.canRevert(second.id)).toBe(true);
+    const undone = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "",
+      parentId: second.id,
+    });
+    store.approve(undone.id);
+    store.markDeployed(undone.id);
+
+    expect(store.canRevert(second.id)).toBe(false);
+    expect(() => store.revert(second.id, "owner")).toThrow(NothingToRevertError);
+    expect(store.count()).toBe(3);
+  });
+
+  it("refuses to revert a version that changed nothing", () => {
+    const first = deployed();
+    const same = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "",
+      parentId: first.id,
+    });
+    store.approve(same.id);
+    store.markDeployed(same.id);
+
+    expect(store.canRevert(same.id)).toBe(false);
+    expect(() => store.revert(same.id, "owner")).toThrow(/would change nothing/);
+  });
+
+  it("tells a config with the same values in another key order from one that changed", () => {
+    const first = deployed();
+    const reordered = Object.fromEntries(Object.entries(sampleConfig()).reverse());
+    const changed = sampleConfig();
+    changed.factory.limits.threads = 9;
+
+    expect(store.isSameAs(first.id, reordered)).toBe(true);
+    expect(store.isSameAs(first.id, changed)).toBe(false);
   });
 
   it("refuses to revert a version that was never deployed", () => {
@@ -262,6 +316,8 @@ describe("review fixes", () => {
     tuned.projects["octo/app"] = {
       policy: { preset: "standard", overrides: { maxReviewRounds: 3 } },
     };
+    // A change the revert can undo, so the draft is not the current version again.
+    tuned.instructions.factory = "# Tuned instructions\n";
     const second = store.createVersion({
       document: tuned,
       author: "owner",
@@ -287,6 +343,7 @@ describe("review fixes", () => {
       "projects.octo/app.policy.overrides.maxReviewRounds",
     ]);
     expect(version.document.projects).toEqual({});
+    expect(version.document.instructions.factory).toBe("# Factory instructions\n");
   });
 
   it("treats a value a later version changed and changed back as a later decision", () => {
@@ -302,7 +359,10 @@ describe("review fixes", () => {
       store.markDeployed(version.id);
       return version;
     };
-    const second = deploy((c) => (c.roles.lead.persona = "B"), first.id);
+    const second = deploy((c) => {
+      c.roles.lead.persona = "B";
+      c.instructions.factory = "# Tuned instructions\n";
+    }, first.id);
     const third = deploy((c) => (c.roles.lead.persona = "C"), second.id);
     deploy((c) => (c.roles.lead.persona = "B"), third.id);
 
@@ -310,6 +370,7 @@ describe("review fixes", () => {
 
     expect(conflicts.map((change) => change.path.join("."))).toEqual(["roles.lead.persona"]);
     expect(version.document.roles.lead.persona).toBe("B");
+    expect(version.document.instructions.factory).toBe("# Factory instructions\n");
   });
 
   it("applies the changes it can and reports the one that would break the config", () => {

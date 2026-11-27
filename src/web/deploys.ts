@@ -33,9 +33,14 @@ export class BackgroundDeploys {
 
   /** Queues the version unless it is already running or waiting; returns without waiting for it. */
   start(id: number): void {
-    if (this.current === id || this.waiting.includes(id)) return;
+    if (this.has(id)) return;
     this.waiting.push(id);
     if (this.current === undefined) this.pumping = this.pump();
+  }
+
+  /** Whether the version is running or waiting, so starting it again would do nothing. */
+  has(id: number): boolean {
+    return this.current === id || this.waiting.includes(id);
   }
 
   status(): DeployStatus {

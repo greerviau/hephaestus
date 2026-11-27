@@ -76,6 +76,15 @@ export interface RevertResult {
   conflicts: Change[];
 }
 
+/** A revert whose draft would be the current version again, so there is nothing to save. */
+export class NothingToRevertError extends Error {
+  constructor(id: number) {
+    super(
+      `Reverting version ${String(id)} would change nothing: the current config already has none of its changes, or a later version changed them again.`,
+    );
+  }
+}
+
 export class VersionNotFoundError extends Error {
   constructor(id: number) {
     super(`Config version ${String(id)} does not exist.`);
@@ -176,6 +185,15 @@ export class ConfigStore {
     return diffValues(parent, version.document);
   }
 
+  /**
+   * Whether `document` holds what version `id` holds once both are normalized,
+   * so key order, spacing, and defaults spelled out do not count as a change.
+   */
+  isSameAs(id: number, document: unknown): boolean {
+    const normalized = normalizeConfig(structuredClone(document));
+    return diffValues(this.get(id).document, normalized).length === 0;
+  }
+
   approve(id: number): void {
     this.transition(id, "draft", "approved");
   }
@@ -220,6 +238,29 @@ export class ConfigStore {
    * alone would make the config invalid.
    */
   revert(id: number, author: string): RevertResult {
+    const { base, document, conflicts } = this.planRevert(id);
+    if (this.isSameAs(base.id, document)) throw new NothingToRevertError(id);
+    const version = this.createVersion({
+      document,
+      author,
+      message: `Revert version ${String(id)}`,
+      parentId: base.id,
+    });
+    return { version, conflicts };
+  }
+
+  /** Whether reverting `id` now would build a draft that differs from the current version. */
+  canRevert(id: number): boolean {
+    const { base, document } = this.planRevert(id);
+    return !this.isSameAs(base.id, document);
+  }
+
+  /** What {@link revert} would build, without saving it. */
+  private planRevert(id: number): {
+    base: ConfigVersion;
+    document: FactoryConfig;
+    conflicts: Change[];
+  } {
     const target = this.get(id);
     if (target.state !== "deployed" && target.state !== "superseded") {
       throw new Error(
@@ -262,13 +303,7 @@ export class ConfigStore {
       }
     }
     conflicts.push(...pending);
-    const version = this.createVersion({
-      document: document as unknown as FactoryConfig,
-      author,
-      message: `Revert version ${String(id)}`,
-      parentId: base.id,
-    });
-    return { version, conflicts };
+    return { base, document: document as unknown as FactoryConfig, conflicts };
   }
 
   /** Paths changed by the versions from `base` back to, but not including, version `id`. */

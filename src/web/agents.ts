@@ -543,7 +543,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
         )}${input("message", "What changed", {
           value: sent?.get("message") ?? "",
           hint: "Shown in the version list.",
-        })}${versionSaveBar("Save skill", current, sent)}</form>${stale ? typedText(sent) : ""}${dialogs}`,
+        })}${versionSaveBar("Save skill", current, sent, !isNew)}</form>${stale ? typedText(sent) : ""}${dialogs}`,
         crumbs(name),
       ),
     );
