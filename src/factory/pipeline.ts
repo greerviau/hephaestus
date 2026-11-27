@@ -3,11 +3,12 @@ import { projectFor, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
-import type { LaunchOptions, T3Adapter } from "../t3/adapter.js";
+import type { LaunchOptions, T3Adapter, ThreadItem, ThreadState } from "../t3/adapter.js";
+import { T3ToolError } from "../t3/connection.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import type { FactoryThreads } from "../t3/threads.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/manager.js";
-import { finalMessage } from "../workers/scripts.js";
+import { finalMessage, limitText } from "../workers/scripts.js";
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
@@ -73,7 +74,7 @@ export interface PipelineOptions {
     | "reopenIssue"
   >;
   workers: Pick<WorkerManager, "readyWorkers" | "worker">;
-  t3: Pick<T3Adapter, "cloneProject" | "projects">;
+  t3: Pick<T3Adapter, "cloneProject" | "projects" | "threadState">;
   threads: FactoryThreads;
   events: ThreadEvents;
   /** The deployed config version, which factory threads run under. */
@@ -106,6 +107,16 @@ const CHECKS_DEADLINE_MS = 60 * 60_000;
 const CHECKS_SETTLE_MS = 3 * 60_000;
 /** A thread waiting on a question runs nothing, so it holds no slot. */
 const IDLE_STATUSES = ["waiting"];
+/** A thread stopped on a usage limit whose reset time T3 does not report is tried again after this. */
+const LIMIT_RECHECK_MS = 30 * 60_000;
+/** How long a thread stopped on a usage limit waits after T3 could not be read, or a pause or cap held it. */
+const LIMIT_READ_RETRY_MS = 60_000;
+/** How long after a usage limit resets T3 gets to resume the thread itself, before Hephaestus does. */
+const LIMIT_GRACE_MS = 5 * 60_000;
+/** A completed reply this short that reports a usage limit is the provider's, not the agent's. */
+const LIMIT_REPLY_CHARS = 300;
+const LIMIT_CONTINUE =
+  "The provider's usage limit stopped this run before it finished. Continue the work where it stopped, and end with the result block as before.";
 
 /**
  * How each wait and escalation starts that the merge step records after the
@@ -245,6 +256,34 @@ export class Pipeline {
       : { environmentId, home };
   }
 
+  /**
+   * Cards that hold a thread slot with no thread running: a card with the lead, whose work is
+   * not finished, and a card whose thread stopped on a usage limit and waits for it to reset.
+   * A card with the owner is blocked on the owner, so it holds none.
+   */
+  private heldCards(environmentId?: string): number {
+    const ended = [...ENDED_STATUSES, ...IDLE_STATUSES];
+    const kinds = FACTORY_KINDS.map(() => "?").join(", ");
+    const env = environmentId === undefined ? "" : " AND c.worker_env = ?";
+    const envArgs = environmentId === undefined ? [] : [environmentId];
+    return (
+      this.options.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM cards c
+           WHERE ((c.stage = 'Escalated' AND c.escalated_to = 'lead')
+             OR (c.limit_until IS NOT NULL AND c.stage IN ('Implementing', 'Reviewing', 'Reverting')))
+           ${env}
+           AND NOT EXISTS (SELECT 1 FROM factory_threads t WHERE t.card_id = CAST(c.id AS TEXT)
+             AND t.kind IN (${kinds}) AND t.status NOT IN (${ended.map(() => "?").join(", ")}))
+           AND NOT EXISTS (SELECT 1 FROM factory_launches l WHERE l.card_id = CAST(c.id AS TEXT)
+             AND l.kind IN (${kinds}) AND l.status = 'pending')`,
+        )
+        .get(...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as {
+        n: number;
+      }
+    ).n;
+  }
+
   /** The worker a launch went to whose reply never came, if any. */
   private pendingLaunch(request: string): string | undefined {
     return (
@@ -272,7 +311,9 @@ export class Pipeline {
   /**
    * Why no factory thread may start now on `environmentId`, or undefined
    * when one may. A resume passes its own thread as `resuming`: it needs no
-   * new slot, and it is not a new start.
+   * new slot, and it is not a new start. Cards that hold a slot with no
+   * thread running count against new starts only, so work already under
+   * way can always go on.
    */
   blockedBecause(
     environmentId: string | undefined,
@@ -287,14 +328,18 @@ export class Pipeline {
     if (resuming === undefined && !replaying && this.startsToday() >= limits.startsPerDay) {
       return `The limit of ${String(limits.startsPerDay)} factory thread starts per day is reached.`;
     }
-    if (this.runningThreads(undefined, resuming, request) >= limits.threads) {
-      return `The limit of ${String(limits.threads)} running factory threads is reached.`;
+    const held = resuming === undefined ? this.heldCards() : 0;
+    if (this.runningThreads(undefined, resuming, request) + held >= limits.threads) {
+      return `The limit of ${String(limits.threads)} running factory threads is reached${heldNote(held)}.`;
     }
-    if (
-      environmentId !== undefined &&
-      this.runningThreads(environmentId, resuming, request) >= limits.threadsPerWorker
-    ) {
-      return `The worker's limit of ${String(limits.threadsPerWorker)} running factory threads is reached.`;
+    if (environmentId !== undefined) {
+      const heldHere = resuming === undefined ? this.heldCards(environmentId) : 0;
+      if (
+        this.runningThreads(environmentId, resuming, request) + heldHere >=
+        limits.threadsPerWorker
+      ) {
+        return `The worker's limit of ${String(limits.threadsPerWorker)} running factory threads is reached${heldNote(heldHere)}.`;
+      }
     }
     return undefined;
   }
@@ -326,6 +371,11 @@ export class Pipeline {
 
   private async startWorkNow(cardId: number, brief: string): Promise<Card> {
     const card = this.cards.get(cardId);
+    if (card.stage === "Admitted" && this.paused()) {
+      // The card stays admitted, so a pause starts no new work; the brief starts it on resume.
+      this.wait(this.cards.update(cardId, { brief }), "The factory is paused.");
+      return this.cards.get(cardId);
+    }
     if (card.stage === "Admitted") {
       this.cards.transition(cardId, "Implementing", "work started", { brief, waiting: null });
     } else if (card.stage === "Escalated" && card.escalatedTo === "lead") {
@@ -337,6 +387,8 @@ export class Pipeline {
         reason: null,
         waiting: null,
         ownerAction: null,
+        limitUntil: null,
+        limitRun: null,
         rounds: 0,
         // A review that was under way is dropped; the restarted work gets a fresh one.
         reviewThread: null,
@@ -484,6 +536,12 @@ export class Pipeline {
   private async advance(card: Card): Promise<void> {
     switch (card.stage) {
       case "Admitted": {
+        if (this.paused()) return;
+        // The lead started the card while the factory was paused.
+        if (card.brief !== null) {
+          await this.startWorkNow(card.id, card.brief);
+          return;
+        }
         const minutes = this.options.config()?.document.factory.autoStartMinutes ?? 0;
         const age = this.now().getTime() - Date.parse(card.createdAt);
         if (minutes > 0 && age >= minutes * 60_000) {
@@ -495,12 +553,16 @@ export class Pipeline {
         return;
       }
       case "Implementing":
-        if (card.pendingMessage !== null) await this.resume(card);
+        if (card.limitUntil !== null && card.implementThread !== null) {
+          await this.afterLimit(card, card.implementThread);
+        } else if (card.pendingMessage !== null) await this.resume(card);
         else if (card.implementThread === null) await this.launchImplement(card);
         else await this.afterImplement(card);
         return;
       case "Reviewing":
-        if (card.reviewThread === null) await this.launchReview(card, card.prNumber);
+        if (card.limitUntil !== null && card.reviewThread !== null) {
+          await this.afterLimit(card, card.reviewThread);
+        } else if (card.reviewThread === null) await this.launchReview(card, card.prNumber);
         else await this.afterReview(card);
         return;
       case "Merging":
@@ -556,7 +618,10 @@ export class Pipeline {
     }
     const candidates = ready
       .filter((worker) => worker.home !== null)
-      .map((worker) => ({ worker, load: this.runningThreads(worker.environmentId) }))
+      .map((worker) => ({
+        worker,
+        load: this.runningThreads(worker.environmentId) + this.heldCards(worker.environmentId),
+      }))
       .sort((a, b) => a.load - b.load || a.worker.label.localeCompare(b.worker.label));
     const best = candidates[0]?.worker;
     if (best?.home === undefined || best.home === null) return "No worker is ready.";
@@ -819,7 +884,10 @@ export class Pipeline {
       result = { status: "waiting", text: "", itemId: `waiting-${thread.updatedAt}` };
     } else if (ENDED_STATUSES.has(thread.status)) {
       const items = this.options.events.items(card.workerEnv, threadId);
-      const last = items.filter((item) => item.type === "assistant_message").at(-1);
+      // An error counts, so a run that fails after an earlier one replied is a new result.
+      const last = items
+        .filter((item) => item.type === "assistant_message" || item.type === "error")
+        .at(-1);
       result = {
         status: thread.status,
         text: finalMessage(items) ?? "",
@@ -828,6 +896,118 @@ export class Pipeline {
     }
     if (result === undefined || card.handled[threadId] === result.itemId) return undefined;
     return result;
+  }
+
+  /**
+   * When the thread's result is the provider's usage limit, the card keeps its stage and waits
+   * for the limit to reset instead of escalating, and this returns true. T3 can snooze such a
+   * thread until the reset and resume it then, so the reset time comes from T3 when it has one.
+   */
+  private async waitOnLimit(
+    card: Card,
+    threadId: string,
+    provider: Provider,
+    result: { status: string; text: string },
+    done: { handled: Record<string, string> },
+  ): Promise<boolean> {
+    if (card.workerEnv === null) return false;
+    const limit =
+      result.status === "completed"
+        ? replyLimit(result.text)
+        : runLimit(this.options.events.items(card.workerEnv, threadId));
+    if (limit === undefined) return false;
+    let state: ThreadState | undefined;
+    try {
+      state = await this.options.t3.threadState(card.workerEnv, threadId);
+    } catch (error) {
+      console.error(`Reading thread ${threadId} after its usage limit failed`, error);
+    }
+    const now = this.now().getTime();
+    const reset = state?.snoozedUntil == null ? Number.NaN : Date.parse(state.snoozedUntil);
+    const known = Number.isFinite(reset) && reset > now;
+    const name = provider === "claude" ? "Factory Claude" : "Factory Codex";
+    const why = known
+      ? `${name} reached its usage limit, which resets at ${utcMinute(reset)}; the thread goes on after that.`
+      : `${name} reached its usage limit; Hephaestus tries the thread again every ${String(LIMIT_RECHECK_MS / 60_000)} minutes until the limit resets.`;
+    const updated = this.cards.update(card.id, {
+      ...done,
+      limitUntil: new Date(known ? reset + LIMIT_GRACE_MS : now + LIMIT_RECHECK_MS).toISOString(),
+      limitRun: state?.latestRunId ?? null,
+    });
+    this.wait(updated, `${why} ${limit}`);
+    return true;
+  }
+
+  /**
+   * Once a thread stopped on a usage limit is due, follows it again if T3 resumed it, and
+   * otherwise continues it, under the same checks as any resume.
+   */
+  private async afterLimit(card: Card, threadId: string): Promise<void> {
+    const env = card.workerEnv;
+    const due = card.limitUntil;
+    if (env === null || due === null) return;
+    const now = this.now().getTime();
+    if (Date.parse(due) > now) return;
+    let state: ThreadState;
+    try {
+      state = await this.options.t3.threadState(env, threadId);
+    } catch (error) {
+      if (error instanceof T3ToolError && error.code === "thread_not_found") {
+        return this.escalate(card, "lead", "T3 no longer has the thread that hit the usage limit");
+      }
+      console.error(`Reading thread ${threadId} after its usage limit failed`, error);
+      this.cards.update(card.id, {
+        limitUntil: new Date(now + LIMIT_READ_RETRY_MS).toISOString(),
+      });
+      return;
+    }
+    const stopped =
+      ENDED_STATUSES.has(state.status) &&
+      (card.limitRun === null || state.latestRunId === card.limitRun);
+    if (!stopped) {
+      // The follower stops at a failed run, so the thread goes back on its list to pick up T3's.
+      this.options.events.setStatus(env, threadId, "starting");
+      this.cards.update(card.id, { limitUntil: null, limitRun: null, waiting: null });
+      this.cards.event(card.id, "limit:resumed", threadId);
+      return;
+    }
+    const snooze = state.snoozedUntil === null ? Number.NaN : Date.parse(state.snoozedUntil);
+    if (Number.isFinite(snooze) && snooze + LIMIT_GRACE_MS > now) {
+      this.cards.update(card.id, { limitUntil: new Date(snooze + LIMIT_GRACE_MS).toISOString() });
+      return;
+    }
+    await this.serialLaunch(async () => {
+      const current = this.cards.get(card.id);
+      if (current.limitUntil !== due) return;
+      const worker = this.pickWorker(current);
+      const blocked = !this.works(current)
+        ? `${card.repo} is no longer a factory project.`
+        : typeof worker === "string"
+          ? worker
+          : this.blockedBecause(env, threadId);
+      if (blocked !== undefined) {
+        // Read T3 again a minute later, not on every pass, while a pause or cap holds the send.
+        this.wait(
+          this.cards.update(card.id, {
+            limitUntil: new Date(now + LIMIT_READ_RETRY_MS).toISOString(),
+          }),
+          blocked,
+        );
+        return;
+      }
+      const digest = createHash("sha256")
+        .update(`${threadId}\n${String(current.limitRun)}\n${due}`)
+        .digest("hex")
+        .slice(0, 16);
+      await this.options.threads.send(
+        env,
+        threadId,
+        LIMIT_CONTINUE,
+        `hephaestus-limit-${String(card.id)}-${digest}`,
+      );
+      this.cards.update(card.id, { limitUntil: null, limitRun: null, waiting: null });
+      this.cards.event(card.id, "limit:continued", threadId);
+    });
   }
 
   /** Marks a thread's result handled, as part of the change it caused. */
@@ -848,11 +1028,14 @@ export class Pipeline {
     if (result.status === "waiting") {
       return this.escalate(card, "lead", "the implement thread asked a question", done);
     }
+    const implementer = card.implementer ?? "claude";
     if (result.status !== "completed") {
+      if (await this.waitOnLimit(card, thread, implementer, result, done)) return;
       return this.escalate(card, "lead", `the implement thread ended ${result.status}`, done);
     }
     const parsed = parseImplementResult(result.text);
     if (parsed === undefined) {
+      if (await this.waitOnLimit(card, thread, implementer, result, done)) return;
       return this.escalate(card, "lead", "the implement thread gave no valid result block", done);
     }
     if (parsed.status === "blocked") {
@@ -974,11 +1157,14 @@ export class Pipeline {
     if (result.status === "waiting") {
       return this.escalate(card, "lead", "the review thread asked a question", done);
     }
+    const reviewer = other(card.implementer ?? "claude");
     if (result.status !== "completed") {
+      if (await this.waitOnLimit(card, thread, reviewer, result, done)) return;
       return this.escalate(card, "lead", `the review thread ended ${result.status}`, done);
     }
     const review = parseReviewResult(result.text);
     if (review === undefined) {
+      if (await this.waitOnLimit(card, thread, reviewer, result, done)) return;
       return this.escalate(card, "lead", "the review thread gave no valid result block", done);
     }
     const author = card.implementer ?? "claude";
@@ -1353,6 +1539,10 @@ export class Pipeline {
         await this.launchReview(card, pr.number);
         return;
       }
+      if (card.limitUntil !== null) {
+        await this.afterLimit(card, card.reviewThread);
+        return;
+      }
       const result = this.newResult(card, card.reviewThread);
       if (result === undefined) {
         this.wait(card, "the revert PR is in review");
@@ -1360,6 +1550,13 @@ export class Pipeline {
       }
       const done = this.handled(card, card.reviewThread, result.itemId);
       const review = result.status === "completed" ? parseReviewResult(result.text) : undefined;
+      const reviewer = other(card.implementer ?? "claude");
+      if (
+        review === undefined &&
+        (await this.waitOnLimit(card, card.reviewThread, reviewer, result, done))
+      ) {
+        return;
+      }
       if (review?.verdict !== "approve" || review.headSha !== pr.headSha) {
         return this.escalate(
           card,
@@ -1665,6 +1862,8 @@ export class Pipeline {
       escalatedTo: to,
       reason,
       waiting: null,
+      limitUntil: null,
+      limitRun: null,
     });
     if (to === "owner") {
       this.cards.notify(
@@ -1793,6 +1992,40 @@ End your final message with this block, filled in:
 ${RESULT_FENCE}hephaestus-result
 {"verdict": "approve" or "changes", "headSha": "${headSha}", "findings": "<numbered findings, each with file:line and the fix; empty when you approve>"}
 ${RESULT_FENCE}`;
+}
+
+/**
+ * The provider's message when the thread's latest run stopped on a usage limit: its last
+ * message or error is an error reporting one. A message after the error starts a new run.
+ */
+function runLimit(items: ThreadItem[]): string | undefined {
+  const last = items
+    .filter((item) => ["user_message", "assistant_message", "error"].includes(item.type))
+    .at(-1);
+  return last?.type === "error" ? limitText(last.text) : undefined;
+}
+
+/**
+ * The reply when it is the provider's own short usage-limit notice. Wording about other rate
+ * limits or quotas, such as GitHub's, is the agent's report and goes to the lead.
+ */
+function replyLimit(text: string): string | undefined {
+  const trimmed = text.trim();
+  return trimmed.length <= LIMIT_REPLY_CHARS &&
+    /usage limit|hit your (\w+ )?limit|limit reached|\blimit\b[^\n]{0,40}\bresets?\b/i.test(trimmed)
+    ? trimmed
+    : undefined;
+}
+
+/** Says how many of the slots a thread cap counts are held by cards with no thread running. */
+function heldNote(held: number): string {
+  if (held === 0) return "";
+  return `, counting ${held === 1 ? "1 task" : `${String(held)} tasks`} with the lead or waiting for a usage limit to reset`;
+}
+
+/** A time as "2026-11-27 16:28 UTC". */
+function utcMinute(ms: number): string {
+  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 }
 
 /** A card whose merge is in flight: merging, validating, or reverting it. */

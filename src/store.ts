@@ -230,6 +230,9 @@ const MIGRATIONS = [
    );`,
   // The newest card event the thread's catch-up covered; 0 until the catch-up is sent.
   `ALTER TABLE chat_threads ADD COLUMN after_event INTEGER NOT NULL DEFAULT 0;`,
+  // A card whose thread stopped on a provider's usage limit waits for it to reset.
+  `ALTER TABLE cards ADD COLUMN limit_until TEXT;
+   ALTER TABLE cards ADD COLUMN limit_run TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

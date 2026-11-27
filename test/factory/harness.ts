@@ -14,6 +14,7 @@ import { Intake } from "../../src/factory/intake.js";
 import { Pipeline } from "../../src/factory/pipeline.js";
 import { openStore } from "../../src/store.js";
 import type { LaunchOptions, T3Adapter } from "../../src/t3/adapter.js";
+import { T3ToolError } from "../../src/t3/connection.js";
 import { ThreadEvents } from "../../src/t3/events.js";
 import { FactoryThreads } from "../../src/t3/threads.js";
 import type { WorkerManager } from "../../src/workers/manager.js";
@@ -150,6 +151,30 @@ export class FakeT3 {
     this.sends.push({ threadId, message });
     return Promise.resolve();
   }
+  /** What T3 reports for each thread; a thread not listed failed in run r1 and is not snoozed. */
+  states = new Map<
+    string,
+    { status: string; latestRunId: string | null; snoozedUntil: string | null }
+  >();
+  /** Reads of T3's thread state that fail before one goes through. */
+  stateFailures = 0;
+  /** Threads T3 no longer has. */
+  gone = new Set<string>();
+  threadState(
+    _environmentId: string,
+    threadId: string,
+  ): Promise<{ status: string; latestRunId: string | null; snoozedUntil: string | null }> {
+    if (this.stateFailures > 0) {
+      this.stateFailures -= 1;
+      return Promise.reject(new Error("the worker is offline"));
+    }
+    if (this.gone.has(threadId)) {
+      return Promise.reject(new T3ToolError("t3_thread_read", "thread_not_found", "no thread"));
+    }
+    return Promise.resolve(
+      this.states.get(threadId) ?? { status: "failed", latestRunId: "r1", snoozedUntil: null },
+    );
+  }
   cloneProject(): Promise<string> {
     return Promise.resolve("proj");
   }
@@ -171,6 +196,8 @@ export interface Harness {
   setClock(ms: number): void;
   /** Ends a thread with a final assistant message. */
   finish(threadId: string, text: string, status?: string): void;
+  /** Ends a thread on the provider's usage limit, as T3 reports it: failed, with an error item. */
+  limit(threadId: string, text?: string): void;
 }
 
 export function harness(configure: (config: FactoryConfig) => void = () => undefined): Harness {
@@ -233,6 +260,19 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
         },
       ]);
       events.setStatus(environmentId, threadId, status);
+    },
+    limit: (threadId, text = "You've hit your usage limit. Try again at 4:27 PM.") => {
+      item += 1;
+      events.upsertItems("w1", threadId, [
+        {
+          itemId: `error-${String(item)}`,
+          position: item,
+          type: "error",
+          status: "failed",
+          text,
+        },
+      ]);
+      events.setStatus("w1", threadId, "failed");
     },
   };
 }

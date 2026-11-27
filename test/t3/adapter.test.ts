@@ -136,6 +136,40 @@ describe("T3Adapter", () => {
       clientRequestId: "card-7-round-2",
     });
   });
+
+  it("reads a thread's status, latest run, and snooze", async () => {
+    fake.tools.set("t3_thread_read", () => ({
+      thread: {
+        threadId: "t1",
+        status: "failed",
+        latestRunId: "r1",
+        snoozed: true,
+        snoozedUntil: "2026-11-27T16:28:00.000Z",
+      },
+      items: [],
+      nextPosition: 0,
+      hasMore: false,
+    }));
+
+    expect(await t3.threadState("w1", "t1")).toEqual({
+      status: "failed",
+      latestRunId: "r1",
+      snoozedUntil: "2026-11-27T16:28:00.000Z",
+    });
+    expect(fake.calls[0]?.args).toMatchObject({ environmentId: "w1", threadId: "t1", limit: 1 });
+
+    fake.tools.set("t3_thread_read", () => ({
+      thread: { threadId: "t1", status: "running", snoozed: false, snoozedUntil: null },
+      items: [],
+      nextPosition: 0,
+      hasMore: false,
+    }));
+    expect(await t3.threadState("w1", "t1")).toEqual({
+      status: "running",
+      latestRunId: null,
+      snoozedUntil: null,
+    });
+  });
 });
 
 describe("T3Adapter.read", () => {
