@@ -269,6 +269,8 @@ const MIGRATIONS = [
    ALTER TABLE factory_threads ADD COLUMN cost_usd REAL;`,
   // The run that wrote each item, so a thread's result is read from its latest run alone.
   `ALTER TABLE thread_items ADD COLUMN run_id TEXT;`,
+  // The run T3 last reported for each factory thread, so a run that wrote no item is still told apart.
+  `ALTER TABLE factory_threads ADD COLUMN latest_run_id TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

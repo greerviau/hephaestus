@@ -131,22 +131,27 @@ export class ThreadFollower {
     const { environmentId, threadId } = thread;
     const before = this.events.thread(environmentId, threadId)?.status ?? thread.status;
     await this.t3.wait(environmentId, threadId, this.waitMs);
-    let status = await this.readAll(environmentId, threadId);
+    let last = await this.readAll(environmentId, threadId);
     // A run can end between pages, leaving an item from an earlier page stored
     // as running. One more pass from the oldest open item settles it.
-    if (ENDED_STATUSES.has(status) && this.hasOpenItems(environmentId, threadId)) {
-      status = await this.readAll(environmentId, threadId);
+    if (ENDED_STATUSES.has(last.status) && this.hasOpenItems(environmentId, threadId)) {
+      last = await this.readAll(environmentId, threadId);
     }
     // A send may have reset the status to starting while this read ran; that wins.
-    this.events.setStatusIf(environmentId, threadId, before, status);
+    this.events.setStatusIf(environmentId, threadId, before, last.status, last.latestRunId);
   }
 
-  private async readAll(environmentId: string, threadId: string): Promise<string> {
+  private async readAll(
+    environmentId: string,
+    threadId: string,
+  ): Promise<{ status: string; latestRunId: string | null }> {
     let after = this.events.resumePosition(environmentId, threadId);
     for (;;) {
       const page = await this.t3.read(environmentId, threadId, after);
       this.events.upsertItems(environmentId, threadId, page.items);
-      if (!page.hasMore || page.nextPosition <= after) return page.status;
+      if (!page.hasMore || page.nextPosition <= after) {
+        return { status: page.status, latestRunId: page.latestRunId };
+      }
       after = page.nextPosition;
     }
   }

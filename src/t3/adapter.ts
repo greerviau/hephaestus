@@ -51,6 +51,8 @@ export interface ThreadItem {
 
 export interface ThreadPage {
   status: string;
+  /** The thread's latest run, as T3 reports it with the page. */
+  latestRunId: string | null;
   items: ThreadItem[];
   nextPosition: number;
   hasMore: boolean;
@@ -159,7 +161,12 @@ export class T3Adapter {
       afterPosition,
       limit: 100,
       maxCharsPerItem: 20000,
-    })) as { thread: { status: string }; items: RawItem[]; nextPosition: number; hasMore: boolean };
+    })) as {
+      thread: { status: string; latestRunId?: string | null };
+      items: RawItem[];
+      nextPosition: number;
+      hasMore: boolean;
+    };
     const items: ThreadItem[] = [];
     for (const item of result.items) {
       let text = item.text ?? item.title ?? "";
@@ -193,6 +200,7 @@ export class T3Adapter {
     }
     return {
       status: result.thread.status,
+      latestRunId: result.thread.latestRunId ?? null,
       items,
       nextPosition: result.nextPosition,
       hasMore: result.hasMore,

@@ -1791,6 +1791,78 @@ describe("Pipeline usage-limit waits", () => {
     expect(h.cards.get(id).reason).toMatch(/ended cancelled/);
   });
 
+  it("hands the lead a resumed run T3 reports cancelled before it wrote any item", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.limit("t1", undefined, "r1");
+    await h.pipeline.tick();
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(1);
+    // Run r2 ends cancelled, and T3's activity page has no item of its own.
+    h.events.setStatusIf("w1", "t1", "starting", "cancelled", "r2");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+  });
+
+  it("sends no continue when the factory is paused, or T3 snoozes the thread, while T3 is read", async () => {
+    for (const change of ["pause", "snooze"] as const) {
+      const h = harness();
+      const id = admitted(h);
+      await h.pipeline.startWork(id, "brief");
+      h.limit("t1", undefined, "r1");
+      await h.pipeline.tick();
+      h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+      const read = h.t3.threadState.bind(h.t3);
+      let reads = 0;
+      h.t3.threadState = (environmentId: string, threadId: string) => {
+        reads += 1;
+        // The second read is the one right before the send.
+        if (reads === 2 && change === "pause") h.pipeline.setPaused(true);
+        if (reads === 2 && change === "snooze") {
+          h.t3.states.set(threadId, {
+            status: "failed",
+            latestRunId: "r1",
+            snoozedUntil: "2026-11-25T13:00:00Z",
+          });
+        }
+        return read(environmentId, threadId);
+      };
+
+      await h.pipeline.tick();
+
+      expect(h.t3.sends).toHaveLength(0);
+      if (change === "snooze") {
+        expect(h.cards.get(id).limitUntil).toBe("2026-11-25T13:05:00.000Z");
+      }
+    }
+  });
+
+  it("waits on Codex's retry error and a bare 429, and escalates GitHub's rate limit", async () => {
+    const cases = [
+      ["error", "exceeded retry limit, last status: 429 Too Many Requests", "wait"],
+      ["error", "429 Too Many Requests", "wait"],
+      ["error", "GitHub API rate limit reached", "escalate"],
+      ["reply", "GitHub API rate limit reached", "escalate"],
+    ] as const;
+    for (const [end, text, outcome] of cases) {
+      const h = harness();
+      const id = admitted(h);
+      await h.pipeline.startWork(id, "brief");
+      if (end === "error") h.limit("t1", text);
+      else h.finish("t1", text);
+      await h.pipeline.tick();
+      const card = h.cards.get(id);
+      if (outcome === "wait") {
+        expect(card, text).toMatchObject({ stage: "Implementing" });
+        expect(card.limitUntil, text).not.toBeNull();
+      } else {
+        expect(card, `${end}: ${text}`).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+      }
+    }
+  });
+
   it("escalates another service's rate limit that resets, as a thread error or a reply", async () => {
     for (const end of ["error", "reply"] as const) {
       const h = harness();

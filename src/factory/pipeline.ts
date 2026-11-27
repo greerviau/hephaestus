@@ -916,8 +916,13 @@ export class Pipeline {
       result = { status: "waiting", text: "", itemId: `waiting-${thread.updatedAt}` };
     } else if (ENDED_STATUSES.has(thread.status)) {
       // Only the latest run counts, so a run that ends with no output of its own is a new
-      // result, not the earlier run's handled one.
-      const items = latestRun(this.options.events.items(card.workerEnv, threadId));
+      // result, not the earlier run's handled one. T3's run id for the thread names that run
+      // even when it wrote no item.
+      const items = latestRun(
+        this.options.events.items(card.workerEnv, threadId),
+        thread.latestRunId,
+      );
+      const run = thread.latestRunId ?? items.at(-1)?.runId ?? null;
       // An error counts, so a run that fails after an earlier one replied is a new result.
       const last = items
         .filter((item) => item.type === "assistant_message" || item.type === "error")
@@ -925,7 +930,7 @@ export class Pipeline {
       result = {
         status: thread.status,
         text: finalMessage(items) ?? "",
-        itemId: last?.itemId ?? `ended-${items.at(-1)?.runId ?? thread.updatedAt}`,
+        itemId: last?.itemId ?? `ended-${run ?? thread.updatedAt}`,
       };
     }
     if (result === undefined || card.handled[threadId] === result.itemId) return undefined;
@@ -945,7 +950,10 @@ export class Pipeline {
     done: { handled: Record<string, string> },
   ): Promise<boolean> {
     if (card.workerEnv === null) return false;
-    const items = latestRun(this.options.events.items(card.workerEnv, threadId));
+    const items = latestRun(
+      this.options.events.items(card.workerEnv, threadId),
+      this.options.events.thread(card.workerEnv, threadId)?.latestRunId,
+    );
     const limit = result.status === "completed" ? replyLimit(result.text) : runLimit(items);
     if (limit === undefined) return false;
     let state: ThreadState | undefined;
@@ -1005,8 +1013,34 @@ export class Pipeline {
       return;
     }
     await this.serialLaunch(async () => {
+      if (this.cards.get(card.id).limitUntil !== due) return;
+      // T3 may have resumed or snoozed the thread while the send waited in the queue.
+      let latest: ThreadState;
+      try {
+        latest = await this.options.t3.threadState(env, threadId);
+      } catch (error) {
+        console.error(`Reading thread ${threadId} after its usage limit failed`, error);
+        this.cards.update(card.id, {
+          limitUntil: new Date(now + LIMIT_READ_RETRY_MS).toISOString(),
+        });
+        return;
+      }
+      // Everything below runs without awaiting until the send, so a pause or a cap that lands
+      // during the read above is seen.
       const current = this.cards.get(card.id);
       if (current.limitUntil !== due) return;
+      if (!stoppedOnLimit(latest, current.limitRun)) {
+        this.followResumed(card.id, env, threadId);
+        return;
+      }
+      const latestSnooze =
+        latest.snoozedUntil === null ? Number.NaN : Date.parse(latest.snoozedUntil);
+      if (Number.isFinite(latestSnooze) && latestSnooze + LIMIT_GRACE_MS > now) {
+        this.cards.update(card.id, {
+          limitUntil: new Date(latestSnooze + LIMIT_GRACE_MS).toISOString(),
+        });
+        return;
+      }
       const worker = this.pickWorker(current);
       const blocked = !this.works(current)
         ? `${card.repo} is no longer a factory project.`
@@ -1021,22 +1055,6 @@ export class Pipeline {
           }),
           blocked,
         );
-        return;
-      }
-      // T3 may have resumed the thread while the send waited in the queue.
-      let latest: ThreadState;
-      try {
-        latest = await this.options.t3.threadState(env, threadId);
-      } catch (error) {
-        console.error(`Reading thread ${threadId} after its usage limit failed`, error);
-        this.cards.update(card.id, {
-          limitUntil: new Date(now + LIMIT_READ_RETRY_MS).toISOString(),
-        });
-        return;
-      }
-      if (this.cards.get(card.id).limitUntil !== due) return;
-      if (!stoppedOnLimit(latest, current.limitRun)) {
-        this.followResumed(card.id, env, threadId);
         return;
       }
       const digest = createHash("sha256")
@@ -2078,17 +2096,22 @@ function stoppedOnLimit(state: ThreadState, limitRun: string | null): boolean {
 }
 
 /** The items of the thread's latest run, or every item when T3 reported no runs. */
-function latestRun(items: ThreadItem[]): ThreadItem[] {
-  const run = items.at(-1)?.runId;
+function latestRun(items: ThreadItem[], latestRunId?: string | null): ThreadItem[] {
+  const run = latestRunId ?? items.at(-1)?.runId;
   return run === undefined || run === null ? items : items.filter((item) => item.runId === run);
 }
 
 /**
- * The providers' own usage-limit wording: Claude Code's "You've hit your limit" and "5-hour
- * limit reached", and Codex's "You've hit your usage limit". Wording about other rate limits
- * or quotas, such as GitHub's, is the agent's report and goes to the lead.
+ * The providers' own usage-limit wording: Claude Code's "You've hit your limit", "5-hour limit
+ * reached", and "Claude API rate limit reached", and Codex's "You've hit your usage limit" and
+ * "exceeded retry limit, last status: 429". Another service's limit, such as "GitHub API rate
+ * limit reached", is the agent's report and goes to the lead.
  */
-const PROVIDER_LIMIT = /usage limit|hit your (\w+ )?limit|limit reached/i;
+const PROVIDER_LIMIT =
+  /usage limit|hit your (\w+ )?limit|\b(\d+-hour|weekly|daily|session|opus)( \w+)? limit reached|\b(claude|anthropic|codex|openai)\b[^\n]{0,40}\brate limit|exceeded retry limit, last status: 429/i;
+
+/** A bare 429, which names no service; as a thread's error it comes from the provider. */
+const BARE_429 = /^429 too many requests\.?$/i;
 
 /**
  * The provider's message when the thread's latest run stopped on a usage limit: its last
@@ -2099,7 +2122,9 @@ function runLimit(items: ThreadItem[]): string | undefined {
     .filter((item) => ["user_message", "assistant_message", "error"].includes(item.type))
     .at(-1);
   const text = last?.text.trim() ?? "";
-  return last?.type === "error" && PROVIDER_LIMIT.test(text) ? text.slice(0, 300) : undefined;
+  return last?.type === "error" && (PROVIDER_LIMIT.test(text) || BARE_429.test(text))
+    ? text.slice(0, 300)
+    : undefined;
 }
 
 /** The reply when it is the provider's own short usage-limit notice. */

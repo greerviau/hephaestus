@@ -42,6 +42,8 @@ export interface FactoryThread {
 export interface StoredThread extends FactoryThread {
   kind: string;
   status: string;
+  /** The run T3 last reported for the thread, when a read has seen one. */
+  latestRunId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -56,6 +58,7 @@ interface ThreadRow {
   card_id: string | null;
   kind: string;
   status: string;
+  latest_run_id: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -71,6 +74,7 @@ function toThread(row: ThreadRow): StoredThread {
     cardId: row.card_id,
     kind: row.kind,
     status: row.status,
+    latestRunId: row.latest_run_id,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -168,13 +172,22 @@ export class ThreadEvents {
       .run(status, this.now().toISOString(), environmentId, threadId);
   }
 
-  /** Sets the status only if it is still `expected`, and reports whether it did. */
-  setStatusIf(environmentId: string, threadId: string, expected: string, status: string): boolean {
+  /**
+   * Sets the status only if it is still `expected`, and reports whether it did. A run id
+   * T3 reported with the status is kept with it.
+   */
+  setStatusIf(
+    environmentId: string,
+    threadId: string,
+    expected: string,
+    status: string,
+    latestRunId: string | null = null,
+  ): boolean {
     const result = this.db
       .prepare(
-        "UPDATE factory_threads SET status = ?, updated_at = ? WHERE environment_id = ? AND thread_id = ? AND status = ?",
+        "UPDATE factory_threads SET status = ?, latest_run_id = COALESCE(?, latest_run_id), updated_at = ? WHERE environment_id = ? AND thread_id = ? AND status = ?",
       )
-      .run(status, this.now().toISOString(), environmentId, threadId, expected);
+      .run(status, latestRunId, this.now().toISOString(), environmentId, threadId, expected);
     return result.changes > 0;
   }
 
