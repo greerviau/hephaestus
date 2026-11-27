@@ -517,3 +517,50 @@ describe("GitHub", () => {
     ]);
   });
 });
+
+describe("GitHub.commentOnIssue", () => {
+  /** A gh that answers the issue read with `issue`, or a 404, and records every call. */
+  function fake(issue: object | undefined): {
+    exec: CommandRun;
+    calls: string[][];
+    inputs: string[];
+  } {
+    const calls: string[][] = [];
+    const inputs: string[] = [];
+    const exec: CommandRun = (_file, args, _cwd, _timeout, input) => {
+      calls.push(args);
+      if (args.includes("POST")) {
+        inputs.push(input ?? "");
+        return Promise.resolve("https://github.com/octo/app/issues/7#issuecomment-1\n");
+      }
+      return issue === undefined
+        ? Promise.reject(new Error("gh api failed: gh: Not Found (HTTP 404)"))
+        : Promise.resolve(JSON.stringify(issue));
+    };
+    return { exec, calls, inputs };
+  }
+
+  it("posts the body on stdin and returns the comment's URL", async () => {
+    const gh = fake({ number: 7 });
+    const url = await new GitHub("gh", gh.exec).commentOnIssue("octo/app", 7, "Hello $(rm -rf /)");
+    expect(url).toBe("https://github.com/octo/app/issues/7#issuecomment-1");
+    expect(gh.inputs).toEqual([JSON.stringify({ body: "Hello $(rm -rf /)" })]);
+    expect(gh.calls.flat().join(" ")).not.toContain("Hello");
+  });
+
+  it("posts nothing for an issue that does not exist", async () => {
+    const gh = fake(undefined);
+    await expect(new GitHub("gh", gh.exec).commentOnIssue("octo/app", 9, "Hi")).rejects.toThrow(
+      "octo/app#9 does not exist",
+    );
+    expect(gh.inputs).toEqual([]);
+  });
+
+  it("posts nothing for a pull request's number", async () => {
+    const gh = fake({ number: 7, pull_request: { url: "x" } });
+    await expect(new GitHub("gh", gh.exec).commentOnIssue("octo/app", 7, "Hi")).rejects.toThrow(
+      "is a pull request",
+    );
+    expect(gh.inputs).toEqual([]);
+  });
+});

@@ -8,6 +8,10 @@ Every two minutes Hephaestus lists each factory project's open issues with `gh`.
 
 A closed issue leaves the owner's queue and comes back if it is reopened, and closing an admitted issue before any thread starts abandons its task. `gh` lists at most 200 open issues, so an issue missing from a full list is read on its own: 10 such reads per poll split among the projects, with at least one for each, oldest first. The intake reads time out after 30 seconds, so a stalled project delays the next poll by a few minutes at most. Writes to GitHub take no timeout, because one that outlived it might still have happened.
 
+### Comments
+
+`comment_issue(repo, issue_number, body)` posts a comment on an existing issue of a factory project and returns the comment's URL. It uses the same `gh` account and the same project list as `file_issue`, and the communicator has it. A repo that is not a factory project is refused with an error that names the repo. An empty or whitespace-only body is refused before any call to GitHub. Hephaestus reads the number first, and a number that does not exist or that belongs to a pull request is refused, so nothing is posted. Commenting does not record an issue, create a task, count toward `openIssueCap`, or change the issue's labels or state, and it takes no part in the admission steps that `file_issue` goes through.
+
 ### Attachments
 
 `file_issue` takes an optional `attachments` list of absolute file paths for files a requester sent in a chat, such as an image, which Hermes caches on the Hermes host. Calls without it behave as before.
@@ -49,13 +53,13 @@ After a merge, Hephaestus watches the merge commit's checks on the default branc
 
 The factory profiles reach Hephaestus through an MCP server on `127.0.0.1`, on the port after the dashboard's. Each profile has its own bearer token, kept in `~/.hephaestus/secrets.json` and in the profile's `.env`, and each role gets only its tools:
 
-| Role         | Tools                                                                                                      |
-| ------------ | ---------------------------------------------------------------------------------------------------------- |
-| communicator | `file_issue`, `get_status`, `list_tasks`, `read_thread`, the stats tools below, and the change tools below |
-| lead         | `start_work`, `escalate`, `file_issue`, `get_status`, `list_tasks`, `read_thread`                          |
-| improver     | `propose_version`, `get_config`, `get_status`, `list_tasks`, `list_threads`, `read_thread`                 |
+| Role         | Tools                                                                                                                       |
+| ------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| communicator | `file_issue`, `comment_issue`, `get_status`, `list_tasks`, `read_thread`, the stats tools below, and the change tools below |
+| lead         | `start_work`, `escalate`, `file_issue`, `get_status`, `list_tasks`, `read_thread`                                           |
+| improver     | `propose_version`, `get_config`, `get_status`, `list_tasks`, `list_threads`, `read_thread`                                  |
 
-The communicator is the factory's chat agent. It is general-purpose: it talks, answers questions about the factory from `get_status`, `list_tasks`, and `read_thread` (a task carries `merged_at`, its recorded merge time, which is not its last update), and uses `file_issue` only when the user asks for work. Besides `file_issue` its only write tools are the change tools below.
+The communicator is the factory's chat agent. It is general-purpose: it talks, answers questions about the factory from `get_status`, `list_tasks`, and `read_thread` (a task carries `merged_at`, its recorded merge time, which is not its last update), uses `file_issue` only when the user asks for work, and uses `comment_issue` only when the user asks for a comment on an existing issue. Besides those two its only write tools are the change tools below.
 
 Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with the factory threads it cites as evidence; it changes nothing until the owner approves it.
 

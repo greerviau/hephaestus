@@ -55,7 +55,10 @@ export interface Board {
 export interface IntakeOptions {
   db: Database;
   tasks: TaskStore;
-  github: Pick<GitHub, "createIssue" | "openIssues" | "issue" | "storeAttachments">;
+  github: Pick<
+    GitHub,
+    "createIssue" | "commentOnIssue" | "openIssues" | "issue" | "storeAttachments"
+  >;
   /** The config in force: the deployed version. */
   config: () => FactoryConfig | undefined;
   board?: () => Board | undefined;
@@ -191,6 +194,18 @@ export class Intake {
       if (issue === undefined) throw new Error(`Issue ${repo}#${String(number)} was not recorded.`);
       return issue;
     });
+  }
+
+  /**
+   * Comments on an existing issue of a factory project and returns the comment's URL. It only
+   * posts: it records no issue, makes no task, and does not count toward the cap, so it
+   * skips the admission path and the queue that filing uses.
+   */
+  async commentOnIssue(repo: string, number: number, body: string): Promise<string> {
+    repo = projectKey(this.options.config()?.projects, repo) ?? repo;
+    this.policy(repo);
+    if (body.trim() === "") throw new Error("A comment needs text; the body is empty.");
+    return this.options.github.commentOnIssue(repo, number, body);
   }
 
   /** Records open issues nobody has seen. Issues the cap held stay for the owner. */

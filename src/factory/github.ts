@@ -357,6 +357,48 @@ export class GitHub {
     return { ...issue, author: issue.author?.login ?? "" };
   }
 
+  /**
+   * Posts a comment on an existing issue and returns the comment's URL. The issues API also
+   * answers for a pull request's number, so the number is read first and a PR is refused.
+   * Nothing is posted when the issue does not exist or is a PR.
+   */
+  async commentOnIssue(repo: string, number: number, body: string): Promise<string> {
+    const label = `${repo}#${String(number)}`;
+    let found: { pull_request?: unknown };
+    try {
+      found = await this.json<{ pull_request?: unknown }>(
+        ["api", `repos/${repo}/issues/${String(number)}`],
+        INTAKE_READ_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (/\(HTTP 404\)/.test(error instanceof Error ? error.message : String(error))) {
+        throw new Error(`Issue ${label} does not exist.`, { cause: error });
+      }
+      throw error;
+    }
+    if (found.pull_request !== undefined) {
+      throw new Error(
+        `${label} is a pull request, not an issue. Comments on pull requests are not supported.`,
+      );
+    }
+    // The body goes on stdin, so its text never reaches a command line.
+    const url = await this.gh(
+      [
+        "api",
+        "--method",
+        "POST",
+        `repos/${repo}/issues/${String(number)}/comments`,
+        "--input",
+        "-",
+        "--jq",
+        ".html_url",
+      ],
+      undefined,
+      JSON.stringify({ body }),
+    );
+    return url.trim();
+  }
+
   async reopenIssue(repo: string, number: number, comment: string): Promise<void> {
     await this.gh(["issue", "reopen", String(number), "-R", repo, "--comment", comment]);
   }

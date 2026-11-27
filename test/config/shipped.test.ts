@@ -117,6 +117,9 @@ describe("the communicator's shipped instructions", () => {
     expect(text).toMatch(/at least that many/);
     // The filing rules stay: file_issue only, a status check first, and the tracking line on its own.
     expect(text).toMatch(/use only the `file_issue` tool/);
+    // Commenting on an existing issue uses its own tool, and only after a person asks for it.
+    expect(text).toMatch(/use the `comment_issue` tool/);
+    expect(text).toMatch(/Post a comment only after a person asks for it in the conversation/);
     expect(text).toMatch(/Check `get_status` before filing, so you do not file a duplicate/);
     expect(text).toMatch(/pass the project's cap on open factory issues/);
     expect(text).toMatch(

@@ -63,6 +63,23 @@ export class FakeGitHub {
     this.issues.set(number, { number, title, body, author: "owner", state: "OPEN" });
     return Promise.resolve(number);
   }
+  /** Comments posted, in order. */
+  comments: { repo: string; number: number; body: string }[] = [];
+  /** Numbers that belong to pull requests, which the issues API also answers for. */
+  pullNumbers = new Set<number>();
+  commentOnIssue(repo: string, number: number, body: string): Promise<string> {
+    if (this.pullNumbers.has(number)) {
+      return Promise.reject(new Error(`${repo}#${String(number)} is a pull request`));
+    }
+    if (!this.issues.has(number)) {
+      return Promise.reject(new Error(`Issue ${repo}#${String(number)} does not exist.`));
+    }
+    this.writes.push("comment");
+    this.comments.push({ repo, number, body });
+    return Promise.resolve(
+      `https://github.com/${repo}/issues/${String(number)}#issuecomment-${String(this.comments.length)}`,
+    );
+  }
   /** Like gh: the newest open issues, at most the limit. */
   openIssues(): Promise<Issue[]> {
     return Promise.resolve(
