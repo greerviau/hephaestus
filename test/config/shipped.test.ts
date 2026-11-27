@@ -178,6 +178,13 @@ describe("rolePrompt", () => {
     expect(rolePrompt("improver", "")).toContain("propose_version");
   });
 
+  it("tell the improver to load a new skill in the same proposal and to say what loads it", () => {
+    const improver = shippedInstructions("improver");
+    expect(improver).toContain("`factory.threadSkills`");
+    expect(improver).toContain("`roles.<role>.skills`");
+    expect(improver).toContain("The message must say which loads it.");
+  });
+
   it("puts the owner's instructions after the shipped ones", () => {
     expect(rolePrompt("lead", "Always ask for tests.\n")).toBe(
       `${shippedInstructions("lead")}\n\n## The owner's instructions\n\nAlways ask for tests.\n`,
