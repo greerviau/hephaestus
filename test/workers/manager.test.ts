@@ -406,7 +406,7 @@ describe("WorkerManager", () => {
       providerInstanceId: FACTORY_CLAUDE,
       model: "m",
       configVersion: 1,
-      cardId: "1",
+      taskId: "1",
       kind: "implement",
     });
     const second = store.createVersion({
@@ -467,7 +467,7 @@ describe("WorkerManager", () => {
       providerInstanceId: FACTORY_CLAUDE,
       model: "m",
       configVersion: 1,
-      cardId: "1",
+      taskId: "1",
       kind: "implement",
     });
     expect(manager.runningFactoryThreads("env-1")).toBe(1);
@@ -494,7 +494,7 @@ describe("WorkerManager", () => {
       providerInstanceId: FACTORY_CLAUDE,
       model: "m",
       configVersion: 1,
-      cardId: "1",
+      taskId: "1",
       kind: "implement",
     });
     clock += 7 * 60 * 60_000;

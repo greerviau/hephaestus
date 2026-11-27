@@ -8,7 +8,7 @@ function board(): { hermes: FakeHermes; board: FactoryBoard } {
 }
 
 describe("kanbanStateFor", () => {
-  it("maps card stages onto kanban states as the Hermes prototype proposed", () => {
+  it("maps task stages onto kanban states as the Hermes prototype proposed", () => {
     expect(kanbanStateFor("Admitted")).toBe("ready");
     for (const stage of [
       "Implementing",
@@ -34,17 +34,17 @@ describe("FactoryBoard", () => {
     expect(hermes.lines()).toEqual(["kanban boards create --name=Factory -- factory"]);
   });
 
-  it("creates a card for the lead with an idempotency key and returns its id", async () => {
+  it("creates a task for the lead with an idempotency key and returns its id", async () => {
     const { hermes, board: b } = board();
     hermes.answer(
       (args) => args.includes("create"),
       JSON.stringify({ id: "t_abc123", status: "ready" }),
     );
 
-    const id = await b.createCard({
+    const id = await b.createTask({
       title: "--urgent fix",
       body: "--draft",
-      idempotencyKey: "card-7",
+      idempotencyKey: "task-7",
     });
 
     expect(id).toBe("t_abc123");
@@ -55,14 +55,14 @@ describe("FactoryBoard", () => {
       "create",
       "--body=--draft",
       "--assignee=lead",
-      "--idempotency-key=card-7",
+      "--idempotency-key=task-7",
       "--json",
       "--",
       "--urgent fix",
     ]);
   });
 
-  it("parks a card for a tracked stage once, without a block Hermes counts, and records the stage", async () => {
+  it("parks a task for a tracked stage once, without a block Hermes counts, and records the stage", async () => {
     const { hermes, board: b } = board();
     let status = "ready";
     hermes.answer(
@@ -87,7 +87,7 @@ describe("FactoryBoard", () => {
     ]);
   });
 
-  it("records Done only after the card completes, and archives for Abandoned", async () => {
+  it("records Done only after the task completes, and archives for Abandoned", async () => {
     const { hermes, board: b } = board();
     let status = "blocked";
     hermes.answer(
@@ -113,7 +113,7 @@ describe("FactoryBoard", () => {
     ]);
   });
 
-  it("fails without recording the stage when the card did not reach its state", async () => {
+  it("fails without recording the stage when the task did not reach its state", async () => {
     const { hermes, board: b } = board();
     hermes.answer(
       (args) => args.includes("show"),
@@ -124,7 +124,7 @@ describe("FactoryBoard", () => {
     expect(hermes.lines().some((line) => line.includes("comment"))).toBe(false);
   });
 
-  it("moves a scheduled card back to ready for Admitted, and refuses from done", async () => {
+  it("moves a scheduled task back to ready for Admitted, and refuses from done", async () => {
     const { hermes, board: b } = board();
     let status = "scheduled";
     hermes.answer(
@@ -146,7 +146,7 @@ describe("FactoryBoard", () => {
     await expect(b.setStage("t_1", "Admitted")).rejects.toThrow(/done/);
   });
 
-  it("parks a card Hermes moved to triage through the plugin, which can move it from there", async () => {
+  it("parks a task Hermes moved to triage through the plugin, which can move it from there", async () => {
     const { hermes, board: b } = board();
     let status = "triage";
     hermes.answer(
@@ -169,7 +169,7 @@ describe("FactoryBoard", () => {
     ]);
   });
 
-  it("hands a card in triage back to the lead's ready queue", async () => {
+  it("hands a task in triage back to the lead's ready queue", async () => {
     const { hermes, board: b } = board();
     let status = "triage";
     hermes.answer(
@@ -213,7 +213,7 @@ describe("FactoryBoard", () => {
     );
   });
 
-  it("completes a parked card through blocked, which Hermes completes and no worker claims", async () => {
+  it("completes a parked task through blocked, which Hermes completes and no worker claims", async () => {
     const { hermes, board: b } = board();
     let status = "scheduled";
     hermes.answer(

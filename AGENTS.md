@@ -31,7 +31,7 @@ The repo needs Node 22.13 or later and npm 11 or later, as `package.json` requir
 
 ## Code and docs
 
-- Title PRs as `type(scope): summary`, such as `fix(factory): keep in-flight cards on their branch`.
+- Title PRs as `type(scope): summary`, such as `fix(factory): keep in-flight tasks on their branch`.
 - Build behavior changes test-first. A new test must fail on the base branch for the reason the change fixes.
 - Keep `docs/` and `README.md` true to the code. Describe current behavior in present tense, in plain sentences.
 - Code comments explain why, not what. Do not use markdown in code comments or commit messages.

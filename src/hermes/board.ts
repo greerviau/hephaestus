@@ -16,14 +16,14 @@ export type Stage = (typeof STAGES)[number];
 export type KanbanState = "ready" | "scheduled" | "done" | "archived";
 
 /**
- * Where each card stage sits on the board. `running` belongs to a live Hermes
- * worker, so the long stages, whose work runs in T3 threads, park the card as
+ * Where each task stage sits on the board. `running` belongs to a live Hermes
+ * worker, so the long stages, whose work runs in T3 threads, park the task as
  * `scheduled`, which no worker claims. Hephaestus's store holds the stage
  * itself, mirrored in a comment.
  *
- * Parking a card with `block` instead would feed Hermes's unblock-loop
+ * Parking a task with `block` instead would feed Hermes's unblock-loop
  * breaker: a task blocked again for the same kind after an unblock goes to
- * `triage`, and the count resets only when the task completes. Every card the
+ * `triage`, and the count resets only when the task completes. Every task the
  * lead takes back a second time would then land in `triage`, where nothing
  * picks it up.
  */
@@ -40,12 +40,12 @@ export function kanbanStateFor(stage: Stage): KanbanState {
   }
 }
 
-export interface NewCard {
+export interface NewTask {
   title: string;
   body: string;
-  /** Retrying with the same key returns the existing card. */
+  /** Retrying with the same key returns the existing task. */
   idempotencyKey: string;
-  /** The lead picks up admitted cards. */
+  /** The lead picks up admitted tasks. */
   assignee?: string;
 }
 
@@ -76,15 +76,15 @@ export class FactoryBoard {
     await this.hermes.run(["kanban", "boards", "create", `--name=Factory`, "--", this.slug]);
   }
 
-  async createCard(card: NewCard): Promise<string> {
+  async createTask(task: NewTask): Promise<string> {
     const output = await this.kanban(
       "create",
-      `--body=${card.body}`,
-      `--assignee=${card.assignee ?? "lead"}`,
-      `--idempotency-key=${card.idempotencyKey}`,
+      `--body=${task.body}`,
+      `--assignee=${task.assignee ?? "lead"}`,
+      `--idempotency-key=${task.idempotencyKey}`,
       "--json",
       "--",
-      card.title,
+      task.title,
     );
     const id = taskOf(parseJson(output)).id;
     if (typeof id !== "string") throw new Error(`hermes kanban create returned no id: ${output}`);
@@ -97,7 +97,7 @@ export class FactoryBoard {
   }
 
   /**
-   * Moves a card to the kanban state for `stage`, checks that it got there,
+   * Moves a task to the kanban state for `stage`, checks that it got there,
    * and only then records the stage in a comment.
    */
   async setStage(id: string, stage: Stage, threadId?: string): Promise<void> {
@@ -115,18 +115,18 @@ export class FactoryBoard {
     } else if (target === "archived") {
       if (current !== "archived") await this.kanban("archive", "--", id);
     } else if (current !== "ready" && !(await this.release(id, current))) {
-      throw new Error(`Card ${id} is ${current}; it cannot move back to ready.`);
+      throw new Error(`Task ${id} is ${current}; it cannot move back to ready.`);
     }
     const reached = await this.status(id);
     if (reached !== target) {
-      throw new Error(`Card ${id} is still ${reached}; expected ${target} for ${stage}.`);
+      throw new Error(`Task ${id} is still ${reached}; expected ${target} for ${stage}.`);
     }
     await this.comment(id, note);
   }
 
   /**
-   * Puts an escalated card back in the lead's ready queue with a note saying why.
-   * A card whose parent the lead linked is still unfinished waits in `todo`,
+   * Puts an escalated task back in the lead's ready queue with a note saying why.
+   * A task whose parent the lead linked is still unfinished waits in `todo`,
    * and Hermes readies it when the parent is done.
    */
   async handBack(id: string, note: string): Promise<void> {
@@ -136,12 +136,12 @@ export class FactoryBoard {
     } catch (error) {
       failure = error instanceof Error ? error : new Error(String(error));
     }
-    // The note goes on even when the card could not move, so the lead sees it whenever it looks.
+    // The note goes on even when the task could not move, so the lead sees it whenever it looks.
     await this.comment(id, note);
     if (failure !== undefined) throw failure;
   }
 
-  /** Moves a parked card toward the lead's ready queue; false when its status has no way back. */
+  /** Moves a parked task toward the lead's ready queue; false when its status has no way back. */
   private async release(id: string, current: string): Promise<boolean> {
     if (current === "blocked" || current === "scheduled") {
       await this.kanban("unblock", "--", id);
@@ -177,7 +177,7 @@ export class FactoryBoard {
         : typeof result?.outdated === "string"
           ? `Hermes code the plugin calls is missing (${result.outdated})`
           : output.trim().slice(-200);
-    throw new Error(`Moving card ${id} to ${to} failed: ${reason}`);
+    throw new Error(`Moving task ${id} to ${to} failed: ${reason}`);
   }
 
   async comment(id: string, text: string): Promise<void> {

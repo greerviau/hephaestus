@@ -4,7 +4,7 @@ import type { ThreadEvents } from "./events.js";
 
 export interface ThreadRecord {
   configVersion: number;
-  cardId: string | null;
+  taskId: string | null;
   kind?: string;
 }
 
@@ -32,7 +32,7 @@ export class FactoryThreads {
       providerInstanceId: options.providerInstanceId,
       model: options.model,
       configVersion: record.configVersion,
-      cardId: record.cardId,
+      taskId: record.taskId,
       kind: record.kind ?? "factory",
     };
     this.events.recordLaunch(options.clientRequestId, thread);

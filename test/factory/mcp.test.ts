@@ -34,7 +34,7 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
   store.markDeployed(first.id);
   const mcp = new FactoryMcp({
     db: h.db,
-    cards: h.cards,
+    tasks: h.tasks,
     intake: h.intake,
     pipeline: h.pipeline,
     store,
@@ -106,6 +106,22 @@ describe("FactoryMcp", () => {
     }
   });
 
+  it("names no tool, description, or parameter after a card", async () => {
+    const { url } = await start();
+    for (const token of Object.values(TOKENS)) {
+      const c = await client(url, token);
+      const { tools } = await c.listTools();
+      expect(JSON.stringify(tools)).not.toMatch(/\bcards?\b|card_id|_cards\b/i);
+      await c.close();
+    }
+    const lead = await client(url, TOKENS.lead);
+    const names = (await lead.listTools()).tools.map((tool) => tool.name);
+    expect(names).toContain("list_tasks");
+    const status = (await lead.listTools()).tools.find((tool) => tool.name === "get_status");
+    expect(Object.keys((status?.inputSchema.properties ?? {}) as object)).toEqual(["task_id"]);
+    await lead.close();
+  });
+
   it("records a call to a tool the role does not have", async () => {
     const { url, mcp } = await start();
     const c = await client(url, TOKENS.improver);
@@ -119,7 +135,7 @@ describe("FactoryMcp", () => {
   it("records a call whose arguments do not fit the tool", async () => {
     const { url, mcp } = await start();
     const c = await client(url, TOKENS.lead);
-    await c.callTool({ name: "start_work", arguments: { card_id: "one" } }).catch(() => undefined);
+    await c.callTool({ name: "start_work", arguments: { task_id: "one" } }).catch(() => undefined);
     expect(mcp.calls()[0]).toMatchObject({ role: "lead", tool: "start_work", ok: false });
     await c.close();
   });
@@ -154,7 +170,7 @@ describe("FactoryMcp", () => {
     );
     expect(result).toMatchObject({
       state: "admitted",
-      card_id: 1,
+      task_id: 1,
       tracking: `Tracking octo/app#${String(result.issue as number)}`,
     });
     expect(h.github.issues.get(result.issue as number)?.title).toBe("Add a flag");
@@ -218,26 +234,26 @@ describe("FactoryMcp", () => {
     }
   });
 
-  it("gives the planner each card's recorded merge time, which can differ from its last update", async () => {
+  it("gives the planner each task's recorded merge time, which can differ from its last update", async () => {
     const { h, url } = await start();
-    const merged = h.cards.create({ repo: "octo/app", issueNumber: 1, title: "merged" });
-    h.cards.update(merged.id, { prNumber: 7 });
-    h.cards.recordMerge("octo/app", 7, "abc123", merged.id, false);
-    const open = h.cards.create({ repo: "octo/app", issueNumber: 2, title: "open" });
-    // A later change to a card that already merged moves its updated_at, not its merge time.
-    h.cards.event(merged.id, "note", "later");
+    const merged = h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "merged" });
+    h.tasks.update(merged.id, { prNumber: 7 });
+    h.tasks.recordMerge("octo/app", 7, "abc123", merged.id, false);
+    const open = h.tasks.create({ repo: "octo/app", issueNumber: 2, title: "open" });
+    // A later change to a task that already merged moves its updated_at, not its merge time.
+    h.tasks.event(merged.id, "note", "later");
     const c = await client(url, TOKENS.planner);
     const listed = JSON.parse(
-      ((await c.callTool({ name: "list_cards", arguments: {} })) as { content: { text: string }[] })
+      ((await c.callTool({ name: "list_tasks", arguments: {} })) as { content: { text: string }[] })
         .content[0]?.text ?? "[]",
-    ) as { card_id: number; merged_at: string | null }[];
+    ) as { task_id: number; merged_at: string | null }[];
     const status = json(
-      await c.callTool({ name: "get_status", arguments: { card_id: merged.id } }),
+      await c.callTool({ name: "get_status", arguments: { task_id: merged.id } }),
     );
 
     const row = h.db.prepare("SELECT at FROM merges WHERE pr_number = 7").get() as { at: string };
-    expect(listed.find((card) => card.card_id === merged.id)?.merged_at).toBe(row.at);
-    expect(listed.find((card) => card.card_id === open.id)?.merged_at).toBeNull();
+    expect(listed.find((task) => task.task_id === merged.id)?.merged_at).toBe(row.at);
+    expect(listed.find((task) => task.task_id === open.id)?.merged_at).toBeNull();
     expect(status.merged_at).toBe(row.at);
     await c.close();
   });
@@ -245,20 +261,20 @@ describe("FactoryMcp", () => {
   it("starts work for the lead and reports a refused call as an error", async () => {
     const { h, url, mcp } = await start();
     h.github.issues.set(5, { number: 5, title: "t", body: "b", author: "o", state: "OPEN" });
-    const card = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "t" });
+    const task = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "t" });
     const c = await client(url, TOKENS.lead);
     const started = json(
-      await c.callTool({ name: "start_work", arguments: { card_id: card.id, brief: "Do it" } }),
+      await c.callTool({ name: "start_work", arguments: { task_id: task.id, brief: "Do it" } }),
     );
     expect(started).toMatchObject({ stage: "Implementing" });
     const again = await c.callTool({
       name: "start_work",
-      arguments: { card_id: card.id, brief: "Again" },
+      arguments: { task_id: task.id, brief: "Again" },
     });
     expect(again.isError).toBe(true);
     expect(mcp.calls()[0]).toMatchObject({ role: "lead", tool: "start_work", ok: false });
     const escalated = json(
-      await c.callTool({ name: "escalate", arguments: { card_id: card.id, reason: "owner call" } }),
+      await c.callTool({ name: "escalate", arguments: { task_id: task.id, reason: "owner call" } }),
     );
     expect(escalated).toMatchObject({ stage: "Escalated", escalated_to: "owner" });
     await c.close();
@@ -269,11 +285,11 @@ describe("FactoryMcp", () => {
     h.events.recordThread({
       environmentId: "w1",
       threadId: "impl",
-      title: "Card 1",
+      title: "Task 1",
       providerInstanceId: "hephaestus-claude",
       model: "m",
       configVersion: 1,
-      cardId: "1",
+      taskId: "1",
       kind: "implement",
     });
     const c = await client(url, TOKENS.improver);
@@ -447,10 +463,10 @@ describe("FactoryMcp", () => {
 
   it("gives the planner read-only stats tools that return a report and change nothing", async () => {
     const { h, url, mcp } = await start();
-    const card = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "t" });
+    const task = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "t" });
     const before = JSON.stringify([
-      h.db.prepare("SELECT * FROM cards").all(),
-      h.db.prepare("SELECT * FROM card_events").all(),
+      h.db.prepare("SELECT * FROM tasks").all(),
+      h.db.prepare("SELECT * FROM task_events").all(),
       h.db.prepare("SELECT * FROM factory_threads").all(),
       h.db.prepare("SELECT * FROM issues").all(),
     ]);
@@ -462,7 +478,7 @@ describe("FactoryMcp", () => {
         arguments: { window: "30d", repo: "octo/app" },
       }),
     );
-    expect(factory.cardsByStage).toEqual({ [card.stage]: 1 });
+    expect(factory.tasksByStage).toEqual({ [task.stage]: 1 });
     expect(factory.report).toContain("Factory stats for octo/app, last 30d");
     expect(factory.report).toContain("Cycle time: not available");
 
@@ -483,8 +499,8 @@ describe("FactoryMcp", () => {
       ["get_factory_stats", true],
     ]);
     const after = JSON.stringify([
-      h.db.prepare("SELECT * FROM cards").all(),
-      h.db.prepare("SELECT * FROM card_events").all(),
+      h.db.prepare("SELECT * FROM tasks").all(),
+      h.db.prepare("SELECT * FROM task_events").all(),
       h.db.prepare("SELECT * FROM factory_threads").all(),
       h.db.prepare("SELECT * FROM issues").all(),
     ]);
@@ -494,15 +510,15 @@ describe("FactoryMcp", () => {
 
   it("answers a stats question in chat from real tool output, with no tables and the gaps stated", async () => {
     const { h, url, mcp } = await start();
-    const done = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Add a flag" });
-    h.cards.update(done.id, {
+    const done = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Add a flag" });
+    h.tasks.update(done.id, {
       startedAt: new Date(Date.now() - 3_600_000).toISOString(),
       rounds: 1,
     });
-    h.cards.transition(done.id, "Implementing", "work started");
-    h.cards.transition(done.id, "Done", "merged outside Hephaestus");
-    const stuck = h.cards.create({ repo: "octo/lib", issueNumber: 6, title: "Fix a bug" });
-    h.cards.transition(stuck.id, "Escalated", "to the owner: needs a decision on the API");
+    h.tasks.transition(done.id, "Implementing", "work started");
+    h.tasks.transition(done.id, "Done", "merged outside Hephaestus");
+    const stuck = h.tasks.create({ repo: "octo/lib", issueNumber: 6, title: "Fix a bug" });
+    h.tasks.transition(stuck.id, "Escalated", "to the owner: needs a decision on the API");
     h.events.recordThread({
       environmentId: "w1",
       threadId: "t1",
@@ -510,7 +526,7 @@ describe("FactoryMcp", () => {
       providerInstanceId: "i",
       model: "m1",
       configVersion: 1,
-      cardId: String(done.id),
+      taskId: String(done.id),
       kind: "implement",
     });
 
@@ -523,10 +539,10 @@ describe("FactoryMcp", () => {
     }
     const reply = reports.join("\n\n");
 
-    // Real numbers from the card log.
-    expect(reply).toContain("Cards by stage: Done 1, Escalated 1.");
-    expect(reply).toContain("1 card reached Done");
-    expect(reply).toContain("Card 2 (octo/lib): needs a decision on the API");
+    // Real numbers from the task log.
+    expect(reply).toContain("Tasks by stage: Done 1, Escalated 1.");
+    expect(reply).toContain("1 task reached Done");
+    expect(reply).toContain("Task 2 (octo/lib): needs a decision on the API");
     // A thread with no recorded usage is counted, and its tokens and cost are said to be missing.
     expect(reply).toContain("Total: 1 thread, tokens not recorded, cost not recorded");
     expect(reply).not.toMatch(/\$\d/);

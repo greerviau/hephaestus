@@ -108,12 +108,12 @@ describe("the planner's shipped instructions", () => {
 
     expect(text).toContain("general communicator");
     expect(text).not.toMatch(/^Turn each request/m);
-    for (const tool of ["get_status", "list_cards", "read_thread"]) expect(text).toContain(tool);
+    for (const tool of ["get_status", "list_tasks", "read_thread"]) expect(text).toContain(tool);
     expect(text).toMatch(/say so/i);
-    // Merge counts use the recorded merge time, never a card's last update, and admit when they are partial.
+    // Merge counts use the recorded merge time, never a task's last update, and admit when they are partial.
     expect(text).toContain("merged_at");
     expect(text).toMatch(/last update is not its merge date/);
-    expect(text).toMatch(/at most 100 cards/);
+    expect(text).toMatch(/at most 100 tasks/);
     expect(text).toMatch(/at least that many/);
     // The filing rules stay: file_issue only, a status check first, and the tracking line on its own.
     expect(text).toMatch(/use only the `file_issue` tool/);

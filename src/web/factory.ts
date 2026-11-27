@@ -3,7 +3,7 @@ import type { FactoryModel } from "../hermes/factory-model.js";
 import type { Messaging } from "../messaging.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Analytics } from "../factory/analytics.js";
-import type { Card, CardStore } from "../factory/cards.js";
+import type { Task, TaskStore } from "../factory/tasks.js";
 import type { FactoryMcp } from "../factory/mcp.js";
 import type { Intake, TrackedIssue } from "../factory/intake.js";
 import { MergeSettledError, checksPassedAtGate, type Pipeline } from "../factory/pipeline.js";
@@ -35,7 +35,7 @@ export interface FactoryPages {
   updater?: Pick<SelfUpdate, "start" | "status">;
   /** Whether an update holds the update lock now. Cheap enough to ask on every page. */
   updating?: () => boolean;
-  cards: CardStore;
+  tasks: TaskStore;
   intake: Pick<Intake, "issues" | "approve" | "reject" | "fileIssue">;
   pipeline: Pick<
     Pipeline,
@@ -87,7 +87,7 @@ export const ACTIVE_STAGES: readonly Stage[] = [
   "Validating",
   "Reverting",
 ];
-/** Card stages the owner can abandon from, as the stage diagram allows. */
+/** Task stages the owner can abandon from, as the stage diagram allows. */
 const ABANDONABLE: readonly Stage[] = [
   "Admitted",
   "Implementing",
@@ -147,19 +147,19 @@ export function stageName(stage: string, pastChecks = false): string {
 }
 
 /** The stage a task in progress is at, by the name the task page's tracker gives it. */
-export function taskStage(card: Card): string {
-  return stageName(card.stage, checksPassedAtGate(card.waiting));
+export function taskStage(task: Task): string {
+  return stageName(task.stage, checksPassedAtGate(task.waiting));
 }
 
 /** The task's stage as status text. */
-export function stagePill(card: Card): string {
-  switch (card.stage) {
+export function stagePill(task: Task): string {
+  switch (task.stage) {
     case "Done":
       return statusText("done", "Done");
     case "Abandoned":
       return statusText("off", "Abandoned");
     case "Escalated":
-      return card.escalatedTo === "owner"
+      return task.escalatedTo === "owner"
         ? statusText("you", "Needs you")
         : statusText("wait", "With the lead");
     case "Reverting":
@@ -167,12 +167,12 @@ export function stagePill(card: Card): string {
     case "Admitted":
       return statusText("wait", "Admitted");
     default:
-      return statusText(card.waiting === null ? "run" : "wait", taskStage(card));
+      return statusText(task.waiting === null ? "run" : "wait", taskStage(task));
   }
 }
 
-export function cardLabel(card: Card): string {
-  return `${card.issueNumber === null ? `Task ${String(card.id)}` : `#${String(card.issueNumber)}`} ${card.title}`;
+export function taskLabel(task: Task): string {
+  return `${task.issueNumber === null ? `Task ${String(task.id)}` : `#${String(task.issueNumber)}`} ${task.title}`;
 }
 
 export function prUrl(repo: string, number: number): string {
@@ -197,20 +197,20 @@ export function providerName(providerInstanceId: string): string {
   return providerInstanceId;
 }
 
-/** What the owner can do to a card in its current stage. */
-interface CardActions {
+/** What the owner can do to a task in its current stage. */
+interface TaskActions {
   approveMerge: boolean;
   sendToLead: boolean;
   abandon: boolean;
 }
 
-export function cardActions(card: Card): CardActions {
-  const withOwner = card.stage === "Escalated" && card.escalatedTo === "owner";
+export function taskActions(task: Task): TaskActions {
+  const withOwner = task.stage === "Escalated" && task.escalatedTo === "owner";
   return {
-    approveMerge: withOwner && card.ownerAction !== null && card.headSha !== null,
+    approveMerge: withOwner && task.ownerAction !== null && task.headSha !== null,
     // A rollback stays with the owner; the lead's restart would rebuild the reverted work.
-    sendToLead: withOwner && !card.reverting,
-    abandon: ABANDONABLE.includes(card.stage),
+    sendToLead: withOwner && !task.reverting,
+    abandon: ABANDONABLE.includes(task.stage),
   };
 }
 
@@ -220,15 +220,15 @@ export function formHref(path: string, back: string): string {
 }
 
 /** The button that approves the merge a task waits on, named for the PR it merges. Nothing when it waits on none. */
-export function mergeButton(card: Card, back: string): string {
-  if (!cardActions(card).approveMerge || card.headSha === null || card.ownerAction === null) {
+export function mergeButton(task: Task, back: string): string {
+  if (!taskActions(task).approveMerge || task.headSha === null || task.ownerAction === null) {
     return "";
   }
-  const revert = card.ownerAction === "revert-merge";
+  const revert = task.ownerAction === "revert-merge";
   return postButton(
-    `/work/${String(card.id)}/approve-merge`,
-    `Merge ${revert ? "revert PR" : "PR"} #${String(revert ? card.revertPr : card.prNumber)} at ${shortSha(card.headSha)}`,
-    { fields: { headSha: card.headSha, action: card.ownerAction, back }, variant: "primary" },
+    `/work/${String(task.id)}/approve-merge`,
+    `Merge ${revert ? "revert PR" : "PR"} #${String(revert ? task.revertPr : task.prNumber)} at ${shortSha(task.headSha)}`,
+    { fields: { headSha: task.headSha, action: task.ownerAction, back }, variant: "primary" },
   );
 }
 
@@ -237,8 +237,8 @@ export function mergeButton(card: Card, back: string): string {
  * button, and the rest in a menu. The actions that need typed text are links
  * to their own pages, because a list page reloads and would drop the text.
  */
-export function escalationActions(item: Card, back: string): string {
-  const actions = cardActions(item);
+export function escalationActions(item: Task, back: string): string {
+  const actions = taskActions(item);
   const id = String(item.id);
   const lead = { label: "Send to lead", href: formHref(`/work/${id}/lead`, back) };
   const abandon = { label: "Abandon", href: formHref(`/work/${id}/abandon`, back) };
@@ -495,7 +495,7 @@ function text(fields: URLSearchParams, name: string): string {
  * that offers them. The ones with a form of their own are in `work.ts`.
  */
 export function factoryActionRoutes(factory: FactoryPages): Route[] {
-  const { pipeline, intake, cards } = factory;
+  const { pipeline, intake, tasks } = factory;
   return [
     {
       method: "POST",
@@ -563,7 +563,7 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
           context,
           "/",
           () => {
-            cards.dismissNotification(id);
+            tasks.dismissNotification(id);
             return Promise.resolve();
           },
           "dismissed",

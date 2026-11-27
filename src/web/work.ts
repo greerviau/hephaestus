@@ -1,17 +1,17 @@
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
-  type Card,
-  type CardEvent,
-} from "../factory/cards.js";
+  type Task,
+  type TaskEvent,
+} from "../factory/tasks.js";
 import type { TrackedIssue } from "../factory/intake.js";
 import { VALIDATION_FAILED, checksPassedAtGate, escalationReason } from "../factory/pipeline.js";
 import type { Stage } from "../hermes/board.js";
 import type { StoredThread } from "../t3/events.js";
 import {
   STORE_ERROR,
-  cardActions,
-  cardLabel,
+  taskActions,
+  taskLabel,
   escalationActions,
   failureNotice,
   form,
@@ -97,10 +97,10 @@ const LANES = [
   WITH_LEAD,
 ];
 
-/** Factory projects in the config, plus any repo a card or issue names. */
-export function projects(factory: FactoryPages, cards: Card[], issues: TrackedIssue[]): string[] {
+/** Factory projects in the config, plus any repo a task or issue names. */
+export function projects(factory: FactoryPages, tasks: Task[], issues: TrackedIssue[]): string[] {
   const names = new Set(Object.keys(factory.store.current()?.document.projects ?? {}));
-  for (const item of cards) names.add(item.repo);
+  for (const item of tasks) names.add(item.repo);
   for (const issue of issues) names.add(issue.repo);
   return [...names].sort();
 }
@@ -120,7 +120,7 @@ const SENT_BACK: Record<string, string> = {
   [MERGE_CONFLICT_DETAIL]: "Merge conflict",
 };
 
-function isSentBack(event: CardEvent): boolean {
+function isSentBack(event: TaskEvent): boolean {
   return event.kind === "stage:Implementing" && lookup(SENT_BACK, event.detail) !== undefined;
 }
 
@@ -139,7 +139,7 @@ const EVENT_TITLES: Record<string, string> = {
   "foreign-merge": "Merged outside Hephaestus",
 };
 
-export function eventTitle(event: CardEvent): string {
+export function eventTitle(event: TaskEvent): string {
   if (isSentBack(event)) return "Sent back to Implementing";
   if (event.kind.startsWith("stage:")) {
     return `Moved to ${stageName(event.kind.slice("stage:".length))}`;
@@ -147,7 +147,7 @@ export function eventTitle(event: CardEvent): string {
   return lookup(EVENT_TITLES, event.kind) ?? event.kind;
 }
 
-export function isBad(event: CardEvent): boolean {
+export function isBad(event: TaskEvent): boolean {
   return (
     event.kind === "error" ||
     event.kind === "stage:Escalated" ||
@@ -158,7 +158,7 @@ export function isBad(event: CardEvent): boolean {
 }
 
 /** What an event says on a page. An error's stored text can carry upstream output, so it is not shown. */
-export function eventDetail(event: CardEvent): string {
+export function eventDetail(event: TaskEvent): string {
   return event.kind === "error" ? "A step failed; the service log has the error." : event.detail;
 }
 
@@ -172,7 +172,7 @@ function withShortShas(text: string): string {
 }
 
 /** A task's events, newest first. */
-function history(events: CardEvent[], now: number): string {
+function history(events: TaskEvent[], now: number): string {
   return `<ol class="tl">${[...events]
     .reverse()
     .map(
@@ -182,11 +182,11 @@ function history(events: CardEvent[], now: number): string {
     .join("")}</ol>`;
 }
 
-function isFinished(item: Card): boolean {
+function isFinished(item: Task): boolean {
   return item.stage === "Done" || item.stage === "Abandoned";
 }
 
-function needsOwner(item: Card): boolean {
+function needsOwner(item: Task): boolean {
   return item.stage === "Escalated" && item.escalatedTo === "owner";
 }
 
@@ -201,7 +201,7 @@ function tabHref(tab: TabName): string {
 }
 
 /** The task list as rows in columns, each row a link to its task. */
-function taskRows(items: Card[], lines: Map<number, string>, now: number, none: string): string {
+function taskRows(items: Task[], lines: Map<number, string>, now: number, none: string): string {
   if (items.length === 0) return empty(none);
   return gridRowList(
     [
@@ -216,7 +216,7 @@ function taskRows(items: Card[], lines: Map<number, string>, now: number, none: 
         href: `/work/${String(item.id)}`,
         cells: [
           rowTitle(
-            cardLabel(item),
+            taskLabel(item),
             `${escapeHtml(item.repo)}${why === "" ? "" : `${DOT}${escapeHtml(why)}`}`,
           ),
           stagePill(item),
@@ -229,9 +229,9 @@ function taskRows(items: Card[], lines: Map<number, string>, now: number, none: 
 }
 
 /** The tasks in progress, in a lane for each stage that holds one. */
-function board(items: Card[], lines: Map<number, string>): string {
+function board(items: Task[], lines: Map<number, string>): string {
   if (items.length === 0) return empty("No task is in progress.");
-  const laneOf = (item: Card): string => (item.stage === "Escalated" ? WITH_LEAD : taskStage(item));
+  const laneOf = (item: Task): string => (item.stage === "Escalated" ? WITH_LEAD : taskStage(item));
   const lanes = LANES.filter((lane) => items.some((item) => laneOf(item) === lane)).map((lane) => {
     const inLane = items.filter((item) => laneOf(item) === lane);
     const tiles = inLane
@@ -240,7 +240,7 @@ function board(items: Card[], lines: Map<number, string>): string {
           item.waiting ??
           (lines.get(item.id) ||
             (item.stage === "Escalated" ? (item.reason ?? item.repo) : item.repo));
-        return `<li><a class="tile" href="/work/${String(item.id)}"><span class="title">${escapeHtml(cardLabel(item))}</span><span class="subline">${escapeHtml(sub)}</span>${stagePill(item)}</a></li>`;
+        return `<li><a class="tile" href="/work/${String(item.id)}"><span class="title">${escapeHtml(taskLabel(item))}</span><span class="subline">${escapeHtml(sub)}</span>${stagePill(item)}</a></li>`;
       })
       .join("");
     return `<section class="lane" aria-label="${lane}"><h2>${lane}<span class="n">${String(inLane.length)}</span></h2><ul>${tiles}</ul></section>`;
@@ -270,7 +270,7 @@ const STEPS = [
  * The internal stage the task is at for the tracker. An escalated or
  * abandoned task is shown at the stage it left, which only its events record.
  */
-function heldStage(item: Card, events: CardEvent[] | undefined): Stage | undefined {
+function heldStage(item: Task, events: TaskEvent[] | undefined): Stage | undefined {
   if (item.stage !== "Escalated" && item.stage !== "Abandoned") return item.stage;
   if (events === undefined) return undefined;
   for (const event of [...events].reverse()) {
@@ -287,7 +287,7 @@ function heldStage(item: Card, events: CardEvent[] | undefined): Stage | undefin
  * was abandoned; a task that escalated from the gate recorded why in that
  * event, which a note to the lead does not replace.
  */
-function pastChecks(item: Card, events: CardEvent[]): boolean {
+function pastChecks(item: Task, events: TaskEvent[]): boolean {
   if (item.stage === "Merging") return checksPassedAtGate(item.waiting);
   const left = events.findLast(
     (event) => event.kind.startsWith("stage:") && event.kind !== "stage:Abandoned",
@@ -297,7 +297,7 @@ function pastChecks(item: Card, events: CardEvent[]): boolean {
     : checksPassedAtGate(item.waiting);
 }
 
-function stepIndex(item: Card, held: Stage, events: CardEvent[]): number {
+function stepIndex(item: Task, held: Stage, events: TaskEvent[]): number {
   switch (held) {
     case "Admitted":
       return 0;
@@ -316,7 +316,7 @@ function stepIndex(item: Card, held: Stage, events: CardEvent[]): number {
 }
 
 /** The one-line stage tracker, and the name of the step the task is at. */
-function tracker(item: Card, held: Stage, events: CardEvent[]): { html: string; step: string } {
+function tracker(item: Task, held: Stage, events: TaskEvent[]): { html: string; step: string } {
   const current = stepIndex(item, held, events);
   const finished = item.stage === "Done";
   const stopped = item.stage === "Abandoned";
@@ -360,7 +360,7 @@ function elapsed(from: string, to: string): string {
 }
 
 /** The line under the tracker: which attempt this is, or how the task ended. */
-function trackNote(item: Card, step: string, events: CardEvent[], now: number): string {
+function trackNote(item: Task, step: string, events: TaskEvent[], now: number): string {
   const sentBack =
     item.rounds > 0 ? `after being sent back ${times(item.rounds)}` : "not sent back";
   if (item.stage === "Done") {
@@ -396,7 +396,7 @@ function trackNote(item: Card, step: string, events: CardEvent[], now: number): 
  * read from its events, and the one in progress. The count restarts where the
  * pipeline restarts it, when the lead restarts the work or a revert merges.
  */
-function attempts(item: Card, events: CardEvent[], now: number): string {
+function attempts(item: Task, events: TaskEvent[], now: number): string {
   if (item.rounds === 0) return "";
   const sentBack = events.filter(isSentBack).slice(-item.rounds);
   const rows = sentBack.map((event, index) => ({
@@ -433,7 +433,7 @@ function checkName(id: string): string {
  * PR after the work merges again, so an earlier rollback says nothing about
  * this merge: only what was recorded since the task last began validating does.
  */
-function checksAfterMerge(item: Card, events: CardEvent[]): string {
+function checksAfterMerge(item: Task, events: TaskEvent[]): string {
   if (item.foreignMerge) return statusText("off", "Not checked");
   if (item.mergeSha === null) return statusText("off", "Not started");
   if (item.stage === "Done") return statusText("done", "Passed");
@@ -456,7 +456,7 @@ function checksAfterMerge(item: Card, events: CardEvent[]): string {
  * result for single checks and no list of the implementer's evidence files,
  * so the page shows neither.
  */
-function proof(item: Card, approved: Read<boolean>, events: CardEvent[]): string {
+function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string {
   if (item.prNumber === null || item.headSha === null) return "";
   const reviewNote =
     item.policy?.requireReview === false
@@ -489,11 +489,11 @@ function proof(item: Card, approved: Read<boolean>, events: CardEvent[]): string
 }
 
 /** The callout under the tracker: what the task waits on, and the owner's actions when it waits on them. */
-function taskCallout(item: Card, back: string): string {
+function taskCallout(item: Task, back: string): string {
   const id = String(item.id);
   const reason = withShortShas(item.reason ?? "");
   if (needsOwner(item)) {
-    const actions = cardActions(item);
+    const actions = taskActions(item);
     return callout(
       "warn",
       "Waiting for you",
@@ -513,7 +513,7 @@ function workerLabels(factory: FactoryPages): Map<string, string> {
   return new Map((workers.ok ? workers.value : []).map((view) => [view.environmentId, view.label]));
 }
 
-function details(item: Card, labels: Map<string, string>, now: number): string {
+function details(item: Task, labels: Map<string, string>, now: number): string {
   const head = item.headSha === null ? "" : ` at ${sha(item.headSha)}`;
   const main: [string, string][] = [
     [
@@ -629,9 +629,9 @@ interface RequestValues {
 }
 
 /** The task a form page acts on, or nothing after the page for a missing or unreadable one was sent. */
-function taskFor(factory: FactoryPages, context: RouteContext, title: string): Card | undefined {
+function taskFor(factory: FactoryPages, context: RouteContext, title: string): Task | undefined {
   const id = Number(context.params[0]);
-  const found = read("the card", () => factory.cards.find(id));
+  const found = read("the task", () => factory.tasks.find(id));
   if (found.ok && found.value !== undefined) return found.value;
   sendHtml(
     context.response,
@@ -715,14 +715,14 @@ export function workRoutes(factory: FactoryPages): Route[] {
 
   const leadPage = (
     shell: Shell | undefined,
-    item: Card,
+    item: Task,
     back: string,
     error?: string,
     typed = "",
   ): string => {
     const id = String(item.id);
     const crumbs = taskCrumbs(item.id, "Send to lead");
-    if (!cardActions(item).sendToLead) {
+    if (!taskActions(item).sendToLead) {
       return noFormPage(
         shell,
         "Send to lead",
@@ -737,7 +737,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
     return formPage(shell, {
       title: "Send to lead",
       crumbs,
-      intro: `<p class="muted">${escapeHtml(cardLabel(item))}</p>`,
+      intro: `<p class="muted">${escapeHtml(taskLabel(item))}</p>`,
       action: `/work/${id}/send-to-lead`,
       fields: { version: String(item.version) },
       body: textarea("note", "Note for the lead", {
@@ -755,14 +755,14 @@ export function workRoutes(factory: FactoryPages): Route[] {
 
   const abandonPage = (
     shell: Shell | undefined,
-    item: Card,
+    item: Task,
     back: string,
     error?: string,
     typed = "",
   ): string => {
     const id = String(item.id);
     const crumbs = taskCrumbs(item.id, "Abandon");
-    if (!cardActions(item).abandon) {
+    if (!taskActions(item).abandon) {
       return noFormPage(
         shell,
         "Abandon task",
@@ -777,7 +777,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
     return formPage(shell, {
       title: "Abandon task",
       crumbs,
-      intro: `<p class="muted">${escapeHtml(cardLabel(item))}</p><p>No more threads start for it. The PR and the issue stay as they are.</p>`,
+      intro: `<p class="muted">${escapeHtml(taskLabel(item))}</p><p>No more threads start for it. The PR and the issue stay as they are.</p>`,
       action: `/work/${id}/abandon`,
       fields: { version: String(item.version) },
       body: input("reason", "Why abandon it", {
@@ -808,9 +808,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const inProject = (item: { repo: string }): boolean =>
           project === undefined || item.repo === project;
 
-        const cards = read("cards", () => factory.cards.list().filter(inProject));
+        const tasks = read("tasks", () => factory.tasks.list().filter(inProject));
         const issues = read("issues", () => factory.intake.issues().filter(inProject));
-        const all = cards.ok ? cards.value : [];
+        const all = tasks.ok ? tasks.value : [];
         const mine = all.filter(needsOwner);
         const active = all.filter((item) => !isFinished(item) && !needsOwner(item));
         const finished = all.filter(isFinished);
@@ -821,7 +821,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const rejected = (issues.ok ? issues.value : []).filter(
           (issue) => issue.state === "rejected",
         );
-        let failed = !cards.ok || !issues.ok;
+        let failed = !tasks.ok || !issues.ok;
 
         // Only a task in progress can have a running thread, so only those are looked up.
         const lines = new Map<number, string>();
@@ -832,7 +832,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
           );
           const threads = read("threads", () => {
             for (const item of active) {
-              const line = runningThreads(factory.events.forCard(item.id), labels).join("; ");
+              const line = runningThreads(factory.events.forTask(item.id), labels).join("; ");
               if (line !== "") lines.set(item.id, line);
             }
           });
@@ -841,15 +841,15 @@ export function workRoutes(factory: FactoryPages): Route[] {
 
         let body: string;
         if (tab === "needs") {
-          const tasks = mine.map((item): Row => ({
+          const owned = mine.map((item): Row => ({
             kind: item.ownerAction === null ? "task" : "merge",
-            title: cardLabel(item),
+            title: taskLabel(item),
             href: `/work/${String(item.id)}`,
             sub: escapeHtml(item.reason ?? ""),
             aside: escalationActions(item, back),
           }));
           const held = waiting.map((issue) => heldIssueRow(issue, back));
-          const rows = [...tasks, ...held];
+          const rows = [...owned, ...held];
           body =
             (rows.length === 0
               ? failed
@@ -867,7 +867,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
                     )
                     .join("")}</ul>`,
                 ));
-        } else if (!cards.ok) {
+        } else if (!tasks.ok) {
           body = empty("Tasks could not be read.");
         } else if (tab === "active") {
           const running = read("running threads", () => factory.pipeline.runningThreads());
@@ -1121,7 +1121,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
       path: /^\/work\/(\d+)$/,
       handle: ({ response, url, params, shell }) => {
         const id = Number(params[0]);
-        const found = read("the card", () => factory.cards.find(id));
+        const found = read("the task", () => factory.tasks.find(id));
         if (!found.ok) {
           sendHtml(
             response,
@@ -1147,17 +1147,17 @@ export function workRoutes(factory: FactoryPages): Route[] {
           );
           return;
         }
-        const events = read("card events", () => factory.cards.events(id));
-        const threads = read("card threads", () => factory.events.forCard(id));
+        const events = read("task events", () => factory.tasks.events(id));
+        const threads = read("task threads", () => factory.events.forTask(id));
         const approved = read("the review", () =>
-          item.headSha === null ? false : factory.cards.approvedAt(id, item.headSha),
+          item.headSha === null ? false : factory.tasks.approvedAt(id, item.headSha),
         );
         const labels = workerLabels(factory);
         const back = `/work/${String(id)}`;
         const held = heldStage(item, events.ok ? events.value : undefined);
         const track =
           held === undefined ? undefined : tracker(item, held, events.ok ? events.value : []);
-        const actions = cardActions(item);
+        const actions = taskActions(item);
 
         const threadRows = !threads.ok
           ? empty("Threads could not be read.")
@@ -1179,9 +1179,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
           response,
           200,
           layout(
-            cardLabel(item),
+            taskLabel(item),
             `${pageHead({
-              title: cardLabel(item),
+              title: taskLabel(item),
               lede: `${stagePill(item)}${DOT}<code>${escapeHtml(item.repo)}</code>`,
               // A task that waits for you has Abandon in its callout instead.
               ...(actions.abandon && !needsOwner(item)
@@ -1264,9 +1264,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const record = thread.value;
         const crumbs: Crumb[] = [
           ["Work", "/work"],
-          ...(record.cardId === null
+          ...(record.taskId === null
             ? []
-            : [[`Task ${record.cardId}`, `/work/${encodeURIComponent(record.cardId)}`] as const]),
+            : [[`Task ${record.taskId}`, `/work/${encodeURIComponent(record.taskId)}`] as const]),
           ["Thread"],
         ];
         const transcript =

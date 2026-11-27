@@ -34,7 +34,7 @@ export interface FactoryThread {
   providerInstanceId: string;
   model: string;
   configVersion: number;
-  cardId: string | null;
+  taskId: string | null;
   /** What the thread is for, such as `implement`, `review`, or `setup`. */
   kind?: string;
 }
@@ -53,7 +53,7 @@ interface ThreadRow {
   provider_instance_id: string;
   model: string;
   config_version: number;
-  card_id: string | null;
+  task_id: string | null;
   kind: string;
   status: string;
   created_at: string;
@@ -68,7 +68,7 @@ function toThread(row: ThreadRow): StoredThread {
     providerInstanceId: row.provider_instance_id,
     model: row.model,
     configVersion: row.config_version,
-    cardId: row.card_id,
+    taskId: row.task_id,
     kind: row.kind,
     status: row.status,
     createdAt: row.created_at,
@@ -92,7 +92,7 @@ export class ThreadEvents {
     this.db
       .prepare(
         `INSERT INTO factory_threads (environment_id, thread_id, title, provider_instance_id, model,
-           config_version, card_id, kind, status, created_at, updated_at)
+           config_version, task_id, kind, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?)
          ON CONFLICT (environment_id, thread_id) DO NOTHING`,
       )
@@ -103,7 +103,7 @@ export class ThreadEvents {
         thread.providerInstanceId,
         thread.model,
         thread.configVersion,
-        thread.cardId,
+        thread.taskId,
         thread.kind ?? "factory",
         at,
         at,
@@ -117,12 +117,12 @@ export class ThreadEvents {
     return row === undefined ? undefined : toThread(row);
   }
 
-  /** Every thread a card has had, oldest first. */
-  forCard(cardId: number): StoredThread[] {
+  /** Every thread a task has had, oldest first. */
+  forTask(taskId: number): StoredThread[] {
     return (
       this.db
-        .prepare("SELECT * FROM factory_threads WHERE card_id = ? ORDER BY created_at, thread_id")
-        .all(String(cardId)) as ThreadRow[]
+        .prepare("SELECT * FROM factory_threads WHERE task_id = ? ORDER BY created_at, thread_id")
+        .all(String(taskId)) as ThreadRow[]
     ).map(toThread);
   }
 
@@ -247,7 +247,7 @@ export class ThreadEvents {
     this.db
       .prepare(
         `INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id,
-           model, config_version, card_id, kind, status, created_at, updated_at)
+           model, config_version, task_id, kind, status, created_at, updated_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
          ON CONFLICT (client_request_id) DO UPDATE SET status = 'pending', error = NULL,
            environment_id = CASE WHEN factory_launches.status = 'failed' THEN excluded.environment_id ELSE factory_launches.environment_id END,
@@ -260,7 +260,7 @@ export class ThreadEvents {
         thread.providerInstanceId,
         thread.model,
         thread.configVersion,
-        thread.cardId,
+        thread.taskId,
         thread.kind ?? "factory",
         at,
         at,

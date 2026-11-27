@@ -6,11 +6,11 @@ import { DiscordApi, type Fetch } from "./discord.js";
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
-  type Card,
-  type CardEvent,
-  type CardStore,
+  type Task,
+  type TaskEvent,
+  type TaskStore,
   evidenceRefFor,
-} from "./factory/cards.js";
+} from "./factory/tasks.js";
 import type { GitHub } from "./factory/github.js";
 import { getMeta, setMeta } from "./meta.js";
 import type { Messaging } from "./messaging.js";
@@ -24,7 +24,7 @@ export function trackingLine(repo: string, number: number): string {
 const TRACKING = /^[ \t>*_-]*`?Tracking ([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)#(\d+)`?[ \t.*_]*$/gm;
 const CURSOR_KEY = "request_threads_event";
 /** Stages whose PR is open or merged, where a late thread is shown the evidence. */
-const EVIDENCE_STAGES = new Set<Card["stage"]>(["Reviewing", "Merging", "Validating", "Done"]);
+const EVIDENCE_STAGES = new Set<Task["stage"]>(["Reviewing", "Merging", "Validating", "Done"]);
 
 /** The PR and head an event names, as the pipeline writes them: `PR #N at <sha>`. */
 function namedPr(detail: string): { number: number; head: string } | undefined {
@@ -39,9 +39,9 @@ type PrHistory = "new" | "updated" | "same";
 
 export interface RequestThreadsOptions {
   db: Database;
-  /** This install's id, which scopes each card's evidence ref. */
+  /** This install's id, which scopes each task's evidence ref. */
   install: string;
-  cards: Pick<CardStore, "get" | "list">;
+  tasks: Pick<TaskStore, "get" | "list">;
   messaging: Pick<Messaging, "credentials" | "sendTo">;
   github: Pick<GitHub, "evidence">;
   dashboardUrl: () => string;
@@ -57,7 +57,7 @@ interface Thread {
 /**
  * Follows each request made in the chat through its work. A request's thread
  * is found by the tracking line the factory posts in it after filing the
- * issue, and each milestone of the issue's card is posted there: work
+ * issue, and each milestone of the issue's task is posted there: work
  * started, PR opened with any evidence the engineer pushed, review results,
  * merged, checks passed on the default branch, reverted, and anything that
  * needs the owner.
@@ -121,7 +121,7 @@ export class RequestThreads {
   }
 
   /**
-   * Starts following an issue in a thread, and catches the thread up on its card at once.
+   * Starts following an issue in a thread, and catches the thread up on its task at once.
    * No progress pass may run meanwhile, or a step could be posted before the catch-up and
    * again in it; the service runs link and progress one after the other.
    */
@@ -134,7 +134,7 @@ export class RequestThreads {
     repo = tracked.repo;
     // Events up to now are covered by the catch-up, once it is sent; until then every one is posted.
     const newest =
-      (this.db.prepare("SELECT MAX(id) AS id FROM card_events").get() as { id: number | null })
+      (this.db.prepare("SELECT MAX(id) AS id FROM task_events").get() as { id: number | null })
         .id ?? 0;
     const result = this.db
       .prepare(
@@ -143,30 +143,30 @@ export class RequestThreads {
       )
       .run(repo, number, thread.platform, thread.chat, this.now().toISOString());
     if (result.changes === 0) return;
-    const card = this.options.cards
+    const task = this.options.tasks
       .list()
       .find(
         (item) => item.repo.toLowerCase() === repo.toLowerCase() && item.issueNumber === number,
       );
     const sent = await this.post(
       thread,
-      `Following ${repo}#${String(number)}${card === undefined ? "." : `: ${stageText(card, this.options.dashboardUrl())}`} Progress shows up here.`,
+      `Following ${repo}#${String(number)}${task === undefined ? "." : `: ${stageText(task, this.options.dashboardUrl())}`} Progress shows up here.`,
     );
     if (!sent) return;
     this.db
       .prepare("UPDATE chat_threads SET after_event = ? WHERE repo = ? AND number = ?")
       .run(newest, repo, number);
-    // A card past opening its PR, and not sent back or stopped, may have evidence the thread has not seen.
-    if (card !== undefined && card.prNumber !== null && EVIDENCE_STAGES.has(card.stage)) {
-      await this.postEvidence(thread, card);
+    // A task past opening its PR, and not sent back or stopped, may have evidence the thread has not seen.
+    if (task !== undefined && task.prNumber !== null && EVIDENCE_STAGES.has(task.stage)) {
+      await this.postEvidence(thread, task);
     }
   }
 
-  /** Posts the milestones of followed cards that happened since the last pass. */
+  /** Posts the milestones of followed tasks that happened since the last pass. */
   async progress(): Promise<void> {
     const last = getMeta(this.db, CURSOR_KEY);
     const newest =
-      (this.db.prepare("SELECT MAX(id) AS id FROM card_events").get() as { id: number | null })
+      (this.db.prepare("SELECT MAX(id) AS id FROM task_events").get() as { id: number | null })
         .id ?? 0;
     // On the first pass nothing earlier is posted; threads start from their tracking line.
     if (last === undefined) setMeta(this.db, CURSOR_KEY, String(newest));
@@ -175,18 +175,18 @@ export class RequestThreads {
         ? []
         : (this.db
             .prepare(
-              "SELECT id, card_id AS cardId, at, kind, detail FROM card_events WHERE id > ? ORDER BY id LIMIT 200",
+              "SELECT id, task_id AS taskId, at, kind, detail FROM task_events WHERE id > ? ORDER BY id LIMIT 200",
             )
-            .all(Number(last)) as CardEvent[]);
+            .all(Number(last)) as TaskEvent[]);
     for (const event of events) {
-      const card = this.options.cards.get(event.cardId);
+      const task = this.options.tasks.get(event.taskId);
       const followed =
-        card.issueNumber === null ? undefined : this.threadFor(card.repo, card.issueNumber);
+        task.issueNumber === null ? undefined : this.threadFor(task.repo, task.issueNumber);
       const thread = followed !== undefined && event.id > followed.after ? followed : undefined;
       const text =
         thread === undefined
           ? undefined
-          : milestone(event, card, this.options.dashboardUrl(), this.prHistory(event));
+          : milestone(event, task, this.options.dashboardUrl(), this.prHistory(event));
       if (thread !== undefined && text !== undefined) await this.post(thread, text);
       // Saved before the evidence, so a failure there cannot hold the feed on this event.
       setMeta(this.db, CURSOR_KEY, String(event.id));
@@ -194,21 +194,21 @@ export class RequestThreads {
         event.kind === "stage:Reviewing" ||
         (event.kind === "stage:Merging" && event.detail.includes("needs no review"));
       if (thread !== undefined && text !== undefined && (opened || event.kind === "stage:Done")) {
-        await this.postEvidence(thread, card);
+        await this.postEvidence(thread, task);
       }
     }
   }
 
-  /** Whether an earlier event of the card put up the PR this event names, and at which head. */
-  private prHistory(event: CardEvent): PrHistory {
+  /** Whether an earlier event of the task put up the PR this event names, and at which head. */
+  private prHistory(event: TaskEvent): PrHistory {
     const named = namedPr(event.detail);
     if (named === undefined) return "new";
     const earlier = this.db
       .prepare(
-        `SELECT detail FROM card_events WHERE card_id = ? AND id < ?
+        `SELECT detail FROM task_events WHERE task_id = ? AND id < ?
          AND kind IN ('stage:Reviewing', 'stage:Merging')`,
       )
-      .all(event.cardId, event.id) as { detail: string }[];
+      .all(event.taskId, event.id) as { detail: string }[];
     const heads = earlier
       .map((row) => namedPr(row.detail))
       .filter((pr) => pr?.number === named.number)
@@ -241,17 +241,17 @@ export class RequestThreads {
     }
   }
 
-  /** Attaches the evidence the engineer pushed for the card, once per set of files. */
-  private async postEvidence(thread: Thread, card: Card): Promise<void> {
-    const key = `evidence_posted_${String(card.id)}`;
+  /** Attaches the evidence the engineer pushed for the task, once per set of files. */
+  private async postEvidence(thread: Thread, task: Task): Promise<void> {
+    const key = `evidence_posted_${String(task.id)}`;
     let evidence;
     try {
       evidence = await this.options.github.evidence(
-        card.repo,
-        evidenceRefFor(card, this.options.install),
+        task.repo,
+        evidenceRefFor(task, this.options.install),
       );
     } catch (error) {
-      console.error(`Reading the evidence for card ${String(card.id)} failed`, error);
+      console.error(`Reading the evidence for task ${String(task.id)} failed`, error);
       return;
     }
     if (evidence === undefined || evidence.files.length === 0) return;
@@ -272,7 +272,7 @@ export class RequestThreads {
       }
       if (attached > 0) setMeta(this.db, key, evidence.tree);
     } catch (error) {
-      console.error(`Attaching the evidence for card ${String(card.id)} failed`, error);
+      console.error(`Attaching the evidence for task ${String(task.id)} failed`, error);
     } finally {
       if (folder !== undefined) rmSync(folder, { recursive: true, force: true });
     }
@@ -285,25 +285,25 @@ function sentence(reason: string): string {
   return text.length > 300 ? `${text.slice(0, 300)} (cut short; the task page has it all)` : text;
 }
 
-/** What the card is doing now, in a few words, for a thread that starts following it late. */
-function stageText(card: Card, dashboard: string): string {
-  const why = card.reason === null ? "" : `: ${sentence(card.reason)}`;
-  switch (card.stage) {
+/** What the task is doing now, in a few words, for a thread that starts following it late. */
+function stageText(task: Task, dashboard: string): string {
+  const why = task.reason === null ? "" : `: ${sentence(task.reason)}`;
+  switch (task.stage) {
     case "Admitted":
       return "it is admitted and waiting to start.";
     case "Implementing":
       return "the engineer is working on it.";
     case "Reviewing":
-      return `PR #${String(card.prNumber ?? 0)} is in review.`;
+      return `PR #${String(task.prNumber ?? 0)} is in review.`;
     case "Merging":
       return "it is about to merge.";
     case "Validating":
       return "it merged, and checks are running on the default branch.";
     case "Reverting":
-      return `its merge failed checks on the default branch, so it is being reverted${card.revertPr === null ? "" : ` with PR #${String(card.revertPr)}`}.`;
+      return `its merge failed checks on the default branch, so it is being reverted${task.revertPr === null ? "" : ` with PR #${String(task.revertPr)}`}.`;
     case "Escalated":
-      return card.escalatedTo === "owner"
-        ? `it needs you${why}. ${dashboard}work/${String(card.id)}`
+      return task.escalatedTo === "owner"
+        ? `it needs you${why}. ${dashboard}work/${String(task.id)}`
         : `it is waiting for a decision${why}.`;
     case "Done":
       return "it is done.";
@@ -312,19 +312,19 @@ function stageText(card: Card, dashboard: string): string {
   }
 }
 
-/** The thread message for a card event, or undefined when the event is not a milestone. */
+/** The thread message for a task event, or undefined when the event is not a milestone. */
 export function milestone(
-  event: CardEvent,
-  card: Card,
+  event: TaskEvent,
+  task: Task,
   dashboard: string,
   /** Whether the PR was put up before, and whether at another head. */
   history: PrHistory = "new",
 ): string | undefined {
   const pr = (number: number | null): string =>
-    number === null ? "the PR" : `https://github.com/${card.repo}/pull/${String(number)}`;
+    number === null ? "the PR" : `https://github.com/${task.repo}/pull/${String(number)}`;
   const detail = event.detail;
-  // The PR the event names, which may be older than the card's current one in a backlog.
-  const named = namedPr(detail)?.number ?? card.prNumber;
+  // The PR the event names, which may be older than the task's current one in a backlog.
+  const named = namedPr(detail)?.number ?? task.prNumber;
   switch (event.kind) {
     case "stage:Implementing":
       if (detail === "work started" || detail === "the lead restarted the work") {
@@ -370,13 +370,13 @@ export function milestone(
     }
     case "stage:Escalated":
       return detail.startsWith("to the owner")
-        ? `This needs you: ${sentence(detail.replace(/^to the owner:\s*/, ""))}.\n${dashboard}work/${String(card.id)}`
+        ? `This needs you: ${sentence(detail.replace(/^to the owner:\s*/, ""))}.\n${dashboard}work/${String(task.id)}`
         : undefined;
-    // The lead handing a card it was given on to the owner.
+    // The lead handing a task it was given on to the owner.
     case "escalated:owner":
-      return `This needs you: ${sentence(detail)}.\n${dashboard}work/${String(card.id)}`;
+      return `This needs you: ${sentence(detail)}.\n${dashboard}work/${String(task.id)}`;
     case "stage:Abandoned":
-      return `Stopped: ${card.reason ?? detail}.`;
+      return `Stopped: ${task.reason ?? detail}.`;
     default:
       return undefined;
   }

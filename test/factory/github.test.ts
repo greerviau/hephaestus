@@ -269,7 +269,7 @@ describe("GitHub", () => {
       return Promise.resolve(JSON.stringify({ merged: true, sha: "m" }));
     };
     expect(
-      await new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
+      await new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for task 1."),
     ).toBe("m");
     expect(calls[0]).toEqual([
       "api",
@@ -281,7 +281,7 @@ describe("GitHub", () => {
       "-f",
       "sha=h",
       "-f",
-      "commit_message=Merged by Hephaestus for card 1.",
+      "commit_message=Merged by Hephaestus for task 1.",
     ]);
   });
 
@@ -303,12 +303,12 @@ describe("GitHub", () => {
         );
       }
       if (args[1] === "repos/octo/app/commits/ours") {
-        return Promise.resolve("Fix it (#5)\n\nMerged by Hephaestus for card 1.\n");
+        return Promise.resolve("Fix it (#5)\n\nMerged by Hephaestus for task 1.\n");
       }
       return Promise.resolve("");
     };
     expect(
-      await new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
+      await new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for task 1."),
     ).toBe("ours");
   });
 
@@ -333,7 +333,7 @@ describe("GitHub", () => {
       return Promise.resolve("");
     };
     await expect(
-      new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1."),
+      new GitHub("gh", exec).merge("octo/app", 5, "h", "Merged by Hephaestus for task 1."),
     ).rejects.toThrow(AlreadyMergedError);
   });
 
@@ -364,7 +364,7 @@ describe("GitHub", () => {
         return Promise.resolve("{}");
       };
     const merge = (run: CommandRun): Promise<string> =>
-      new GitHub("gh", run).merge("octo/app", 5, "h", "Merged by Hephaestus for card 1.");
+      new GitHub("gh", run).merge("octo/app", 5, "h", "Merged by Hephaestus for task 1.");
     await expect(merge(exec("OPEN", "CONFLICTING", null))).rejects.toThrow(MergeConflictError);
     await expect(merge(exec("MERGED", "CONFLICTING", { oid: "m" }))).rejects.toThrow(
       AlreadyMergedError,

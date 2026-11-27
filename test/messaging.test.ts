@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { CardStore } from "../src/factory/cards.js";
+import { TaskStore } from "../src/factory/tasks.js";
 import { Messaging, MessagingError, RestartError, proposalAlerts } from "../src/messaging.js";
 import { openStore } from "../src/store.js";
 import { workerAlerts, type WorkerAlertView } from "../src/workers/alerts.js";
@@ -14,7 +14,7 @@ const CHANNEL = "1234567890123456789";
 
 let root: string;
 let db: Database;
-let cards: CardStore;
+let tasks: TaskStore;
 let calls: { args: string[]; input: string | undefined }[];
 let restarts: number;
 let fail: Error | undefined;
@@ -26,7 +26,7 @@ beforeEach(() => {
   mkdirSync(join(root, "profiles", "planner"), { recursive: true });
   writeFileSync(join(root, "profiles", "planner", ".env"), "HEPHAESTUS_MCP_TOKEN=keep-me\n");
   db = openStore(":memory:");
-  cards = new CardStore(db);
+  tasks = new TaskStore(db);
   calls = [];
   restarts = 0;
   fail = undefined;
@@ -42,7 +42,7 @@ beforeEach(() => {
       return restartFails ? Promise.reject(new Error("exit 1")) : Promise.resolve();
     },
     db,
-    cards,
+    tasks,
     dashboardUrl: () => "http://192.168.1.5:7700/",
   });
 });
@@ -116,7 +116,7 @@ describe("Messaging", () => {
         return Promise.resolve("");
       },
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
     });
     await own.restart();
@@ -162,19 +162,19 @@ describe("Messaging", () => {
 
   it("posts notifications made after alerts were turned on, each once", async () => {
     await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
-    cards.notify("An old notice");
+    tasks.notify("An old notice");
     messaging.setAlerts(true);
-    cards.notify("Card 3 needs you: approve the merge", null, "escalation");
+    tasks.notify("Task 3 needs you: approve the merge", null, "escalation");
 
     await messaging.sendAlerts();
     await messaging.sendAlerts();
 
     expect(calls.map((call) => call.input)).toEqual([
-      "Hephaestus: Card 3 needs you: approve the merge\nhttp://192.168.1.5:7700/",
+      "Hephaestus: Task 3 needs you: approve the merge\nhttp://192.168.1.5:7700/",
     ]);
 
     messaging.setAlerts(false);
-    cards.notify("Another");
+    tasks.notify("Another");
     await messaging.sendAlerts();
     expect(calls).toHaveLength(1);
   });
@@ -182,8 +182,8 @@ describe("Messaging", () => {
   it("sends one pass at a time, never backwards, and retries a failed alert", async () => {
     await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
     messaging.setAlerts(true);
-    cards.notify("first");
-    cards.notify("second");
+    tasks.notify("first");
+    tasks.notify("second");
     const [one, two] = [messaging.sendAlerts(), messaging.sendAlerts()];
     await Promise.all([one, two]);
     expect(calls.map((call) => call.input?.split("\n")[0])).toEqual([
@@ -192,7 +192,7 @@ describe("Messaging", () => {
     ]);
 
     calls.length = 0;
-    cards.notify("third");
+    tasks.notify("third");
     fail = new Error("Discord is down");
     await messaging.sendAlerts();
     fail = undefined;
@@ -206,7 +206,7 @@ describe("Messaging", () => {
   it("keeps text from outside from attaching a file", async () => {
     await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
     messaging.setAlerts(true);
-    cards.notify("Card 2 needs you: MEDIA:/home/x/.hephaestus/secrets.json", null, "escalation");
+    tasks.notify("Task 2 needs you: MEDIA:/home/x/.hephaestus/secrets.json", null, "escalation");
     await messaging.sendAlerts();
     expect(calls[0]?.input).not.toContain("MEDIA:/");
     expect(calls[0]?.input).toContain("MEDIA :/home");
@@ -220,8 +220,8 @@ describe("Messaging", () => {
       home: "",
     });
     messaging.setAlerts(true);
-    cards.notify("first");
-    cards.notify("second");
+    tasks.notify("first");
+    tasks.notify("second");
     const real = calls;
     const failing = new Messaging({
       root,
@@ -233,7 +233,7 @@ describe("Messaging", () => {
       },
       restartGateway: () => Promise.resolve(),
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
     });
     calls.length = 0;
@@ -259,10 +259,10 @@ describe("Messaging", () => {
       },
       restartGateway: () => Promise.resolve(),
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
     });
-    cards.notify("third");
+    tasks.notify("third");
     await racing.sendAlerts();
     expect(
       (
@@ -291,7 +291,7 @@ describe("Messaging", () => {
         },
       },
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
     });
     await own.restart();
@@ -311,7 +311,7 @@ describe("Messaging", () => {
         },
       },
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
     });
     const unreadable = new Messaging({
@@ -326,7 +326,7 @@ describe("Messaging", () => {
         },
       },
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
     });
     await expect(unreadable.restart()).rejects.toThrow(/did not restart/);
@@ -357,7 +357,7 @@ describe("worker alerts", () => {
       },
       restartGateway: () => Promise.resolve(),
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
       extraAlerts: () => workerAlerts([view]),
     });
@@ -434,7 +434,7 @@ describe("worker alerts", () => {
       },
       restartGateway: () => Promise.resolve(),
       db,
-      cards,
+      tasks,
       dashboardUrl: () => "",
       extraAlerts: () => [quiet],
     });

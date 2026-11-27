@@ -9,7 +9,7 @@ import {
   type PresetName,
 } from "../config/policy.js";
 import type { ConfigVersion } from "../config/store.js";
-import type { Card } from "../factory/cards.js";
+import type { Task } from "../factory/tasks.js";
 import { ACTIVE_STAGES, STORE_ERROR, read, type FactoryPages } from "./factory.js";
 import {
   callout,
@@ -162,15 +162,15 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     }
     const config = version.value?.document;
     const projects = Object.entries(config?.projects ?? {}).sort(([a], [b]) => a.localeCompare(b));
-    const active = read("cards", () =>
-      factory.cards.list().filter((card) => ACTIVE_STAGES.includes(card.stage)),
+    const active = read("tasks", () =>
+      factory.tasks.list().filter((task) => ACTIVE_STAGES.includes(task.stage)),
     );
     const notice = lookup(NOTICES, url.searchParams.get("notice"));
     const parentId = version.value?.id;
     const dialogs: string[] = [];
     const rows = projects.map(([repo, project], index) => {
       const mine = active.ok
-        ? active.value.filter((card) => card.repo.toLowerCase() === repo.toLowerCase())
+        ? active.value.filter((task) => task.repo.toLowerCase() === repo.toLowerCase())
         : undefined;
       const changed = Object.keys(project.policy.overrides).length;
       const removeId = `remove-${String(index)}`;
@@ -254,12 +254,12 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       );
       return;
     }
-    const active = read("cards", () =>
-      factory.cards
+    const active = read("tasks", () =>
+      factory.tasks
         .list()
         .filter(
-          (card) =>
-            card.repo.toLowerCase() === repo.toLowerCase() && ACTIVE_STAGES.includes(card.stage),
+          (task) =>
+            task.repo.toLowerCase() === repo.toLowerCase() && ACTIVE_STAGES.includes(task.stage),
         ),
     );
     const parentId = version.value?.id;
@@ -327,10 +327,10 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
       if (current()?.id !== base.id) return stale();
     }
     if (mode === "add") {
-      // A repo added before keeps the spelling its cards and issues were recorded under, so its
+      // A repo added before keeps the spelling its tasks and issues were recorded under, so its
       // cap and issue records stay one.
       const known = [
-        ...factory.cards.list().map((card) => card.repo),
+        ...factory.tasks.list().map((task) => task.repo),
         ...factory.intake.issues().map((issue) => issue.repo),
       ].find((name) => name.toLowerCase() === repo.toLowerCase());
       if (known !== undefined) repo = known;
@@ -476,13 +476,13 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
   }
 }
 
-/** A card whose merge may still need validating or reverting under its project's policy. */
-function mergeInFlight(card: Card): boolean {
+/** A task whose merge may still need validating or reverting under its project's policy. */
+function mergeInFlight(task: Task): boolean {
   return (
-    card.stage === "Merging" ||
-    card.stage === "Validating" ||
-    card.stage === "Reverting" ||
-    card.reverting
+    task.stage === "Merging" ||
+    task.stage === "Validating" ||
+    task.stage === "Reverting" ||
+    task.reverting
   );
 }
 
@@ -543,7 +543,7 @@ function removeDialog(
   id: string,
   repo: string,
   parentId: number | undefined,
-  active: readonly Card[] | undefined,
+  active: readonly Task[] | undefined,
 ): string {
   const working = active?.length ?? 0;
   const inFlight = active?.filter(mergeInFlight).length ?? 0;

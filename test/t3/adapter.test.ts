@@ -67,7 +67,7 @@ describe("T3Adapter", () => {
       runtimeMode: "full-access",
       workspace: { type: "worktree", baseRef: "origin/main", branch: "factory/42" },
       message: "Brief",
-      clientRequestId: "card-7-implement-1",
+      clientRequestId: "task-7-implement-1",
     });
 
     expect(launched).toEqual({ threadId: "t1", runId: "r1", projectId: "p1" });
@@ -90,7 +90,7 @@ describe("T3Adapter", () => {
           startFromOrigin: true,
         },
         message: "Brief",
-        clientRequestId: "card-7-implement-1",
+        clientRequestId: "task-7-implement-1",
       },
     });
   });
@@ -126,14 +126,14 @@ describe("T3Adapter", () => {
   it("sends a message to a thread", async () => {
     fake.tools.set("t3_thread_send", () => ({ threadId: "t1", runId: "r2", status: "starting" }));
 
-    await t3.send("w1", "t1", "Fix the review findings", "card-7-round-2");
+    await t3.send("w1", "t1", "Fix the review findings", "task-7-round-2");
 
     expect(fake.calls[0]?.args).toEqual({
       environmentId: "w1",
       threadId: "t1",
       message: "Fix the review findings",
       mode: "auto",
-      clientRequestId: "card-7-round-2",
+      clientRequestId: "task-7-round-2",
     });
   });
 

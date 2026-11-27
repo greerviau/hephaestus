@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Deploy } from "../../src/web/settings.js";
-import { runningCard, startDashboard, type Dashboard, type DashboardOptions } from "./dashboard.js";
+import { runningTask, startDashboard, type Dashboard, type DashboardOptions } from "./dashboard.js";
 
 let dashboard: Dashboard | undefined;
 const deployed: number[] = [];
@@ -16,13 +16,13 @@ const deploy: Deploy = (id) => {
   return Promise.resolve({});
 };
 
-/** Starts a dashboard with an improver proposal citing the running card's implement thread. */
+/** Starts a dashboard with an improver proposal citing the running task's implement thread. */
 async function withProposal(
   options: DashboardOptions = { deploy },
 ): Promise<{ dashboard: Dashboard; id: number }> {
   const started = await startDashboard(options);
   dashboard = started;
-  runningCard(started.h);
+  runningTask(started.h);
   const base = started.store.current();
   if (base === undefined) throw new Error("no version");
   const document = structuredClone(base.document);

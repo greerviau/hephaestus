@@ -1,13 +1,13 @@
 import { isProposal } from "../config/store.js";
 import { setupChecklist } from "./setup.js";
-import type { Card } from "../factory/cards.js";
+import type { Task } from "../factory/tasks.js";
 import type { WorkerView } from "../workers/manager.js";
 import { expiresIn, expiringSoon, readEnvironments } from "./workers.js";
 import {
   ACTIVE_STAGES,
   STORE_ERROR,
-  cardActions,
-  cardLabel,
+  taskActions,
+  taskLabel,
   escalationActions,
   heldIssueRow,
   notice,
@@ -65,8 +65,8 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         const t3 = await readEnvironments(factory.environments, factory.t3WaitMs ?? 2000);
         const project = shell?.project;
         const inProject = (repo: string): boolean => project === undefined || repo === project;
-        const cards = read("cards", () =>
-          factory.cards.list().filter((item) => inProject(item.repo)),
+        const tasks = read("tasks", () =>
+          factory.tasks.list().filter((item) => inProject(item.repo)),
         );
         const issues = read("issues", () =>
           factory.intake
@@ -78,7 +78,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             .list()
             .filter((version) => isProposal(version) && version.state === "draft"),
         );
-        const notifications = read("notifications", () => factory.cards.notifications());
+        const notifications = read("notifications", () => factory.tasks.notifications());
         const workers = read("workers", () => factory.workers?.views() ?? []);
         const paused = read("the pause switch", () => factory.pipeline.paused());
         const blocked = read("the thread caps", () => factory.pipeline.blockedBecause(undefined));
@@ -86,23 +86,23 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           (workers.ok ? workers.value : []).map((view) => [view.environmentId, view.label]),
         );
 
-        const inProgress = cards.ok
-          ? cards.value.filter(
+        const inProgress = tasks.ok
+          ? tasks.value.filter(
               (item) =>
                 ACTIVE_STAGES.includes(item.stage) ||
                 (item.stage === "Escalated" && item.escalatedTo !== "owner"),
             )
           : [];
-        const finished = cards.ok
-          ? cards.value
+        const finished = tasks.ok
+          ? tasks.value
               .filter((item) => item.stage === "Done" || item.stage === "Abandoned")
               .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
           : [];
         const threads = read("threads", () =>
-          inProgress.map((item) => runningThreads(factory.events.forCard(item.id), labels)),
+          inProgress.map((item) => runningThreads(factory.events.forTask(item.id), labels)),
         );
         const storeFailed = [
-          cards,
+          tasks,
           issues,
           proposals,
           notifications,
@@ -112,13 +112,13 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         ].some((result) => !result.ok);
 
         const needs: Row[] = [];
-        if (cards.ok) {
-          for (const item of cards.value) {
+        if (tasks.ok) {
+          for (const item of tasks.value) {
             if (item.stage !== "Escalated" || item.escalatedTo !== "owner") continue;
             const reason = escapeHtml(item.reason ?? "Escalated to you.");
             needs.push({
-              kind: cardActions(item).approveMerge ? "merge" : "task",
-              title: cardLabel(item),
+              kind: taskActions(item).approveMerge ? "merge" : "task",
+              title: taskLabel(item),
               href: `/work/${String(item.id)}`,
               // The repo says nothing new when the page shows one project.
               sub: project === undefined ? `${reason}${DOT}${escapeHtml(item.repo)}` : reason,
@@ -168,16 +168,16 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         }
         if (notifications.ok) {
           // The tasks read above are the chosen project's, so they say which notifications are too.
-          const shown = new Set((cards.ok ? cards.value : []).map((item) => item.id));
+          const shown = new Set((tasks.ok ? tasks.value : []).map((item) => item.id));
           for (const item of notifications.value) {
             // Escalations are listed from the task's state above; their notifications stay in Activity.
             if (item.kind === "escalation") continue;
             // A notification about another project's task is left out, as on Activity; one about no task stays.
-            if (project !== undefined && item.cardId !== null && !shown.has(item.cardId)) continue;
+            if (project !== undefined && item.taskId !== null && !shown.has(item.taskId)) continue;
             needs.push({
               kind: "notice",
               title: item.text,
-              href: item.cardId === null ? undefined : `/work/${String(item.cardId)}`,
+              href: item.taskId === null ? undefined : `/work/${String(item.taskId)}`,
               sub: when(item.at, now()),
               aside: postButton(`/notifications/${String(item.id)}/dismiss`, "Dismiss", {
                 fields: { back: "/" },
@@ -186,7 +186,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           }
         }
 
-        const isWaiting = (item: Card): boolean =>
+        const isWaiting = (item: Task): boolean =>
           item.waiting !== null || item.stage === "Admitted" || item.stage === "Escalated";
         const running = inProgress.filter((item) => !isWaiting(item)).length;
         const waiting = inProgress.length - running;
@@ -194,15 +194,15 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         // With any source unread, an empty list or an exact count would be a claim the page cannot make.
         const incomplete =
           t3.state !== "ok" ||
-          [cards, issues, proposals, notifications, workers].some((part) => !part.ok);
-        const needing = !cards.ok
+          [tasks, issues, proposals, notifications, workers].some((part) => !part.ok);
+        const needing = !tasks.ok
           ? "What needs you could not be read."
           : incomplete
             ? `At least ${count(needs.length, "thing needs", "things need")} you.`
             : needs.length === 0
               ? "Nothing needs you."
               : `${count(needs.length, "thing needs", "things need")} you.`;
-        const working = cards.ok
+        const working = tasks.ok
           ? ` ${count(running, "task is", "tasks are")} running and ${String(waiting)} ${waiting === 1 ? "is" : "are"} waiting.`
           : "";
 
@@ -233,13 +233,13 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             ? rowList(needs) + checking
             : checking !== ""
               ? checking
-              : !cards.ok
+              : !tasks.ok
                 ? empty("Tasks could not be read.")
                 : incomplete
                   ? `<p class="calm">${icon("warn")}Some of what may need you could not be read. Reload to try again.</p>`
                   : `<p class="calm">${icon("ok", "t-done")}Nothing needs you. The factory asks here when it does.</p>`;
 
-        const progress = !cards.ok
+        const progress = !tasks.ok
           ? empty("Tasks could not be read.")
           : inProgress.length === 0
             ? empty("No tasks in progress.")
@@ -251,7 +251,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
                   ];
                   const fallback = item.stage === "Escalated" ? item.reason : null;
                   return {
-                    title: cardLabel(item),
+                    title: taskLabel(item),
                     href: `/work/${String(item.id)}`,
                     wholeRow: true,
                     sub: (doing.length > 0 ? doing : [fallback ?? item.repo])
@@ -261,13 +261,13 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
                   };
                 }),
               );
-        const recent = !cards.ok
+        const recent = !tasks.ok
           ? empty("Tasks could not be read.")
           : finished.length === 0
             ? empty("Finished tasks appear here with their outcome.")
             : rowList(
                 finished.slice(0, 5).map((item) => ({
-                  title: cardLabel(item),
+                  title: taskLabel(item),
                   href: `/work/${String(item.id)}`,
                   wholeRow: true,
                   sub: when(item.updatedAt, now()),
@@ -283,7 +283,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           }) +
           `<div class="cols">${section({
             title: "In progress",
-            count: cards.ok ? inProgress.length : undefined,
+            count: tasks.ok ? inProgress.length : undefined,
             right: '<a href="/work">Open work</a>',
             body: progress,
           })}${section({

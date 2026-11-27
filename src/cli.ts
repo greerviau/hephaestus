@@ -64,7 +64,7 @@ import type { Paths } from "./paths.js";
 import type { Config } from "./config.js";
 import { ROLE_NAMES } from "./config/document.js";
 import type { ConfigVersion } from "./config/store.js";
-import { CardStore } from "./factory/cards.js";
+import { TaskStore } from "./factory/tasks.js";
 import { GitHub } from "./factory/github.js";
 import { Intake } from "./factory/intake.js";
 import { FactoryMcp } from "./factory/mcp.js";
@@ -240,10 +240,10 @@ function factoryEngine(
   t3: T3Adapter,
   events: ThreadEvents,
   workers: WorkerManager,
-): { intake: Intake; pipeline: Pipeline; cards: CardStore; mcp: FactoryMcp; github: GitHub } {
+): { intake: Intake; pipeline: Pipeline; tasks: TaskStore; mcp: FactoryMcp; github: GitHub } {
   const ghPath = config.ghPath ?? findExecutable("gh", process.env.PATH) ?? "gh";
   const github = new GitHub(ghPath);
-  const cards = new CardStore(db);
+  const tasks = new TaskStore(db);
   const hermesPath = config.hermesPath;
   // The board exists once `hermes sync` or a deploy has set the factory root up.
   const board = (): FactoryBoard | undefined =>
@@ -256,16 +256,16 @@ function factoryEngine(
   const late: { pipeline?: Pipeline } = {};
   const intake = new Intake({
     db,
-    cards,
+    tasks,
     github,
     config: () => deployed()?.document,
     board,
-    abandon: (cardId, reason) =>
-      late.pipeline?.abandonUnstarted(cardId, reason) ?? Promise.resolve(),
+    abandon: (taskId, reason) =>
+      late.pipeline?.abandonUnstarted(taskId, reason) ?? Promise.resolve(),
   });
   const pipeline = new Pipeline({
     db,
-    cards,
+    tasks,
     github,
     workers,
     t3,
@@ -279,7 +279,7 @@ function factoryEngine(
   const secrets = new SecretsFile(paths.secrets);
   const mcp = new FactoryMcp({
     db,
-    cards,
+    tasks,
     intake,
     pipeline,
     store,
@@ -290,7 +290,7 @@ function factoryEngine(
     // Hermes caches the files a chat sends under the profile's home.
     attachmentRoots: (role) => chatCacheDirs(join(paths.hermes, "profiles", role)),
   });
-  return { intake, pipeline, cards, mcp, github };
+  return { intake, pipeline, tasks, mcp, github };
 }
 
 /** The worker manager the service and uninstall share. */
@@ -606,7 +606,7 @@ async function main(argv: string[]): Promise<number> {
         }, 5 * 60_000),
         setInterval(() => {
           engine.pipeline.tick().catch((error: unknown) => {
-            console.error("Advancing cards failed", error);
+            console.error("Advancing tasks failed", error);
           });
         }, 20_000),
         setInterval(() => {
@@ -628,7 +628,7 @@ async function main(argv: string[]): Promise<number> {
               run: hermesRunner(config.hermesPath, paths.hermes),
               gateway: new SystemdUserService(join(dirname(config.unitPath), GATEWAY_SERVICE_NAME)),
               db,
-              cards: engine.cards,
+              tasks: engine.tasks,
               dashboardUrl: () => dashboardUrl(config.host, config.port),
               extraAlerts: () => [
                 ...proposalAlerts(store.list()),
@@ -658,7 +658,7 @@ async function main(argv: string[]): Promise<number> {
           : new RequestThreads({
               db,
               install: config.instanceId,
-              cards: engine.cards,
+              tasks: engine.tasks,
               messaging,
               github: engine.github,
               dashboardUrl: () => dashboardUrl(config.host, config.port),
@@ -695,7 +695,7 @@ async function main(argv: string[]): Promise<number> {
           const state = versionCheck.state();
           return state === undefined ? undefined : { ...state, command: updateCommand };
         },
-        cards: engine.cards,
+        tasks: engine.tasks,
         intake: engine.intake,
         pipeline: engine.pipeline,
         events,

@@ -1,6 +1,25 @@
 import BetterSqlite3, { type Database } from "better-sqlite3";
 
-const MIGRATIONS = [
+/**
+ * Rewrites the word "card" to "task" in text an earlier build stored, with the casing kept: the
+ * whole word and its plural, and the JSON keys an MCP call recorded. Words that only contain
+ * "card", such as "discard", and hyphenated names such as a branch, stay.
+ */
+export function renameCardWords(text: string | null): string | null {
+  if (text === null) return null;
+  return text
+    .replace(
+      /(?<![\w-])(Cards?|cards?)(?![\w-])/g,
+      (word) => `${word.startsWith("C") ? "T" : "t"}${word.slice(1).replace("ard", "ask")}`,
+    )
+    .replace(/"card_id"/g, '"task_id"')
+    .replace(/"cards_by_stage"/g, '"tasks_by_stage"')
+    .replace(/"hermes_card_id"/g, '"hermes_task_id"');
+}
+
+type Migration = string | ((db: Database) => void);
+
+const MIGRATIONS: Migration[] = [
   `CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
    CREATE TABLE sessions (
      token_hash TEXT PRIMARY KEY,
@@ -267,6 +286,45 @@ const MIGRATIONS = [
   `ALTER TABLE factory_threads ADD COLUMN input_tokens INTEGER;
    ALTER TABLE factory_threads ADD COLUMN output_tokens INTEGER;
    ALTER TABLE factory_threads ADD COLUMN cost_usd REAL;`,
+  // "Card" became "Task" everywhere. The rows stay; names change, and so do the words in stored text.
+  (db) => {
+    db.exec(`ALTER TABLE cards RENAME TO tasks;
+      ALTER TABLE card_events RENAME TO task_events;
+      ALTER TABLE tasks RENAME COLUMN hermes_card_id TO hermes_task_id;
+      ALTER TABLE task_events RENAME COLUMN card_id TO task_id;
+      ALTER TABLE review_results RENAME COLUMN card_id TO task_id;
+      ALTER TABLE factory_threads RENAME COLUMN card_id TO task_id;
+      ALTER TABLE factory_launches RENAME COLUMN card_id TO task_id;
+      ALTER TABLE issues RENAME COLUMN card_id TO task_id;
+      ALTER TABLE merges RENAME COLUMN card_id TO task_id;
+      ALTER TABLE notifications RENAME COLUMN card_id TO task_id;
+      DROP INDEX card_events_by_card;
+      CREATE INDEX task_events_by_task ON task_events (task_id, id);
+      UPDATE mcp_calls SET tool = 'list_tasks' WHERE tool = 'list_cards';`);
+    for (const [table, key, columns] of [
+      ["mcp_calls", "id", ["arguments", "result"]],
+      ["notifications", "id", ["text"]],
+      ["task_events", "id", ["detail"]],
+      ["factory_threads", "rowid", ["title"]],
+      ["factory_launches", "rowid", ["title"]],
+      ["tasks", "id", ["title", "reason", "pending_message"]],
+    ] as const) {
+      const update = db.prepare(
+        `UPDATE ${table} SET ${columns.map((column) => `${column} = @${column}`).join(", ")} WHERE ${key} = @key`,
+      );
+      const rows = db
+        .prepare(`SELECT ${key} AS key, ${columns.join(", ")} FROM ${table}`)
+        .all() as ({ key: number } & Record<string, string | null>)[];
+      for (const row of rows) {
+        const next = Object.fromEntries(
+          columns.map((column) => [column, renameCardWords(row[column] ?? null)]),
+        );
+        if (columns.some((column) => next[column] !== row[column])) {
+          update.run({ ...next, key: row.key });
+        }
+      }
+    }
+  },
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */
@@ -277,7 +335,8 @@ export function openStore(path: string): Database {
   for (const [index, sql] of MIGRATIONS.entries()) {
     if (index < applied) continue;
     db.transaction(() => {
-      db.exec(sql);
+      if (typeof sql === "string") db.exec(sql);
+      else sql(db);
       db.pragma(`user_version = ${String(index + 1)}`);
     })();
   }

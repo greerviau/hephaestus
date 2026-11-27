@@ -1,6 +1,6 @@
 import type { Database } from "better-sqlite3";
 import type { FactoryConfig } from "../../src/config/document.js";
-import { CardStore } from "../../src/factory/cards.js";
+import { TaskStore } from "../../src/factory/tasks.js";
 import {
   AlreadyMergedError,
   OPEN_ISSUES_LIMIT,
@@ -140,7 +140,7 @@ export function pr(
     url: `https://github.com/octo/app/pull/${String(number)}`,
     state: "OPEN",
     headSha,
-    headBranch: "factory/0123abcd-card-1",
+    headBranch: "factory/0123abcd-task-1",
     baseBranch: "main",
     fromFork: false,
     mergeSha: null,
@@ -210,7 +210,7 @@ export class FakeT3 {
 
 export interface Harness {
   db: Database;
-  cards: CardStore;
+  tasks: TaskStore;
   events: ThreadEvents;
   github: FakeGitHub;
   t3: FakeT3;
@@ -218,7 +218,7 @@ export interface Harness {
   pipeline: Pipeline;
   config: FactoryConfig;
   ready: { environmentId: string; label: string; home: string | null }[];
-  /** Each board change the pipeline mirrors, in order, for cards with a Hermes card id. */
+  /** Each board change the pipeline mirrors, in order, for tasks with a Hermes task id. */
   board: string[];
   setClock(ms: number): void;
   /** Ends a thread with a final assistant message. */
@@ -231,7 +231,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
   let clock = Date.parse("2026-11-25T12:00:00Z");
   const now = (): Date => new Date(clock);
   const db = openStore(":memory:");
-  const cards = new CardStore(db, now);
+  const tasks = new TaskStore(db, now);
   const events = new ThreadEvents(db, now);
   const github = new FakeGitHub();
   const t3 = new FakeT3();
@@ -245,7 +245,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
       ready.find((worker) => worker.environmentId === environmentId),
   } as unknown as Pick<WorkerManager, "readyWorkers" | "worker">;
   const threads = new FactoryThreads(t3 as unknown as T3Adapter, events);
-  const intake = new Intake({ db, cards, github, config: () => config, now });
+  const intake = new Intake({ db, tasks, github, config: () => config, now });
   const board: string[] = [];
   const recordingBoard: PipelineBoard = {
     setStage: (id, stage, threadId) => {
@@ -259,7 +259,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
   };
   const pipeline = new Pipeline({
     db,
-    cards,
+    tasks,
     github,
     workers,
     t3: t3,
@@ -274,7 +274,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
   let item = 0;
   return {
     db,
-    cards,
+    tasks,
     events,
     github,
     t3,

@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Fetch } from "../src/discord.js";
-import { CardStore, MERGE_CONFLICT_DETAIL } from "../src/factory/cards.js";
+import { TaskStore, MERGE_CONFLICT_DETAIL } from "../src/factory/tasks.js";
 import { RequestThreads, milestone, trackingLine } from "../src/request-threads.js";
 import { openStore } from "../src/store.js";
 
@@ -12,7 +12,7 @@ const THREAD = "444444444444444444";
 const OTHER = "555555555555555555";
 
 let db: Database;
-let cards: CardStore;
+let tasks: TaskStore;
 let posts: { chat: string; text: string; attachments: boolean }[];
 let unreadable: Set<string>;
 let failPosts: number;
@@ -51,7 +51,7 @@ const fetcher: Fetch = (url) => {
 
 beforeEach(() => {
   db = openStore(":memory:");
-  cards = new CardStore(db);
+  tasks = new TaskStore(db);
   posts = [];
   unreadable = new Set();
   failPosts = 0;
@@ -60,7 +60,7 @@ beforeEach(() => {
   refs = [];
   threads = new RequestThreads({
     db,
-    cards,
+    tasks,
     messaging: {
       credentials: () => ({ token: "token", home: CHANNEL }),
       sendTo: (_platform, chat, text, attachments) => {
@@ -88,18 +88,18 @@ afterEach(() => {
   db.close();
 });
 
-/** An issue Hephaestus tracks, and its card. */
-function card(number = 7): number {
+/** An issue Hephaestus tracks, and its task. */
+function task(number = 7): number {
   db.prepare(
     `INSERT INTO issues (repo, number, title, author, provenance, filed_by, state, created_at, updated_at)
      VALUES ('octo/app', ?, 't', 'x', 'factory', 'planner', 'admitted', 'x', 'x')`,
   ).run(number);
-  return cards.create({ repo: "octo/app", issueNumber: number, title: "Add a flag" }).id;
+  return tasks.create({ repo: "octo/app", issueNumber: number, title: "Add a flag" }).id;
 }
 
 describe("RequestThreads", () => {
   it("follows a thread by the bot's tracking line, and posts each milestone there", async () => {
-    const id = card();
+    const id = task();
     await threads.progress();
     messages[THREAD] = [
       { id: "1", content: "Could you add a flag?", author: { id: "777777777777777777" } },
@@ -110,12 +110,12 @@ describe("RequestThreads", () => {
       },
     ];
     await threads.link();
-    cards.transition(id, "Implementing", "work started");
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Reviewing", "PR #5 at abc");
-    cards.transition(id, "Merging", "approved at abc");
-    cards.transition(id, "Validating", "merged PR #5 as def");
-    cards.transition(id, "Done", "checks passed on def");
+    tasks.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Reviewing", "PR #5 at abc");
+    tasks.transition(id, "Merging", "approved at abc");
+    tasks.transition(id, "Validating", "merged PR #5 as def");
+    tasks.transition(id, "Done", "checks passed on def");
     await threads.progress();
 
     expect(posts.map((post) => post.chat)).toEqual(Array<string>(6).fill(THREAD));
@@ -134,7 +134,7 @@ describe("RequestThreads", () => {
   });
 
   it("ignores a tracking line from anyone but the bot, and threads outside the request channel", async () => {
-    card();
+    task();
     messages[THREAD] = [
       { id: "1", content: trackingLine("octo/app", 7), author: { id: "777777777777777777" } },
     ];
@@ -145,19 +145,19 @@ describe("RequestThreads", () => {
   });
 
   it("attaches the engineer's evidence once when the PR opens", async () => {
-    const id = card();
+    const id = task();
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     evidence = {
       tree: "t1",
       files: [{ name: "../screen shot.png", data: Buffer.from("png") }],
     };
-    cards.transition(id, "Implementing", "work started");
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Reviewing", "PR #5 at abc");
+    tasks.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Reviewing", "PR #5 at abc");
     await threads.progress();
-    // Scoped to this install, so a reinstall's card 1 never reads the last install's evidence.
-    expect(refs).toContain("hephaestus/evidence/0123abcd-card-1");
+    // Scoped to this install, so a reinstall's task 1 never reads the last install's evidence.
+    expect(refs).toContain("hephaestus/evidence/0123abcd-task-1");
     const attached = posts.filter((post) => post.text.startsWith("Evidence:"));
     expect(attached).toHaveLength(1);
     expect(attached[0]?.attachments).toBe(true);
@@ -165,8 +165,8 @@ describe("RequestThreads", () => {
       /^Evidence: __screen_shot\.png\nMEDIA:\/.+\/__screen_shot\.png$/,
     );
 
-    cards.transition(id, "Implementing", "the reviewer asked for changes");
-    cards.transition(id, "Reviewing", "PR #5 at abd");
+    tasks.transition(id, "Implementing", "the reviewer asked for changes");
+    tasks.transition(id, "Reviewing", "PR #5 at abd");
     await threads.progress();
     expect(posts.filter((post) => post.text.startsWith("Evidence:"))).toHaveLength(1);
   });
@@ -174,9 +174,9 @@ describe("RequestThreads", () => {
 
 describe("RequestThreads, under bad input", () => {
   it("follows every issue a request files, including one filed later", async () => {
-    card(7);
-    card(8);
-    card(9);
+    task(7);
+    task(8);
+    task(9);
     await threads.progress();
     messages[THREAD] = [
       {
@@ -193,7 +193,7 @@ describe("RequestThreads, under bad input", () => {
   });
 
   it("ignores a tracking reference inside a sentence and an issue Hephaestus does not track", async () => {
-    card(7);
+    task(7);
     messages[THREAD] = [
       { id: "1", content: "I am not Tracking octo/app#7 here", author: { id: BOT } },
       { id: "2", content: trackingLine("other/repo", 99), author: { id: BOT } },
@@ -202,30 +202,30 @@ describe("RequestThreads, under bad input", () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM chat_threads").get()).toEqual({ n: 0 });
   });
 
-  it("reads a card's evidence where its engineer was told, including an older card-<id> name", async () => {
-    const id = card();
-    cards.update(id, { branch: "factory/card-1-retry-9" });
+  it("reads a task's evidence where its engineer was told, including an older task-<id> name", async () => {
+    const id = task();
+    tasks.update(id, { branch: "factory/task-1-retry-9" });
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
-    cards.transition(id, "Implementing", "work started");
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Reviewing", "PR #5 at abc");
+    tasks.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Reviewing", "PR #5 at abc");
     await threads.progress();
 
-    expect(refs).toContain("hephaestus/evidence/card-1");
-    expect(refs).not.toContain("hephaestus/evidence/0123abcd-card-1");
+    expect(refs).toContain("hephaestus/evidence/task-1");
+    expect(refs).not.toContain("hephaestus/evidence/0123abcd-task-1");
   });
 
   it("keeps posting milestones when evidence cannot be written, and goes past an unreadable thread", async () => {
-    const id = card();
+    const id = task();
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     // A name too long for the file system, as far as the folder is concerned, is cut short.
     evidence = { tree: "t1", files: [{ name: "x".repeat(400), data: Buffer.from("a") }] };
-    cards.transition(id, "Implementing", "work started");
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Reviewing", "PR #5 at abc");
-    cards.transition(id, "Merging", "approved at abc");
+    tasks.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Reviewing", "PR #5 at abc");
+    tasks.transition(id, "Merging", "approved at abc");
     await threads.progress();
     await threads.progress();
     const texts = posts.map((post) => post.text.split("\n")[0]);
@@ -237,14 +237,14 @@ describe("RequestThreads, under bad input", () => {
   });
 
   it("posts the PR link when a policy needs no review", () => {
-    const store = new CardStore(openStore(":memory:"));
+    const store = new TaskStore(openStore(":memory:"));
     const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;
     const merging = store.update(id, { prNumber: 5 });
     expect(
       milestone(
         {
           id: 1,
-          cardId: id,
+          taskId: id,
           at: "",
           kind: "stage:Merging",
           detail: "PR #5 at abc; the policy needs no review",
@@ -258,19 +258,19 @@ describe("RequestThreads, under bad input", () => {
 
 describe("milestone", () => {
   it("says the engineer is updating a PR that conflicts with its base", () => {
-    const store = new CardStore(openStore(":memory:"));
+    const store = new TaskStore(openStore(":memory:"));
     const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;
     expect(
       milestone(
-        { id: 1, cardId: id, at: "", kind: "stage:Implementing", detail: MERGE_CONFLICT_DETAIL },
+        { id: 1, taskId: id, at: "", kind: "stage:Implementing", detail: MERGE_CONFLICT_DETAIL },
         store.get(id),
         "",
       ),
     ).toBe("The PR conflicts with changes merged since it opened. The engineer is updating it.");
   });
 
-  it("tells the owner when a card needs them, with a link, and skips lead escalations", () => {
-    const store = new CardStore(openStore(":memory:"));
+  it("tells the owner when a task needs them, with a link, and skips lead escalations", () => {
+    const store = new TaskStore(openStore(":memory:"));
     const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;
     const escalated = store.transition(id, "Escalated", "to the owner: approve the merge", {
       escalatedTo: "owner",
@@ -280,7 +280,7 @@ describe("milestone", () => {
       milestone(
         {
           id: 1,
-          cardId: id,
+          taskId: id,
           at: "",
           kind: "stage:Escalated",
           detail: "to the owner: the PR touches .github/workflows/ci.yml",
@@ -293,15 +293,15 @@ describe("milestone", () => {
     );
     expect(
       milestone(
-        { id: 2, cardId: id, at: "", kind: "stage:Escalated", detail: "to the lead: blocked" },
+        { id: 2, taskId: id, at: "", kind: "stage:Escalated", detail: "to the lead: blocked" },
         escalated,
         "http://host:7700/",
       ),
     ).toBeUndefined();
-    // The lead passing the card on to the owner reaches the thread too.
+    // The lead passing the task on to the owner reaches the thread too.
     expect(
       milestone(
-        { id: 3, cardId: id, at: "", kind: "escalated:owner", detail: "CI is red!\n" },
+        { id: 3, taskId: id, at: "", kind: "escalated:owner", detail: "CI is red!\n" },
         escalated,
         "http://host:7700/",
       ),
@@ -311,11 +311,11 @@ describe("milestone", () => {
 
 describe("RequestThreads, linked late", () => {
   it("does not repeat in a milestone what the catch-up already said, and attaches waiting evidence", async () => {
-    const id = card();
+    const id = task();
     await threads.progress();
-    cards.transition(id, "Implementing", "work started");
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Reviewing", "PR #5 at abc");
+    tasks.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Reviewing", "PR #5 at abc");
     evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
     // The thread links before the next progress pass has seen those events.
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
@@ -324,35 +324,35 @@ describe("RequestThreads, linked late", () => {
       "Following octo/app#7: PR #5 is in review. Progress shows up here.",
       "Evidence: screen.png",
     ]);
-    cards.transition(id, "Merging", "approved at abc");
+    tasks.transition(id, "Merging", "approved at abc");
     await threads.progress();
     expect(posts.at(-1)?.text).toBe("The review approved it.");
   });
 
   it("posts every step of the window when the catch-up itself was not sent", async () => {
-    const id = card();
+    const id = task();
     await threads.progress();
-    cards.transition(id, "Implementing", "work started");
+    tasks.transition(id, "Implementing", "work started");
     failPosts = 1;
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     await threads.progress();
     expect(posts.map((post) => post.text)).toEqual(["Work started."]);
   });
 
-  it("gives the reason and link of a card that needs the owner, and no evidence for one sent back", async () => {
-    const id = card();
+  it("gives the reason and link of a task that needs the owner, and no evidence for one sent back", async () => {
+    const id = task();
     await threads.progress();
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Implementing", "work started");
     evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     expect(posts.map((post) => post.text)).toEqual([
       "Following octo/app#7: the engineer is working on it. Progress shows up here.",
     ]);
 
-    card(8);
-    const other = cards.list().find((item) => item.issueNumber === 8)?.id ?? 0;
-    cards.transition(other, "Escalated", "to the owner: pick", {
+    task(8);
+    const other = tasks.list().find((item) => item.issueNumber === 8)?.id ?? 0;
+    tasks.transition(other, "Escalated", "to the owner: pick", {
       escalatedTo: "owner",
       reason: "pick a database.",
     });
@@ -364,17 +364,17 @@ describe("RequestThreads, linked late", () => {
 });
 
 describe("RequestThreads, catch-up text", () => {
-  it("gives a stopped card's and a lead escalation's reason, a revert's PR, and keeps a long reason short", async () => {
+  it("gives a stopped task's and a lead escalation's reason, a revert's PR, and keeps a long reason short", async () => {
     const texts: string[] = [];
     for (const [number, setup] of [
       [
         21,
-        (id: number) => cards.transition(id, "Abandoned", "x", { reason: "Is this still wanted?" }),
+        (id: number) => tasks.transition(id, "Abandoned", "x", { reason: "Is this still wanted?" }),
       ],
       [
         22,
         (id: number) =>
-          cards.transition(id, "Escalated", "to the lead: x", {
+          tasks.transition(id, "Escalated", "to the lead: x", {
             escalatedTo: "lead",
             reason: "blocked on a key.",
           }),
@@ -382,13 +382,13 @@ describe("RequestThreads, catch-up text", () => {
       [
         23,
         (id: number) =>
-          cards.transition(id, "Escalated", "to the owner: x", {
+          tasks.transition(id, "Escalated", "to the owner: x", {
             escalatedTo: "owner",
             reason: "y".repeat(400),
           }),
       ],
     ] as const) {
-      setup(card(number));
+      setup(task(number));
       await threads.follow("octo/app", number, { platform: "discord", chat: THREAD });
       texts.push(posts.at(-1)?.text ?? "");
     }
@@ -402,9 +402,9 @@ describe("RequestThreads, catch-up text", () => {
       /^Following octo\/app#23: it needs you: y{300} \(cut short; the task page has it all\)\. http:\/\/host:7700\/work\/\d+ Progress/,
     );
 
-    const reverting = card(24);
-    cards.update(reverting, { revertPr: 12 });
-    db.prepare("UPDATE cards SET stage = 'Reverting' WHERE id = ?").run(reverting);
+    const reverting = task(24);
+    tasks.update(reverting, { revertPr: 12 });
+    db.prepare("UPDATE tasks SET stage = 'Reverting' WHERE id = ?").run(reverting);
     await threads.follow("octo/app", 24, { platform: "discord", chat: THREAD });
     expect(posts.at(-1)?.text).toContain("being reverted with PR #12.");
   });
@@ -412,29 +412,29 @@ describe("RequestThreads, catch-up text", () => {
 
 describe("RequestThreads, an updated PR", () => {
   it("says a PR back in review is updated or the same, a new PR is opened, and links each event's own PR", async () => {
-    const id = card();
-    const other = card(8);
+    const id = task();
+    const other = task(8);
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
-    // Another card's PR #5 does not count for this one.
-    cards.transition(other, "Implementing", "work started");
-    cards.transition(other, "Reviewing", "PR #5 at aaa");
-    cards.transition(id, "Implementing", "work started");
-    cards.update(id, { prNumber: 55 });
-    cards.transition(id, "Reviewing", "PR #55 at abc");
-    cards.update(id, { prNumber: 5 });
-    cards.transition(id, "Implementing", "the lead restarted the work");
-    cards.transition(id, "Reviewing", "PR #5 at abc");
-    cards.transition(id, "Implementing", "the reviewer asked for changes");
-    cards.transition(id, "Reviewing", "PR #5 at abd");
-    cards.transition(id, "Implementing", "the lead restarted the work");
-    cards.transition(id, "Reviewing", "PR #5 at abd");
-    cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
-    cards.transition(id, "Merging", "PR #5 at abe; the policy needs no review");
-    cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
-    cards.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
-    cards.transition(id, "Implementing", "the lead restarted the work");
-    cards.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
+    // Another task's PR #5 does not count for this one.
+    tasks.transition(other, "Implementing", "work started");
+    tasks.transition(other, "Reviewing", "PR #5 at aaa");
+    tasks.transition(id, "Implementing", "work started");
+    tasks.update(id, { prNumber: 55 });
+    tasks.transition(id, "Reviewing", "PR #55 at abc");
+    tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Implementing", "the lead restarted the work");
+    tasks.transition(id, "Reviewing", "PR #5 at abc");
+    tasks.transition(id, "Implementing", "the reviewer asked for changes");
+    tasks.transition(id, "Reviewing", "PR #5 at abd");
+    tasks.transition(id, "Implementing", "the lead restarted the work");
+    tasks.transition(id, "Reviewing", "PR #5 at abd");
+    tasks.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
+    tasks.transition(id, "Merging", "PR #5 at abe; the policy needs no review");
+    tasks.transition(id, "Implementing", MERGE_CONFLICT_DETAIL);
+    tasks.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
+    tasks.transition(id, "Implementing", "the lead restarted the work");
+    tasks.transition(id, "Merging", "PR #5 at abf; the policy needs no review");
     await threads.progress();
     expect(
       posts.map((post) => post.text).filter((text) => /review|merges once/.test(text)),
@@ -451,25 +451,25 @@ describe("RequestThreads, an updated PR", () => {
   });
 
   it("posts a revert once, linking the revert PR its event names", async () => {
-    const id = card();
+    const id = task();
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
-    db.prepare("UPDATE cards SET stage = 'Validating', revert_pr = 20 WHERE id = ?").run(id);
-    cards.transition(id, "Reverting", "checks failed on m1 (ci); opened revert PR #12");
-    cards.transition(id, "Escalated", "to the owner: approve the revert merge", {
+    db.prepare("UPDATE tasks SET stage = 'Validating', revert_pr = 20 WHERE id = ?").run(id);
+    tasks.transition(id, "Reverting", "checks failed on m1 (ci); opened revert PR #12");
+    tasks.transition(id, "Escalated", "to the owner: approve the revert merge", {
       escalatedTo: "owner",
       reason: "approve the revert merge",
     });
-    cards.transition(id, "Reverting", "the owner approved the merge", {
+    tasks.transition(id, "Reverting", "the owner approved the merge", {
       reason: null,
       escalatedTo: null,
     });
-    cards.transition(id, "Escalated", "to the owner: the revert has not merged after an hour", {
+    tasks.transition(id, "Escalated", "to the owner: the revert has not merged after an hour", {
       escalatedTo: "owner",
     });
-    cards.transition(id, "Reverting", "revert PR #12 merged on GitHub");
-    // The card's reason by the time the pass runs is a later one; the escalation keeps its own.
-    cards.update(id, { reason: "yes, carry on" });
+    tasks.transition(id, "Reverting", "revert PR #12 merged on GitHub");
+    // The task's reason by the time the pass runs is a later one; the escalation keeps its own.
+    tasks.update(id, { reason: "yes, carry on" });
     await threads.progress();
     const texts = posts.map((post) => post.text);
     expect(texts.filter((text) => text.includes("being reverted"))).toEqual([

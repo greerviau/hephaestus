@@ -12,7 +12,7 @@ import type { ConfigStore } from "../config/store.js";
 import { formatHostHealth, hostHealth, type HostHealth } from "../host-health.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import { finalMessage } from "../workers/scripts.js";
-import type { Card, CardStore } from "./cards.js";
+import type { Task, TaskStore } from "./tasks.js";
 import {
   CHANGE_SHAPES,
   CHANGE_TOOLS,
@@ -28,7 +28,7 @@ import { factoryStats, formatFactoryStats, formatUsageStats, usageStats } from "
 
 export interface FactoryMcpOptions {
   db: Database;
-  cards: CardStore;
+  tasks: TaskStore;
   intake: Intake;
   pipeline: Pipeline;
   store: ConfigStore;
@@ -50,7 +50,7 @@ type Tool =
   | "get_status"
   | "escalate"
   | "propose_version"
-  | "list_cards"
+  | "list_tasks"
   | "list_threads"
   | "read_thread"
   | "get_config"
@@ -73,10 +73,10 @@ const TOOL_SHAPES = {
         "absolute paths of files the requester sent in the chat, as the chat gave them to you; at most 10 files of 10 MB each",
       ),
   },
-  start_work: { card_id: z.number().int(), brief: z.string().min(1) },
-  escalate: { card_id: z.number().int(), reason: z.string().min(1) },
-  get_status: { card_id: z.number().int().optional() },
-  list_cards: { stage: z.string().optional() },
+  start_work: { task_id: z.number().int(), brief: z.string().min(1) },
+  escalate: { task_id: z.number().int(), reason: z.string().min(1) },
+  get_status: { task_id: z.number().int().optional() },
+  list_tasks: { stage: z.string().optional() },
   list_threads: { since: z.string().describe("ISO 8601 time") },
   read_thread: { environment_id: z.string(), thread_id: z.string() },
   get_config: {},
@@ -116,19 +116,19 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
   planner: [
     "file_issue",
     "get_status",
-    "list_cards",
+    "list_tasks",
     "read_thread",
     "get_factory_stats",
     "get_usage_stats",
     "get_host_health",
     ...CHANGE_TOOLS,
   ],
-  lead: ["start_work", "escalate", "file_issue", "get_status", "list_cards", "read_thread"],
+  lead: ["start_work", "escalate", "file_issue", "get_status", "list_tasks", "read_thread"],
   improver: [
     "propose_version",
     "get_config",
     "get_status",
-    "list_cards",
+    "list_tasks",
     "list_threads",
     "read_thread",
   ],
@@ -137,25 +137,25 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
 const MAX_BODY_BYTES = 4 * 1024 * 1024;
 const MAX_TEXT = 60_000;
 
-function cardSummary(card: Card, mergedAt: string | null): Record<string, unknown> {
+function taskSummary(task: Task, mergedAt: string | null): Record<string, unknown> {
   return {
-    card_id: card.id,
-    repo: card.repo,
-    issue: card.issueNumber,
-    title: card.title,
-    stage: card.stage,
-    escalated_to: card.escalatedTo,
-    reason: card.reason,
-    waiting: card.waiting,
-    pr: card.prNumber,
+    task_id: task.id,
+    repo: task.repo,
+    issue: task.issueNumber,
+    title: task.title,
+    stage: task.stage,
+    escalated_to: task.escalatedTo,
+    reason: task.reason,
+    waiting: task.waiting,
+    pr: task.prNumber,
     // The recorded merge time; null when no merge is recorded, for example before merge times were kept.
     merged_at: mergedAt,
-    head_sha: card.headSha,
-    review_rounds: card.rounds,
-    worker: card.workerEnv,
-    implement_thread: card.implementThread,
-    review_thread: card.reviewThread,
-    updated_at: card.updatedAt,
+    head_sha: task.headSha,
+    review_rounds: task.rounds,
+    worker: task.workerEnv,
+    implement_thread: task.implementThread,
+    review_thread: task.reviewThread,
+    updated_at: task.updatedAt,
   };
 }
 
@@ -308,7 +308,7 @@ export class FactoryMcp {
   /**
    * The newest tool calls. `role` keeps one role's calls. `repo` keeps the
    * calls about one project: those whose arguments name it as `repo`, or name
-   * one of its cards as `card_id`.
+   * one of its tasks as `task_id`.
    */
   calls(
     limit = 200,
@@ -331,8 +331,8 @@ export class FactoryMcp {
                WHEN NOT json_valid(arguments) THEN 0
                WHEN json_type(arguments, '$.repo') = 'text'
                  THEN json_extract(arguments, '$.repo') = @repo
-               WHEN json_type(arguments, '$.card_id') IN ('integer', 'real')
-                 THEN json_extract(arguments, '$.card_id') IN (SELECT id FROM cards WHERE repo = @repo)
+               WHEN json_type(arguments, '$.task_id') IN ('integer', 'real')
+                 THEN json_extract(arguments, '$.task_id') IN (SELECT id FROM tasks WHERE repo = @repo)
                ELSE 0 END)
            ORDER BY id DESC LIMIT @limit`,
         )
@@ -351,9 +351,9 @@ export class FactoryMcp {
   private server(role: RoleName): McpServer {
     const server = new McpServer({ name: "hephaestus", version: "1.0.0" });
     const allowed = new Set(ROLE_TOOLS[role]);
-    const { cards, intake, pipeline, store, events } = this.options;
-    const summary = (card: Card): Record<string, unknown> =>
-      cardSummary(card, cards.mergedAt(card.repo, card.prNumber));
+    const { tasks, intake, pipeline, store, events } = this.options;
+    const summary = (task: Task): Record<string, unknown> =>
+      taskSummary(task, tasks.mergedAt(task.repo, task.prNumber));
     const register = <T extends Tool>(
       tool: T,
       description: string,
@@ -379,7 +379,7 @@ export class FactoryMcp {
 
     register(
       "file_issue",
-      "File a GitHub issue on a factory project. Hephaestus admits it and creates a card unless the project's cap on open factory issues is reached; then it waits for the owner. To hand files from the request to the engineer, such as an attached image, pass their absolute paths, as the chat gave them to you, in attachments: at most 10 files, 10 MB each, any type. Only files the requester sent in the chat can be attached, not other files on the host or URLs. Hephaestus stores each file in the project's repo and links it in the issue, and the engineer can commit it. If any file is missing, unreadable, or too large, no issue is filed and the error names the file.",
+      "File a GitHub issue on a factory project. Hephaestus admits it and creates a task unless the project's cap on open factory issues is reached; then it waits for the owner. To hand files from the request to the engineer, such as an attached image, pass their absolute paths, as the chat gave them to you, in attachments: at most 10 files, 10 MB each, any type. Only files the requester sent in the chat can be attached, not other files on the host or URLs. Hephaestus stores each file in the project's repo and links it in the issue, and the engineer can commit it. If any file is missing, unreadable, or too large, no issue is filed and the error names the file.",
       async ({ repo, title, body, attachments }) => {
         const issue = await intake.fileIssue(
           role,
@@ -393,7 +393,7 @@ export class FactoryMcp {
           issue: issue.number,
           url: `https://github.com/${issue.repo}/issues/${String(issue.number)}`,
           state: issue.state,
-          card_id: issue.cardId,
+          task_id: issue.taskId,
           // Hephaestus finds the request's thread by this line and posts the work's progress there.
           tracking: trackingLine(issue.repo, issue.number),
           reply:
@@ -403,20 +403,20 @@ export class FactoryMcp {
     );
     register(
       "start_work",
-      "Start work on an admitted card, or restart a card escalated to you, with a brief for the engineer.",
-      async ({ card_id, brief }) => summary(await pipeline.startWork(card_id, brief)),
+      "Start work on an admitted task, or restart a task escalated to you, with a brief for the engineer.",
+      async ({ task_id, brief }) => summary(await pipeline.startWork(task_id, brief)),
     );
     register(
       "escalate",
-      "Hand a card to the owner with the reason. Use it when the decision belongs to the owner.",
-      async ({ card_id, reason }) => summary(await pipeline.escalateToOwner(card_id, reason)),
+      "Hand a task to the owner with the reason. Use it when the decision belongs to the owner.",
+      async ({ task_id, reason }) => summary(await pipeline.escalateToOwner(task_id, reason)),
     );
     register(
       "get_status",
-      "One card's stage, PR, and threads, or with no card_id a summary of every factory project.",
-      ({ card_id }) => {
-        if (card_id !== undefined) {
-          return { ...summary(cards.get(card_id)), events: cards.events(card_id).slice(-20) };
+      "One task's stage, PR, and threads, or with no task_id a summary of every factory project.",
+      ({ task_id }) => {
+        if (task_id !== undefined) {
+          return { ...summary(tasks.get(task_id)), events: tasks.events(task_id).slice(-20) };
         }
         const config = store.list().find((version) => version.state === "deployed")?.document;
         const projects = Object.keys(config?.projects ?? {}).map((repo) => ({
@@ -425,36 +425,36 @@ export class FactoryMcp {
           held_issues: intake
             .issues(["held-cap", "awaiting-owner"])
             .filter((issue) => issue.repo === repo).length,
-          cards_by_stage: Object.fromEntries(
+          tasks_by_stage: Object.fromEntries(
             [
               ...new Set(
-                cards
+                tasks
                   .list()
-                  .filter((card) => card.repo === repo)
-                  .map((card) => card.stage),
+                  .filter((task) => task.repo === repo)
+                  .map((task) => task.stage),
               ),
             ].map((stage) => [
               stage,
-              cards.list([stage]).filter((card) => card.repo === repo).length,
+              tasks.list([stage]).filter((task) => task.repo === repo).length,
             ]),
           ),
         }));
         return { paused: pipeline.paused(), projects };
       },
     );
-    register("list_cards", "Cards, newest first, optionally in one stage.", ({ stage }) =>
-      cards
-        .list(stage === undefined ? undefined : [stage as Card["stage"]])
+    register("list_tasks", "Tasks, newest first, optionally in one stage.", ({ stage }) =>
+      tasks
+        .list(stage === undefined ? undefined : [stage as Task["stage"]])
         .slice(0, 100)
         .map(summary),
     );
     register(
       "list_threads",
-      "Factory threads (implement and review) started since a time, with their card and status.",
+      "Factory threads (implement and review) started since a time, with their task and status.",
       ({ since }) =>
         this.options.db
           .prepare(
-            `SELECT environment_id, thread_id, title, kind, card_id, status, config_version, created_at
+            `SELECT environment_id, thread_id, title, kind, task_id, status, config_version, created_at
              FROM factory_threads WHERE kind IN ('implement', 'review') AND created_at >= ? ORDER BY created_at`,
           )
           .all(since),
@@ -476,7 +476,7 @@ export class FactoryMcp {
         return {
           title: thread.title,
           kind: thread.kind,
-          card_id: thread.cardId,
+          task_id: thread.taskId,
           status: thread.status,
           ended: ENDED_STATUSES.has(thread.status),
           final_message: finalMessage(items) ?? null,
@@ -487,7 +487,7 @@ export class FactoryMcp {
     // The stats tools only read. Each returns the numbers and a `report` of bullet lines to relay.
     register(
       "get_factory_stats",
-      "Read-only factory stats: cards by stage, throughput, cycle time, review rounds, escalations with their reasons, and held issues, for a time window and optionally one project. The report field is ready to relay in a chat.",
+      "Read-only factory stats: tasks by stage, throughput, cycle time, review rounds, escalations with their reasons, and held issues, for a time window and optionally one project. The report field is ready to relay in a chat.",
       ({ window, repo }) => {
         const stats = factoryStats(this.options.db, { window, repo, now: this.now() });
         return { ...stats, report: formatFactoryStats(stats) };
@@ -495,7 +495,7 @@ export class FactoryMcp {
     );
     register(
       "get_usage_stats",
-      "Read-only token usage and cost of the engineer and reviewer threads, by role, model, and card, for a time window and optionally one project. Only recorded usage is counted; the report says when nothing was recorded.",
+      "Read-only token usage and cost of the engineer and reviewer threads, by role, model, and task, for a time window and optionally one project. Only recorded usage is counted; the report says when nothing was recorded.",
       ({ window, repo }) => {
         const stats = usageStats(this.options.db, { window, repo, now: this.now() });
         return { ...stats, report: formatUsageStats(stats) };

@@ -49,22 +49,22 @@ export function activityRoutes(factory: FactoryPages): Route[] {
         const entries: Entry[] = [];
         let failed = false;
 
-        const listed = read("cards", () => factory.cards.list());
+        const listed = read("tasks", () => factory.tasks.list());
         if (!listed.ok) failed = true;
-        const cards = new Map((listed.ok ? listed.value : []).map((card) => [card.id, card]));
+        const tasks = new Map((listed.ok ? listed.value : []).map((task) => [task.id, task]));
 
         if (show === "" || show === "tasks") {
           // The store narrows each list to the project, so a quiet project still fills the page.
-          const events = read("card events", () => factory.cards.recentEvents(LIMIT, project));
+          const events = read("task events", () => factory.tasks.recentEvents(LIMIT, project));
           if (events.ok) {
             for (const event of events.value) {
-              const issue = cards.get(event.cardId)?.issueNumber;
+              const issue = tasks.get(event.taskId)?.issueNumber;
               const name = `${issue === undefined || issue === null ? "" : `#${String(issue)} `}${event.title}`;
               const what = eventTitle(event);
               const detail = eventDetail(event);
               entries.push({
                 at: event.at,
-                text: `<a href="/work/${String(event.cardId)}">${escapeHtml(name)}</a>: ${escapeHtml(what.charAt(0).toLowerCase() + what.slice(1))}`,
+                text: `<a href="/work/${String(event.taskId)}">${escapeHtml(name)}</a>: ${escapeHtml(what.charAt(0).toLowerCase() + what.slice(1))}`,
                 sub: detail === "" ? "" : `<span class="subline">${escapeHtml(detail)}</span>`,
                 outcome: isBad(event) ? statusText("you", "Needs a look") : "",
               });
@@ -95,16 +95,16 @@ export function activityRoutes(factory: FactoryPages): Route[] {
         }
         if (show === "" || show === "notifications") {
           const notifications = read("notifications", () =>
-            factory.cards.recentNotifications(LIMIT, project),
+            factory.tasks.recentNotifications(LIMIT, project),
           );
           if (notifications.ok) {
             for (const item of notifications.value) {
               entries.push({
                 at: item.at,
                 text:
-                  item.cardId === null
+                  item.taskId === null
                     ? escapeHtml(item.text)
-                    : `<a href="/work/${String(item.cardId)}">${escapeHtml(item.text)}</a>`,
+                    : `<a href="/work/${String(item.taskId)}">${escapeHtml(item.text)}</a>`,
                 sub: "",
                 outcome: item.dismissed
                   ? statusText("off", "Dismissed")

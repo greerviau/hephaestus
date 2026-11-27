@@ -9,14 +9,14 @@ export interface DailyCounts {
   reverts: number;
   escalations: number;
   abandoned: number;
-  /** Median hours from first thread to Done for cards done that day, or null when none were. */
+  /** Median hours from first thread to Done for tasks done that day, or null when none were. */
   cycleHours: number | null;
 }
 
 export interface Analytics {
   days: DailyCounts[];
   totals: { prs: number; merges: number; reverts: number; escalations: number; abandoned: number };
-  /** Hours from a card's first thread to Done, for cards done in the window. */
+  /** Hours from a task's first thread to Done, for tasks done in the window. */
   cycleHours: { median: number | null; p90: number | null; count: number };
 }
 
@@ -33,7 +33,7 @@ function percentile(sorted: number[], p: number): number | null {
 /**
  * Throughput, merges, reverts, cycle time, and escalations over the last
  * `days` UTC days, for one factory project or all of them, read from the
- * card log and the merge record.
+ * task log and the merge record.
  */
 export function analytics(
   db: Database,
@@ -67,7 +67,7 @@ export function analytics(
 
   const events = db
     .prepare(
-      `SELECT e.kind, e.at, e.detail FROM card_events e JOIN cards c ON c.id = e.card_id
+      `SELECT e.kind, e.at, e.detail FROM task_events e JOIN tasks c ON c.id = e.task_id
        WHERE e.at >= ? AND e.kind IN ('stage:Reviewing', 'stage:Merging', 'stage:Escalated', 'stage:Reverting', 'stage:Abandoned')${repoFilter}`,
     )
     .all(since, ...repoArgs) as { kind: string; at: string; detail: string }[];
@@ -86,11 +86,11 @@ export function analytics(
 
   const merges = db
     .prepare(
-      `SELECT m.at, m.revert FROM merges m JOIN cards c ON c.id = m.card_id
+      `SELECT m.at, m.revert FROM merges m JOIN tasks c ON c.id = m.task_id
        WHERE m.at >= ?${repoFilter}`,
     )
     .all(since, ...repoArgs) as { at: string; revert: number }[];
-  // A revert counts when its revert PR merged, so a card that re-enters Reverting counts once.
+  // A revert counts when its revert PR merged, so a task that re-enters Reverting counts once.
   for (const merge of merges) {
     const counts = byDay.get(dayOf(merge.at));
     if (counts === undefined) continue;
@@ -100,8 +100,8 @@ export function analytics(
 
   const done = db
     .prepare(
-      `SELECT c.started_at AS startedAt, e.at AS doneAt FROM cards c
-       JOIN card_events e ON e.card_id = c.id AND e.kind = 'stage:Done'
+      `SELECT c.started_at AS startedAt, e.at AS doneAt FROM tasks c
+       JOIN task_events e ON e.task_id = c.id AND e.kind = 'stage:Done'
        WHERE e.at >= ? AND c.started_at IS NOT NULL${repoFilter}`,
     )
     .all(since, ...repoArgs) as { startedAt: string; doneAt: string }[];

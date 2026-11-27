@@ -8,9 +8,9 @@ import { Messaging } from "../../src/messaging.js";
 import type { FactoryPages } from "../../src/web/factory.js";
 import { MERGE, SHA } from "../factory/harness.js";
 import {
-  escalatedCard,
+  escalatedTask,
   externalIssue,
-  runningCard,
+  runningTask,
   startDashboard,
   type Dashboard,
 } from "./dashboard.js";
@@ -94,9 +94,9 @@ async function fullDashboard(waitingFor?: string): Promise<Dashboard> {
       if (holder.dashboard === undefined) throw new Error("not started");
       return holder.dashboard.h.db;
     },
-    get cards() {
+    get tasks() {
       if (holder.dashboard === undefined) throw new Error("not started");
-      return holder.dashboard.h.cards;
+      return holder.dashboard.h.tasks;
     },
     dashboardUrl: () => "http://host:7700/",
   });
@@ -120,36 +120,36 @@ interface Tasks {
 }
 
 /** A task at the merge gate, waiting for `waiting`. */
-function gateCard(running: Dashboard, issueNumber: number, waiting: string): number {
-  const { cards } = running.h;
-  const id = cards.create({ repo: "octo/app", issueNumber, title: `Gate ${waiting}` }).id;
-  cards.transition(id, "Implementing", "work started", { workerEnv: "w1" });
-  cards.transition(id, "Reviewing", "PR #6 at 1111111", { prNumber: 6, headSha: SHA });
-  cards.transition(id, "Merging", "approved");
-  cards.update(id, { waiting });
+function gateTask(running: Dashboard, issueNumber: number, waiting: string): number {
+  const { tasks } = running.h;
+  const id = tasks.create({ repo: "octo/app", issueNumber, title: `Gate ${waiting}` }).id;
+  tasks.transition(id, "Implementing", "work started", { workerEnv: "w1" });
+  tasks.transition(id, "Reviewing", "PR #6 at 1111111", { prNumber: 6, headSha: SHA });
+  tasks.transition(id, "Merging", "approved");
+  tasks.update(id, { waiting });
   return id;
 }
 
 /** Something in every list the pages show. */
 async function populate(running: Dashboard): Promise<Tasks> {
   const { h, store } = running;
-  const escalated = escalatedCard(h);
-  const runningId = runningCard(h);
+  const escalated = escalatedTask(h);
+  const runningId = runningTask(h);
   await externalIssue(h);
-  const testing = gateCard(running, 21, "checks are running");
-  const merging = gateCard(running, 22, MERGE_STEP_REASONS.settling);
-  const verifying = gateCard(running, 23, "checks are running");
-  h.cards.transition(verifying, "Validating", `merged PR #6 as ${MERGE}`, {
+  const testing = gateTask(running, 21, "checks are running");
+  const merging = gateTask(running, 22, MERGE_STEP_REASONS.settling);
+  const verifying = gateTask(running, 23, "checks are running");
+  h.tasks.transition(verifying, "Validating", `merged PR #6 as ${MERGE}`, {
     mergeSha: MERGE,
     waiting: null,
   });
-  const done = gateCard(running, 24, "checks are running");
-  h.cards.transition(done, "Validating", `merged PR #6 as ${MERGE}`, { mergeSha: MERGE });
-  h.cards.transition(done, "Done", `checks passed on ${MERGE}`, { waiting: null });
-  h.cards.notify("PR #6 in octo/app was merged outside Hephaestus.", done);
+  const done = gateTask(running, 24, "checks are running");
+  h.tasks.transition(done, "Validating", `merged PR #6 as ${MERGE}`, { mergeSha: MERGE });
+  h.tasks.transition(done, "Done", `checks passed on ${MERGE}`, { waiting: null });
+  h.tasks.notify("PR #6 in octo/app was merged outside Hephaestus.", done);
   h.db
     .prepare(
-      "INSERT INTO mcp_calls (role, tool, arguments, ok, result, at) VALUES ('lead', 'start_work', '{\"card_id\":1}', 1, '{}', '2026-11-25T11:00:00.000Z')",
+      "INSERT INTO mcp_calls (role, tool, arguments, ok, result, at) VALUES ('lead', 'start_work', '{\"task_id\":1}', 1, '{}', '2026-11-25T11:00:00.000Z')",
     )
     .run();
   const base = store.current();
@@ -447,7 +447,7 @@ describe("Reloading", () => {
 
   it("stops on a transcript once its thread has ended, so the page keeps its place", async () => {
     dashboard = await startDashboard();
-    runningCard(dashboard.h);
+    runningTask(dashboard.h);
 
     expect(reload((await dashboard.get("/threads/w1/t-impl")).html)).toBe(
       "10;url=/threads/w1/t-impl",

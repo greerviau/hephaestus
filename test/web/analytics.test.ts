@@ -10,18 +10,18 @@ afterEach(async () => {
   dashboard = undefined;
 });
 
-/** One card in `repo` that opened a PR, merged, and finished 4 hours after it started. */
+/** One task in `repo` that opened a PR, merged, and finished 4 hours after it started. */
 function shipped(h: Harness, repo: string, issue: number): void {
   h.setClock(NOW - 2 * 86_400_000);
-  const id = h.cards.create({ repo, issueNumber: issue, title: `Work ${String(issue)}` }).id;
-  h.cards.update(id, { startedAt: new Date(NOW - 2 * 86_400_000).toISOString() });
-  h.cards.transition(id, "Implementing", "work started");
-  h.cards.transition(id, "Reviewing", "PR #5 at abc");
-  h.cards.transition(id, "Merging", "approved");
-  h.cards.recordMerge(repo, issue, "m", id, false);
-  h.cards.transition(id, "Validating", "merged");
+  const id = h.tasks.create({ repo, issueNumber: issue, title: `Work ${String(issue)}` }).id;
+  h.tasks.update(id, { startedAt: new Date(NOW - 2 * 86_400_000).toISOString() });
+  h.tasks.transition(id, "Implementing", "work started");
+  h.tasks.transition(id, "Reviewing", "PR #5 at abc");
+  h.tasks.transition(id, "Merging", "approved");
+  h.tasks.recordMerge(repo, issue, "m", id, false);
+  h.tasks.transition(id, "Validating", "merged");
   h.setClock(NOW - 2 * 86_400_000 + 4 * 3_600_000);
-  h.cards.transition(id, "Done", "checks passed");
+  h.tasks.transition(id, "Done", "checks passed");
 }
 
 /** The page's main region, so the sidebar's own links and forms do not match. */

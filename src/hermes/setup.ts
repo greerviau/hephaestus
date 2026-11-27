@@ -45,8 +45,8 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
   mkdirSync(paths.hermes, { recursive: true, mode: 0o700 });
   const hermes = { root: paths.hermes, run };
 
-  // Cards move only through Hephaestus: no model-driven triage, and no Hermes
-  // reviewer spawned for cards sitting in `review`.
+  // Tasks move only through Hephaestus: no model-driven triage, and no Hermes
+  // reviewer spawned for tasks sitting in `review`.
   await run(["config", "set", "kanban.auto_decompose", "false"]);
   await run(["config", "set", "kanban.review_dispatch", "false"]);
   await new FactoryBoard(hermes).ensure();
