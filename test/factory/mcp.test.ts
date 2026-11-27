@@ -328,4 +328,21 @@ describe("FactoryMcp", () => {
     expect(store.count()).toBe(1);
     await planner.close();
   });
+
+  it("refuses a change tool to the lead and the improver, records the call, and writes nothing", async () => {
+    const { url, store, mcp } = await start();
+    for (const role of ["lead", "improver"] as const) {
+      const c = await client(url, TOKENS[role]);
+      const result = await c
+        .callTool({
+          name: "propose_change",
+          arguments: { target: "persona:lead", content: "x", summary: "s", conversation: "c" },
+        })
+        .catch(() => ({ isError: true }));
+      expect(result.isError).toBe(true);
+      expect(mcp.calls()[0]).toMatchObject({ role, tool: "propose_change", ok: false });
+      await c.close();
+    }
+    expect(store.count()).toBe(1);
+  });
 });

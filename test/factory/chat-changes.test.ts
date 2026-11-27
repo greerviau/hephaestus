@@ -357,8 +357,30 @@ describe("ChatChanges", () => {
       expect(() => propose(TRIAGE, "---\nname: triage\n# no end\n")).toThrow(/never closes/);
       expect(() => propose(TRIAGE, "---\nname triage\n---\nbody")).toThrow(/not "key: value"/);
       expect(() => propose("skill:triage/data.json", "{oops")).toThrow(/not valid JSON/);
-      expect(() => propose("instruction:factory", "  \n")).toThrow(/cannot be empty/);
-      expect(() => propose("persona:lead", "")).toThrow(/cannot be empty/);
+      expect(() => propose(TRIAGE, "  \n")).toThrow(/cannot be empty/);
+    });
+
+    it("lets the owner's instructions for a role be cleared", async () => {
+      const { change } = s.changes.propose({
+        target: "persona:lead",
+        content: "",
+        summary: "Drop my lead instructions",
+        conversation: CHAT,
+      });
+      s.wait();
+      await s.changes.apply({ id: change.id, conversation: CHAT, approval: "yes" });
+      expect(deployedConfig(s).roles.lead.persona).toBe("");
+    });
+
+    it("refuses a skill file whose path lies inside another file, as the config does", () => {
+      expect(() =>
+        s.changes.propose({
+          target: "skill:triage/SKILL.md/notes.md",
+          content: "x",
+          summary: "s",
+          conversation: CHAT,
+        }),
+      ).toThrow(/config would be invalid/);
     });
 
     it("accepts frontmatter", () => {
@@ -523,6 +545,15 @@ describe("ChatChanges", () => {
       "skill:triage/",
       "skill:triage/../../etc/passwd",
       "skill:../x/SKILL.md",
+      "skill:triage/./SKILL.md",
+      "skill:triage//SKILL.md",
+      "skill:triage/a\\..\\b.md",
+      "skill:triage/a\u0000b.md",
+      "skill:triage/..",
+      "skill:/etc/passwd",
+      "skill:.hidden/SKILL.md",
+      "skill:~/SKILL.md",
+      "SKILL:triage/SKILL.md",
       "",
     ])("refuses %j", (target) => {
       expect(() => propose(target)).toThrow(RefusedTargetError);

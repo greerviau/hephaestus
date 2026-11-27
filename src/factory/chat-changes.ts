@@ -70,7 +70,7 @@ type Target =
 export const TARGET_FORMS = [
   "skill:<skill>/<file>",
   "instruction:<name>",
-  "persona:<role>",
+  "persona:<role> (the owner's own instructions for a role, which follow the shipped ones)",
   `setting:<${Object.keys(SETTINGS).join("|")}>`,
 ] as const;
 
@@ -195,9 +195,6 @@ function checkFormat(target: Target, text: string): string {
       );
     }
     return JSON.stringify(value, null, 2);
-  }
-  if (target.kind !== "skill" && text.trim() === "") {
-    throw new ChangeError("An instruction or persona cannot be empty.");
   }
   if (target.kind === "skill") {
     if (target.file.endsWith(".json")) {

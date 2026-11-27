@@ -11,6 +11,14 @@ import type { ConfigStore } from "../config/store.js";
 import { ENDED_STATUSES, type ThreadEvents } from "../t3/events.js";
 import { finalMessage } from "../workers/scripts.js";
 import type { Card, CardStore } from "./cards.js";
+import {
+  CHANGE_SHAPES,
+  CHANGE_TOOLS,
+  redactChangeArgs,
+  registerChangeTools,
+  type ChangeRegister,
+  type ChangeTool,
+} from "./chat-change-tools.js";
 import { ChatChanges, type Deploy } from "./chat-changes.js";
 import type { Intake } from "./intake.js";
 import type { Pipeline } from "./pipeline.js";
@@ -39,16 +47,11 @@ type Tool =
   | "list_threads"
   | "read_thread"
   | "get_config"
-  | "list_targets"
-  | "read_target"
-  | "propose_change"
-  | "apply_change"
-  | "decline_change"
-  | "list_changes"
-  | "revert_change";
+  | ChangeTool;
 
 /** Each tool's argument schema, shared by its handler and the check at the request boundary. */
 const TOOL_SHAPES = {
+  ...CHANGE_SHAPES,
   file_issue: {
     repo: z.string().describe("owner/repo of a factory project"),
     title: z.string().min(1),
@@ -61,26 +64,6 @@ const TOOL_SHAPES = {
   list_threads: { since: z.string().describe("ISO 8601 time") },
   read_thread: { environment_id: z.string(), thread_id: z.string() },
   get_config: {},
-  list_targets: {},
-  read_target: { target: z.string().describe("for example skill:triage/SKILL.md") },
-  propose_change: {
-    target: z.string().describe("what to change, as list_targets shows"),
-    content: z.string().describe("the whole new text; for a setting, its new JSON value"),
-    summary: z.string().min(1).describe("one line: what changes and why"),
-    conversation: z.string().min(1).describe("an id or link for this chat conversation"),
-  },
-  apply_change: {
-    change_id: z.number().int(),
-    conversation: z.string().min(1).describe("the conversation the diff was shown in"),
-    approval: z.string().min(1).describe("the person's message approving the change, quoted"),
-  },
-  decline_change: { change_id: z.number().int(), conversation: z.string().min(1) },
-  list_changes: {},
-  revert_change: {
-    change_id: z.number().int(),
-    conversation: z.string().min(1),
-    request: z.string().min(1).describe("the person's message asking for the revert, quoted"),
-  },
   propose_version: {
     message: z.string().min(1).describe("the problem and the change"),
     config: z
@@ -100,19 +83,7 @@ const TOOL_SHAPES = {
 
 /** The tools each role may call. Factory threads never call this server. */
 export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
-  planner: [
-    "file_issue",
-    "get_status",
-    "list_cards",
-    "read_thread",
-    "list_targets",
-    "read_target",
-    "propose_change",
-    "apply_change",
-    "decline_change",
-    "list_changes",
-    "revert_change",
-  ],
+  planner: ["file_issue", "get_status", "list_cards", "read_thread", ...CHANGE_TOOLS],
   lead: ["start_work", "escalate", "file_issue", "get_status", "list_cards", "read_thread"],
   improver: [
     "propose_version",
@@ -147,19 +118,6 @@ function cardSummary(card: Card): Record<string, unknown> {
   };
 }
 
-/**
- * What the record keeps of a call's arguments. A proposed change's text is kept
- * with its change record only when it passed the secret check, so the call log
- * keeps just its size.
- */
-function redacted(tool: Tool, args: unknown): unknown {
-  if (tool !== "propose_change" || typeof args !== "object" || args === null) return args;
-  const { content, ...rest } = args as Record<string, unknown>;
-  return typeof content === "string"
-    ? { ...rest, content: `<${String(content.length)} characters>` }
-    : args;
-}
-
 function text(value: unknown): { content: { type: "text"; text: string }[] } {
   return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
 }
@@ -182,12 +140,7 @@ export class FactoryMcp {
 
   constructor(private readonly options: FactoryMcpOptions) {
     this.now = options.now ?? (() => new Date());
-    this.changes = new ChatChanges({
-      db: options.db,
-      store: options.store,
-      deploy: options.deploy,
-      now: this.now,
-    });
+    this.changes = new ChatChanges({ ...options, now: this.now });
   }
 
   /** The role a request's bearer token belongs to, or undefined. */
@@ -294,7 +247,7 @@ export class FactoryMcp {
       .run(
         role,
         tool,
-        JSON.stringify(redacted(tool, args)).slice(0, MAX_TEXT),
+        JSON.stringify(redactChangeArgs(tool, args)).slice(0, MAX_TEXT),
         ok ? 1 : 0,
         JSON.stringify(result).slice(0, MAX_TEXT),
         this.now().toISOString(),
@@ -526,88 +479,7 @@ export class FactoryMcp {
         };
       },
     );
-    this.registerChangeTools(register);
+    registerChangeTools(register as ChangeRegister, this.changes);
     return server;
-  }
-
-  private registerChangeTools(
-    register: <T extends Tool>(
-      tool: T,
-      description: string,
-      run: (args: z.infer<z.ZodObject<(typeof TOOL_SHAPES)[T]>>) => unknown,
-    ) => void,
-  ): void {
-    const { changes } = this;
-    const present = (change: ReturnType<ChatChanges["get"]>): Record<string, unknown> => ({
-      change_id: change.id,
-      target: change.target,
-      summary: change.summary,
-      state: change.state,
-      conversation: change.conversation,
-      proposed_at: change.proposedAt,
-      approval: change.approval,
-      applied_at: change.appliedAt,
-      version: change.version,
-      error: change.error,
-      reverted_at: change.revertedAt,
-      revert_version: change.revertVersion,
-    });
-    register(
-      "list_targets",
-      "The skills, instructions, personas, and settings of the factory that can be changed from chat. Nothing else can, and never a secret.",
-      () => changes.targets(),
-    );
-    register(
-      "read_target",
-      "The current text of one editable target: a skill file, an instruction, a persona, or a setting.",
-      ({ target }) => changes.read(target),
-    );
-    register(
-      "propose_change",
-      "Propose a new text for one editable target. Nothing is written. Returns the exact diff, which you must post in the chat, and then ask the person to approve it.",
-      ({ target, content, summary, conversation }) => {
-        const { change, diff } = changes.propose({ target, content, summary, conversation });
-        return {
-          change_id: change.id,
-          target: change.target,
-          diff,
-          next: "Post this diff exactly as given, in a code block, and ask the person whether to apply it. Call apply_change only after they approve in this conversation, and decline_change if they decline. If they say nothing, do nothing.",
-        };
-      },
-    );
-    register(
-      "apply_change",
-      "Apply a proposed change after the person approved it in the same conversation. It is checked, saved as a config version, and deployed. Report the result to the person, including any error.",
-      async ({ change_id, conversation, approval }) => {
-        const { change, warning } = await changes.apply({
-          id: change_id,
-          conversation,
-          approval,
-        });
-        return { ...present(change), ...(warning === undefined ? {} : { warning }) };
-      },
-    );
-    register(
-      "decline_change",
-      "Record that the person declined a proposed change. Nothing is written.",
-      ({ change_id, conversation }) => present(changes.decline({ id: change_id, conversation })),
-    );
-    register(
-      "list_changes",
-      "The changes proposed and applied from chat, newest first, with their state, conversation, and config version.",
-      () => changes.list().map(present),
-    );
-    register(
-      "revert_change",
-      "Put an applied change back as it was, when the person asks for that. Saved and deployed as a new config version; refused when the target has changed since.",
-      async ({ change_id, conversation, request }) => {
-        const { change, diff, warning } = await changes.revert({
-          id: change_id,
-          conversation,
-          request,
-        });
-        return { ...present(change), diff, ...(warning === undefined ? {} : { warning }) };
-      },
-    );
   }
 }
