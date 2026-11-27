@@ -77,6 +77,8 @@ aside.side::backdrop { display: none; }
 .side-foot { margin-top: 24px; display: grid; gap: 12px; border-top: 1px solid var(--line); padding-top: 16px; }
 .side-foot .row-line { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; }
 .side-foot form { margin: 0; }
+/* The update hint is a bare paragraph, not a row-line, so it needs the same inset to line up with the lines around it. */
+.side-foot .side-update { padding: 0 8px; }
 .top { display: none; }
 .shell > main { min-width: 0; border-left: 1px solid var(--line); min-height: 100vh; }
 main:focus { outline: none; }
