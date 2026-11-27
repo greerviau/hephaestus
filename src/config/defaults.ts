@@ -24,10 +24,15 @@ function template(path: string): string {
   return readFileSync(join(TEMPLATES, path), "utf8");
 }
 
+/** The role's persona as the shipped template has it. */
+export function shippedPersona(name: RoleName): string {
+  return template(`roles/${name}.md`);
+}
+
 /** The first config version: the shipped role templates and instructions, plus imported skills. */
 export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
   const role = (name: RoleName): RoleConfig => ({
-    persona: template(`roles/${name}.md`),
+    persona: shippedPersona(name),
     skills: [],
   });
   const roles: Record<RoleName, RoleConfig> = {

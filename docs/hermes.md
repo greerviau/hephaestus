@@ -39,7 +39,9 @@ The agent you talk to is a general communicator, not only an issue filer. It dec
 
 It files an issue only when you ask for work or agree when it offers. It also checks the factory's status first, so it does not file a duplicate or pass a project's cap on open issues.
 
-The persona that gives it this behavior is `templates/roles/planner.md`. Hephaestus reads that template once, when it installs, to build the first config version. An existing install keeps the persona in its config versions, so a newer template does not change it: edit the role's persona in the dashboard's config editor, and deploying that version updates the profile.
+For stats, the factory's card list gives each card's stage, PR, review rounds, and recorded merge time. The agent counts merges by that merge time, never by a card's last update, which moves for other reasons. It lists at most 100 cards, so when a count reaches the end of the list it says the count is at least that many, and it says so when a card has no recorded merge time.
+
+The persona that gives it this behavior is `templates/roles/planner.md`. A fresh install starts from that template. An install made before this behavior existed keeps the old persona in its config versions, so when the service starts it checks whether the persona is still exactly the old stock text. If so, it creates a new version from the current one, authored `upgrade`, that replaces only that persona, approves it, and deploys it to the workers and the factory Hermes root. A persona the owner edited is never touched. Each upgrade runs once, and a deploy that fails is tried again at the next start. To change the persona yourself, edit the role's persona in the dashboard's config editor.
 
 ### Requests and their threads
 

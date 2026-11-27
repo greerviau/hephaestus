@@ -36,6 +36,11 @@ describe("defaultConfig", () => {
     for (const tool of ["get_status", "list_cards", "read_thread"]) expect(persona).toContain(tool);
     expect(persona).toMatch(/do not file an issue/i);
     expect(persona).toMatch(/say so/i);
+    // Merge counts use the recorded merge time, never a card's last update, and admit when they are partial.
+    expect(persona).toContain("merged_at");
+    expect(persona).toMatch(/last update is not its merge date/);
+    expect(persona).toMatch(/at most 100 cards/);
+    expect(persona).toMatch(/at least that many/);
     // The filing rules stay: file_issue only, a status check first, and the tracking line on its own.
     expect(persona).toContain("file_issue");
     expect(persona).toMatch(/duplicate/);

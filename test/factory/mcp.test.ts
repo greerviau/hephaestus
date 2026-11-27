@@ -136,6 +136,30 @@ describe("FactoryMcp", () => {
     await c.close();
   });
 
+  it("gives the planner each card's recorded merge time, which can differ from its last update", async () => {
+    const { h, url } = await start();
+    const merged = h.cards.create({ repo: "octo/app", issueNumber: 1, title: "merged" });
+    h.cards.update(merged.id, { prNumber: 7 });
+    h.cards.recordMerge("octo/app", 7, "abc123", merged.id, false);
+    const open = h.cards.create({ repo: "octo/app", issueNumber: 2, title: "open" });
+    // A later change to a card that already merged moves its updated_at, not its merge time.
+    h.cards.event(merged.id, "note", "later");
+    const c = await client(url, TOKENS.planner);
+    const listed = JSON.parse(
+      ((await c.callTool({ name: "list_cards", arguments: {} })) as { content: { text: string }[] })
+        .content[0]?.text ?? "[]",
+    ) as { card_id: number; merged_at: string | null }[];
+    const status = json(
+      await c.callTool({ name: "get_status", arguments: { card_id: merged.id } }),
+    );
+
+    const row = h.db.prepare("SELECT at FROM merges WHERE pr_number = 7").get() as { at: string };
+    expect(listed.find((card) => card.card_id === merged.id)?.merged_at).toBe(row.at);
+    expect(listed.find((card) => card.card_id === open.id)?.merged_at).toBeNull();
+    expect(status.merged_at).toBe(row.at);
+    await c.close();
+  });
+
   it("starts work for the lead and reports a refused call as an error", async () => {
     const { h, url, mcp } = await start();
     h.github.issues.set(5, { number: 5, title: "t", body: "b", author: "o", state: "OPEN" });

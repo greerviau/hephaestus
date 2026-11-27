@@ -8,6 +8,7 @@ import { DEFAULT_PORT, installPrefix, readConfig } from "./config.js";
 import { resolveRoots } from "./baseline.js";
 import { scheduleBackups } from "./config/backup.js";
 import { importSkill } from "./config/defaults.js";
+import { applyUpgrades } from "./config/upgrades.js";
 import { ConfigStore } from "./config/store.js";
 import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./install.js";
 import { FactoryModel, spawnLogin } from "./hermes/factory-model.js";
@@ -464,6 +465,12 @@ async function main(argv: string[]): Promise<number> {
       const follower = new ThreadFollower(t3, events).run(following.signal);
       const workers = workerManager(db, paths, config, store, t3, events);
       const engine = factoryEngine(db, paths, config, store, t3, events, workers);
+      // An install from before a role's persona changed gets the new one unless the owner edited it.
+      applyUpgrades({ db, store, deploy: (id) => workers.deployVersion(id) }).catch(
+        (error: unknown) => {
+          console.error("Upgrading the config failed", error);
+        },
+      );
       const mcpServer = engine.mcp.listen(config.port + 1);
       const engineTicks = [
         setInterval(() => {

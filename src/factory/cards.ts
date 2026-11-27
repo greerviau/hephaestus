@@ -425,6 +425,15 @@ export class CardStore {
     })();
   }
 
+  /** When the PR's merge was recorded, or null when none is. Unlike a card's update time, a later change does not move it. */
+  mergedAt(repo: string, prNumber: number | null): string | null {
+    if (prNumber === null) return null;
+    const row = this.db
+      .prepare("SELECT at FROM merges WHERE repo = ? AND pr_number = ?")
+      .get(repo, prNumber) as { at: string } | undefined;
+    return row?.at ?? null;
+  }
+
   /** Whether any merge of the PR is recorded, by Hephaestus or anyone else. */
   hasMerge(repo: string, prNumber: number): boolean {
     return (
