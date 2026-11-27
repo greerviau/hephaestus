@@ -14,6 +14,7 @@ import {
   type RouteContext,
   type ShellSource,
 } from "./web/http.js";
+import { LAZY_SCRIPT, LAZY_SCRIPT_PATH } from "./web/lazy.js";
 import { LIVE_SCRIPT, LIVE_SCRIPT_PATH } from "./web/live.js";
 import { STYLESHEET } from "./web/style.js";
 import { LOGO_PATH, brandFile } from "./web/brand.js";
@@ -85,6 +86,10 @@ export function createDashboardServer({
     }
     if (path === LIVE_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
       send(response, 200, "text/javascript; charset=utf-8", LIVE_SCRIPT);
+      return;
+    }
+    if (path === LAZY_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
+      send(response, 200, "text/javascript; charset=utf-8", LAZY_SCRIPT);
       return;
     }
     const brand = method === "GET" || method === "HEAD" ? brandFile(path) : undefined;

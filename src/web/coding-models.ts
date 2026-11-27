@@ -12,20 +12,40 @@ import { applyCodingModels, codingModelsFields } from "./factory-settings.js";
 import type { FactoryPages } from "./factory.js";
 import { buttonLink, empty, escapeHtml, section, statusText } from "./html.js";
 import { sendHtml, type Route, type RouteContext } from "./http.js";
-import { PLANNING_PATH, planningState } from "./model.js";
+import { LAZY_SCRIPT_TAG } from "./lazy.js";
+import {
+  PLANNING_PATH,
+  PLANNING_SUMMARY_PATH,
+  cachedPlanningState,
+  type PlanningState,
+} from "./model.js";
 
 /** The Models tab: the planning and chat model in use, and a form for the models the coding jobs run. */
 export function codingModelsRoutes(factory: FactoryPages): Route[] {
   return [
-    { method: "GET", path: /^\/config\/models$/, handle: (context) => show(context) },
+    {
+      method: "GET",
+      path: /^\/config\/models$/,
+      handle: (context) => {
+        show(context);
+      },
+    },
     { method: "POST", path: /^\/config\/models$/, handle: (context) => save(context) },
+    {
+      method: "GET",
+      path: /^\/config\/models\/planning\/summary$/,
+      handle: async (context) => {
+        const found = await cachedPlanningState(
+          factory.model,
+          (factory.now ?? Date.now)(),
+          context.url.searchParams.get("refresh") === "1",
+        );
+        sendHtml(context.response, 200, planningAside(found));
+      },
+    },
   ];
 
-  async function show(
-    context: RouteContext,
-    errors?: string[],
-    submitted?: URLSearchParams,
-  ): Promise<void> {
+  function show(context: RouteContext, errors?: string[], submitted?: URLSearchParams): void {
     const current = factory.store.current();
     const coding =
       current === undefined
@@ -38,7 +58,7 @@ export function codingModelsRoutes(factory: FactoryPages): Route[] {
         factory,
         context,
         "models",
-        `${savedNotice(context.url)}${await planning(factory)}${coding}`,
+        `${savedNotice(context.url)}${planning(factory)}${coding}${LAZY_SCRIPT_TAG}`,
       ),
     );
   }
@@ -48,7 +68,7 @@ export function codingModelsRoutes(factory: FactoryPages): Route[] {
     if (form === undefined) return;
     const base = baseOf(factory, form);
     if (base === undefined) {
-      await show(context, [STALE]);
+      show(context, [STALE]);
       return;
     }
     const applied = applyCodingModels(base.document, form);
@@ -62,13 +82,29 @@ export function codingModelsRoutes(factory: FactoryPages): Route[] {
             form,
             saved: "/config/models",
           });
-    if (errors !== undefined) await show(context, errors, form);
+    if (errors !== undefined) show(context, errors, form);
   }
 }
 
-/** The Planning and chat section: one row that says what is in use and links to the page that changes it. */
-async function planning(factory: FactoryPages): Promise<string> {
-  const found = await planningState(factory.model);
+/**
+ * The Planning and chat section. Reading the model asks Hermes, which is slow,
+ * so the row renders at once and its right side loads after the page is up.
+ * Without a ready Hermes there is nothing to wait for and the row says so now.
+ */
+function planning(factory: FactoryPages): string {
+  const { model } = factory;
+  const ready = model !== undefined && model.ready();
+  const aside = ready
+    ? `<div class="aside" data-lazy-url="${PLANNING_SUMMARY_PATH}" aria-busy="true"><span class="muted">Loading the model in use...</span><noscript>${buttonLink(PLANNING_PATH, "Open")}</noscript></div>`
+    : `<div class="aside">${planningAside({ state: model === undefined ? "absent" : "not-ready" })}</div>`;
+  return section({
+    title: "Planning and chat",
+    body: `<ul class="rows"><li class="row job"><div class="main"><span class="title">Plan, brief, and chat</span><span class="subline">Decides what to work on, writes each task's brief, and answers you in chat. Runs on this host.</span></div>${aside}</li></ul><p class="hint note">Saved on its own and takes effect at once. It is not part of a config version.</p>`,
+  });
+}
+
+/** What the right side of the Planning and chat row says. */
+function planningAside(found: PlanningState): string {
   let aside: string;
   if (found.state === "set") {
     const signedIn =
@@ -88,8 +124,8 @@ async function planning(factory: FactoryPages): Promise<string> {
   } else {
     aside = `${statusText("you", "Not set")}${buttonLink(PLANNING_PATH, "Set up", { variant: "primary" })}`;
   }
-  return section({
-    title: "Planning and chat",
-    body: `<ul class="rows"><li class="row job"><div class="main"><span class="title">Plan, brief, and chat</span><span class="subline">Decides what to work on, writes each task's brief, and answers you in chat. Runs on this host.</span></div><div class="aside">${aside}</div></li></ul><p class="hint note">Saved on its own and takes effect at once. It is not part of a config version.</p>`,
-  });
+  // Those two answer without Hermes, so a refresh would change nothing.
+  return found.state === "absent" || found.state === "not-ready"
+    ? aside
+    : `${aside}<button type="button" class="link" data-lazy-refresh>Refresh</button>`;
 }

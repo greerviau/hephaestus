@@ -553,18 +553,48 @@ describe("Planning model page", () => {
   });
 });
 
+const SUMMARY = "/config/models/planning/summary";
+
 describe("Models tab: planning and chat", () => {
+  it("opens without waiting for Hermes and loads the model in use into a placeholder", async () => {
+    const slow = fakeModel();
+    let reads = 0;
+    slow.catalog = () => {
+      reads += 1;
+      return new Promise<ModelCatalog>(() => undefined);
+    };
+    dashboard = await startDashboard({ model: slow });
+
+    const { status, html } = await dashboard.get("/config/models");
+
+    expect(status).toBe(200);
+    expect(reads).toBe(0);
+    expect(html).toContain(`data-lazy-url="${SUMMARY}"`);
+    expect(html).toContain("Loading");
+    expect(html).toContain('<script src="/assets/lazy.js" defer></script>');
+    expect(html).toContain('name="claude.model"');
+    expect(html).not.toContain('http-equiv="refresh"');
+  });
+
+  it("serves the script that fills the placeholder", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    const response = await fetch(`${dashboard.base}/assets/lazy.js`);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("javascript");
+  });
+
   it("shows the model in use, that its provider is signed in, and a link to change it", async () => {
     dashboard = await startDashboard({ model: fakeModel() });
 
-    const { status, html } = await dashboard.get("/config/models");
+    const { status, html } = await dashboard.get(SUMMARY);
 
     expect(status).toBe(200);
     expect(html).toContain("<strong>claude-sonnet-5</strong>");
     expect(html).toContain("Anthropic");
     expect(html).toContain("Signed in");
     expect(html).toContain('<a class="btn" href="/config/models/planning">Change</a>');
-    expect(html).not.toContain('http-equiv="refresh"');
   });
 
   it("says the provider is not signed in", async () => {
@@ -572,7 +602,7 @@ describe("Models tab: planning and chat", () => {
       model: fakeModel({ catalog: catalog({ provider: "deepseek", model: "deepseek-chat" }) }),
     });
 
-    const { html } = await dashboard.get("/config/models");
+    const { html } = await dashboard.get(SUMMARY);
 
     expect(html).toContain("<strong>deepseek-chat</strong>");
     expect(html).toContain("Not signed in");
@@ -583,7 +613,7 @@ describe("Models tab: planning and chat", () => {
       model: fakeModel({ catalog: catalog({ provider: "", model: "" }) }),
     });
 
-    const { html } = await dashboard.get("/config/models");
+    const { html } = await dashboard.get(SUMMARY);
 
     expect(html).toContain("Not set");
     expect(html).toContain('<a class="btn primary" href="/config/models/planning">Set up</a>');
@@ -610,17 +640,17 @@ describe("Models tab: planning and chat", () => {
       }),
     });
 
-    expect((await dashboard.get("/config/models")).html).not.toContain(hostile);
+    expect((await dashboard.get(SUMMARY)).html).not.toContain(hostile);
   });
 
   it("still shows the coding models when Hermes does not answer, is not ready, or is absent", async () => {
     const down = fakeModel();
     down.catalog = () => Promise.reject(new Error("spawn failed: /secret/path"));
     dashboard = await startDashboard({ model: down });
-    const failed = (await dashboard.get("/config/models")).html;
+    const failed = (await dashboard.get(SUMMARY)).html;
     expect(failed).toContain("Hermes did not answer");
     expect(failed).not.toContain("/secret/path");
-    expect(failed).toContain('name="claude.model"');
+    expect((await dashboard.get("/config/models")).html).toContain('name="claude.model"');
     await dashboard.close();
 
     dashboard = await startDashboard({ model: fakeModel({ ready: false }) });
@@ -631,5 +661,66 @@ describe("Models tab: planning and chat", () => {
     const absent = (await dashboard.get("/config/models")).html;
     expect(absent).toContain("This install has no factory Hermes");
     expect(absent).toContain('name="claude.model"');
+  });
+
+  it("reads Hermes once for repeated visits, and again on an explicit refresh", async () => {
+    const counted = fakeModel();
+    let reads = 0;
+    counted.catalog = () => {
+      reads += 1;
+      return Promise.resolve(catalog());
+    };
+    dashboard = await startDashboard({ model: counted });
+
+    await dashboard.get(SUMMARY);
+    await dashboard.get(SUMMARY);
+    expect(reads).toBe(1);
+
+    await dashboard.get(`${SUMMARY}?refresh=1`);
+    expect(reads).toBe(2);
+  });
+
+  it("does not keep an answer that said Hermes was down", async () => {
+    const flaky = fakeModel();
+    let reads = 0;
+    flaky.catalog = () => {
+      reads += 1;
+      return reads === 1 ? Promise.reject(new Error("boom")) : Promise.resolve(catalog());
+    };
+    dashboard = await startDashboard({ model: flaky });
+
+    expect((await dashboard.get(SUMMARY)).html).toContain("Hermes did not answer");
+    expect((await dashboard.get(SUMMARY)).html).toContain("<strong>claude-sonnet-5</strong>");
+  });
+
+  it("reads Hermes again after the model or a key is saved", async () => {
+    const counted = fakeModel();
+    let reads = 0;
+    counted.catalog = () => {
+      reads += 1;
+      return Promise.resolve(catalog());
+    };
+    dashboard = await startDashboard({ model: counted });
+    await dashboard.get(SUMMARY);
+    expect(reads).toBe(1);
+
+    await dashboard.post("/config/models/planning/set", {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+    });
+    await dashboard.get(SUMMARY);
+    expect(reads).toBe(2);
+
+    await dashboard.post("/config/models/planning/key", { provider: "deepseek", key: "k" });
+    await dashboard.get(SUMMARY);
+    expect(reads).toBe(3);
+  });
+
+  it("has the planning page drop the browser's copy of the summary", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    const { html } = await dashboard.get("/config/models/planning");
+
+    expect(html).toContain(`data-lazy-forget="${SUMMARY}"`);
   });
 });

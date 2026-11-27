@@ -26,10 +26,13 @@ import {
   statusText,
 } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
+import { LAZY_SCRIPT_PATH } from "./lazy.js";
 
 const MAX_FORM_BYTES = 16 * 1024;
 /** The page that sets the planning and chat model, a drill-in of the Models tab. */
 export const PLANNING_PATH = "/config/models/planning";
+/** The fragment the Models tab loads after it renders: what the planning and chat row says. */
+export const PLANNING_SUMMARY_PATH = "/config/models/planning/summary";
 const TITLE = "Planning and chat model";
 const CRUMBS = [
   ["Config", "/config"],
@@ -135,6 +138,43 @@ export async function planningState(model: Model | undefined): Promise<PlanningS
   };
 }
 
+/** How long the Models tab trusts the last answer from Hermes. */
+const PLANNING_TTL_MS = 60_000;
+
+interface Remembered {
+  at: number;
+  state: Promise<PlanningState>;
+}
+
+const remembered = new WeakMap<object, Remembered>();
+
+/**
+ * `planningState`, remembered for a minute, because Hermes answers by running
+ * a subprocess that takes seconds. An answer that said Hermes was down is not
+ * kept, so the next read tries again. `refresh` reads again regardless.
+ */
+export function cachedPlanningState(
+  model: Model | undefined,
+  now: number,
+  refresh = false,
+): Promise<PlanningState> {
+  // These two answer without Hermes, so there is nothing to remember.
+  if (model === undefined || !model.ready()) return planningState(model);
+  const hit = remembered.get(model);
+  if (!refresh && hit !== undefined && now - hit.at < PLANNING_TTL_MS) return hit.state;
+  const entry: Remembered = { at: now, state: planningState(model) };
+  remembered.set(model, entry);
+  void entry.state.then((found) => {
+    if (found.state === "down" && remembered.get(model) === entry) remembered.delete(model);
+  });
+  return entry.state;
+}
+
+/** Drops the remembered answer, for a change that makes it wrong. */
+export function forgetPlanningState(model: Model | undefined): void {
+  if (model !== undefined) remembered.delete(model);
+}
+
 /** The planning and chat model page: give the factory Hermes a provider and model, with any provider Hermes supports. */
 export function modelRoutes(factory: FactoryPages): Route[] {
   const model = factory.model;
@@ -217,6 +257,9 @@ export function modelRoutes(factory: FactoryPages): Route[] {
           ...(error instanceof ModelPartial ? { partial: true } : {}),
         }),
       );
+    } finally {
+      // Even a refused or partial change may have written part of the model.
+      forgetPlanningState(model);
     }
   }
 
@@ -282,12 +325,17 @@ export function modelRoutes(factory: FactoryPages): Route[] {
             })
           : modelSection(catalog, provider, problem?.warning)
     }`;
-    return layout(TITLE, body, {
-      section: "/config",
-      shell,
-      crumbs: CRUMBS,
-      ...(refresh ? { refreshSeconds: 5 } : {}),
-    });
+    // A page that changes the model drops the Models tab's copy of what it shows.
+    return layout(
+      TITLE,
+      `${body}<script src="${LAZY_SCRIPT_PATH}" data-lazy-forget="${PLANNING_SUMMARY_PATH}" defer></script>`,
+      {
+        section: "/config",
+        shell,
+        crumbs: CRUMBS,
+        ...(refresh ? { refreshSeconds: 5 } : {}),
+      },
+    );
   }
 }
 
