@@ -105,9 +105,11 @@ export class FactoryBoard {
     const note = threadId === undefined ? `stage=${stage}` : `stage=${stage} thread=${threadId}`;
     const current = await this.status(id);
     if (target === "scheduled") {
-      if (current === "triage") await this.moveFromTriage(id, "scheduled");
+      if (current === "triage") await this.moveTask(id, "scheduled");
       else if (current !== "scheduled") await this.kanban("schedule", "--", id, `stage=${stage}`);
     } else if (target === "done") {
+      // Hermes completes nothing from scheduled or triage; blocked, unlike ready, is never claimed meanwhile.
+      if (current === "scheduled" || current === "triage") await this.moveTask(id, "blocked");
       if (current !== "done")
         await this.kanban("complete", "--result=Validated and merged.", "--", id);
     } else if (target === "archived") {
@@ -146,17 +148,18 @@ export class FactoryBoard {
       return true;
     }
     if (current === "triage") {
-      await this.moveFromTriage(id, "ready");
+      await this.moveTask(id, "ready");
       return true;
     }
     return false;
   }
 
   /**
-   * Hermes's CLI has no way out of `triage` that does not run a model, so the
-   * Hephaestus plugin moves the task the way a drag on Hermes's dashboard does.
+   * Makes a move Hermes's CLI has no command for: out of `triage` without
+   * running a model, or from `scheduled` to `blocked`. The Hephaestus plugin
+   * moves the task the way a drag on Hermes's dashboard does.
    */
-  private async moveFromTriage(id: string, to: "ready" | "scheduled"): Promise<void> {
+  private async moveTask(id: string, to: "ready" | "scheduled" | "blocked"): Promise<void> {
     const output = await this.hermes.run([
       "hephaestus",
       "move-task",
@@ -174,7 +177,7 @@ export class FactoryBoard {
         : typeof result?.outdated === "string"
           ? `Hermes code the plugin calls is missing (${result.outdated})`
           : output.trim().slice(-200);
-    throw new Error(`Moving card ${id} out of triage failed: ${reason}`);
+    throw new Error(`Moving card ${id} to ${to} failed: ${reason}`);
   }
 
   async comment(id: string, text: string): Promise<void> {

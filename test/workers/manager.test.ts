@@ -237,6 +237,29 @@ describe("WorkerManager", () => {
     expect(t3.launches.at(-1)?.providerInstanceId).toBe(FACTORY_CODEX);
   });
 
+  it("checks again at once when the reset T3 reports has already passed", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    finishThread("t2", "FACTORY-READY");
+    t3.snoozes.t3 = new Date(clock - 2 * 60_000).toISOString();
+    events.upsertItems("env-1", "t3", [
+      {
+        itemId: "limit",
+        position: 5,
+        type: "error",
+        status: "failed",
+        text: "You've hit your usage limit.",
+      },
+    ]);
+    events.setStatus("env-1", "t3", "failed");
+    const launches = t3.launches.length;
+    await manager.tick();
+
+    expect(t3.launches).toHaveLength(launches + 1);
+    expect(t3.launches.at(-1)?.providerInstanceId).toBe(FACTORY_CODEX);
+  });
+
   it("still asks for a sign-in when the other provider's check hit a limit", async () => {
     await manager.deployVersion(1);
     finishThread("t1", deployed(1, SHA));

@@ -212,4 +212,40 @@ describe("FactoryBoard", () => {
       "kanban --board factory comment --author=hephaestus -- t_1 note",
     );
   });
+
+  it("completes a parked card through blocked, which Hermes completes and no worker claims", async () => {
+    const { hermes, board: b } = board();
+    let status = "scheduled";
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status } }),
+    );
+    hermes.answer(
+      (args) => args.includes("move-task"),
+      () => {
+        status = "blocked";
+        return JSON.stringify({ ok: true, status });
+      },
+    );
+    hermes.answer(
+      (args) => args.includes("complete"),
+      () => {
+        status = "done";
+        return "";
+      },
+    );
+
+    await b.setStage("t_1", "Done");
+    status = "triage";
+    await b.setStage("t_1", "Done");
+
+    expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
+      "hephaestus move-task --board=factory --to=blocked -- t_1",
+      "kanban --board factory complete --result=Validated and merged. -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 stage=Done",
+      "hephaestus move-task --board=factory --to=blocked -- t_1",
+      "kanban --board factory complete --result=Validated and merged. -- t_1",
+      "kanban --board factory comment --author=hephaestus -- t_1 stage=Done",
+    ]);
+  });
 });

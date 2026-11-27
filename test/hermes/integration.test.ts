@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { rolePrompt } from "../../src/config/shipped.js";
 import { FactoryBoard } from "../../src/hermes/board.js";
 import { hermesRunner } from "../../src/hermes/cli.js";
+import { installModelPlugin } from "../../src/hermes/plugin.js";
 import { FactoryProfiles } from "../../src/hermes/profiles.js";
 import { openStore } from "../../src/store.js";
 import { sampleConfig } from "../config/fixtures.js";
@@ -84,12 +85,34 @@ describe.runIf(enabled)("Hermes integration", () => {
     ).toBe(id);
     expect(await board.status(id)).toBe("ready");
 
+    await installModelPlugin({ root: factoryRoot, run });
     await board.setStage(id, "Implementing", "thread-1");
-    expect(await board.status(id)).toBe("blocked");
+    expect(await board.status(id)).toBe("scheduled");
+    await board.handBack(id, "Escalated to the lead: a reason");
+    expect(await board.status(id)).toBe("ready");
     await board.setStage(id, "Reviewing", "thread-2");
-    expect(await board.status(id)).toBe("blocked");
+    expect(await board.status(id)).toBe("scheduled");
     await board.setStage(id, "Done");
     expect(await board.status(id)).toBe("done");
+
+    // Blocked again after an unblock, a task goes to triage, and a hand-back still reaches the lead.
+    const looped = await board.createCard({
+      title: "Looped card",
+      body: "Body",
+      idempotencyKey: "integration-3",
+    });
+    const kanban = (...args: string[]): Promise<string> =>
+      run(["kanban", "--board", "factory", ...args]);
+    await kanban("block", "--", looped, "first");
+    await kanban("unblock", "--", looped);
+    await kanban("block", "--", looped, "second");
+    expect(await board.status(looped)).toBe("triage");
+    await board.handBack(looped, "Escalated to the lead: a reason");
+    expect(await board.status(looped)).toBe("ready");
+    await kanban("block", "--", looped, "third");
+    expect(await board.status(looped)).toBe("triage");
+    await board.setStage(looped, "Done");
+    expect(await board.status(looped)).toBe("done");
 
     const other = await board.createCard({
       title: "Abandon me",

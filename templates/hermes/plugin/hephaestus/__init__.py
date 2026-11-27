@@ -3,8 +3,8 @@
 Hephaestus installs this plugin in the factory's own Hermes home and runs
 `hermes hephaestus <action>` with HERMES_HOME set to that home. Each action
 calls the same Hermes code that Hermes's own dashboard uses, so every
-provider Hermes supports works here too, and a task moves the way a drag on
-the dashboard's kanban board moves it.
+provider Hermes supports works here too. A kanban task moves through Hermes's
+kanban DB code, the way a drag on the dashboard's board moves it.
 
 Every action prints JSON lines on stdout. A refusal is `{"refused": ...}`, a
 refusal after some scopes were written is `{"partial": ...}`, a warning that
@@ -234,26 +234,44 @@ def _set_model(args):
     _emit({"ok": True, "provider": result.target_provider, "model": result.new_model})
 
 
-def _move_task(args):
-    """Moves a task out of triage, where Hermes's unblock-loop breaker parks it and
-    no CLI command but a model-driven one moves it again."""
-    from hermes_cli import kanban_db
-    from plugins.kanban.dashboard import plugin_api
+# The statuses each move may start from. Hermes's CLI moves nothing out of triage
+# without running a model, and completes nothing from scheduled, so Hephaestus
+# makes these moves itself.
+MOVES_FROM = {
+    "ready": ("triage",),
+    "scheduled": ("triage",),
+    "blocked": ("triage", "scheduled"),
+}
 
-    conn = plugin_api._conn(board=args.board)
+
+def _move_task(args):
+    """Moves a kanban task the way a drag on Hermes's dashboard does, from the
+    statuses MOVES_FROM allows; a task in any other status stays where it is."""
+    from hermes_cli import kanban_db, kanban_db_connect
+
+    conn = kanban_db_connect.connect(board=args.board)
     try:
-        task = kanban_db.get_task(conn, args.task)
-        if task is None:
-            raise Refused(f"Task {args.task} is not on board {args.board}.")
-        if task.status == "triage":
-            moved = plugin_api._set_status_direct(conn, args.task, args.to)
-            # Hermes refuses ready while a parent is unfinished; todo waits for the parent instead.
-            if not moved and args.to == "ready":
-                moved = plugin_api._set_status_direct(conn, args.task, "todo")
-            if not moved:
-                raise Refused(f"Hermes did not move task {args.task} to {args.to}.")
-            task = kanban_db.get_task(conn, args.task)
-        _emit({"ok": True, "status": task.status})
+        # The read and the write share a transaction, so a task archived meanwhile is never reopened.
+        with kanban_db_connect.write_txn(conn):
+            row = conn.execute("SELECT status FROM tasks WHERE id = ?", (args.task,)).fetchone()
+            if row is None:
+                raise Refused(f"Task {args.task} is not on board {args.board}.")
+            status = row[0]
+            if status in MOVES_FROM[args.to]:
+                target = args.to
+                # Hermes never readies a task with an unfinished parent; in todo it readies it once the parent is done.
+                if target == "ready" and not kanban_db._parents_satisfied(conn, args.task):
+                    target = "todo"
+                conn.execute(
+                    "UPDATE tasks SET status = ? WHERE id = ? AND status = ?",
+                    (target, args.task, status),
+                )
+                kanban_db._append_event(
+                    conn, args.task, "status",
+                    {"status": target, "requested_status": args.to, "by": "hephaestus"},
+                )
+                status = target
+        _emit({"ok": True, "status": status})
     finally:
         conn.close()
 
@@ -284,10 +302,10 @@ def _setup(parser):
     set_model.add_argument("--force", action="store_true", help="Save even when Hermes warns")
     set_model.add_argument("--profiles", default="")
     move_task = actions.add_parser(
-        "move-task", help="Move a kanban task out of triage, as a drag on Hermes's dashboard does",
+        "move-task", help="Move a kanban task Hermes's CLI cannot move, as a drag on Hermes's dashboard does",
     )
     move_task.add_argument("--board", required=True)
-    move_task.add_argument("--to", required=True, choices=("ready", "scheduled"))
+    move_task.add_argument("--to", required=True, choices=tuple(MOVES_FROM))
     move_task.add_argument("task")
 
 

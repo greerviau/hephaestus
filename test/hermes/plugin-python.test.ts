@@ -106,34 +106,30 @@ def _apply_main_assignment_sync(cfg, provider, model, base_url, api_key, prepare
     _state.save(state)
     return {"ok": True}
 `,
-  "hermes_cli/kanban_db.py": `
-from types import SimpleNamespace
-from hermes_cli import _state
-def get_task(conn, task_id):
-    task = _state.load().get("tasks", {}).get(task_id)
-    return None if task is None else SimpleNamespace(status=task["status"])
+  "hermes_cli/kanban_db_connect.py": `
+import os, sqlite3
+from contextlib import contextmanager
+def connect(db_path=None, *, board=None):
+    conn = sqlite3.connect(os.environ["STUB_KANBAN"], isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute("INSERT INTO opened (board) VALUES (?)", (board,))
+    return conn
+@contextmanager
+def write_txn(conn, *, allow_nested=False):
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        yield conn
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    conn.execute("COMMIT")
 `,
-  "plugins/__init__.py": "",
-  "plugins/kanban/dashboard/plugin_api.py": `
-from hermes_cli import _state
-class Conn:
-    def __init__(self, board):
-        self.board = board
-    def close(self):
-        state = _state.load()
-        state.setdefault("closed", []).append(self.board)
-        _state.save(state)
-def _conn(board=None):
-    return Conn(board)
-def _set_status_direct(conn, task_id, new_status):
-    state = _state.load()
-    task = state.get("tasks", {}).get(task_id)
-    if task is None or (new_status == "ready" and not task.get("parents_done", True)):
-        return False
-    task["status"] = new_status
-    state.setdefault("moves", []).append([conn.board, task_id, new_status])
-    _state.save(state)
-    return True
+  "hermes_cli/kanban_db.py": `
+import json
+def _parents_satisfied(conn, task_id):
+    return bool(conn.execute("SELECT parents_done FROM tasks WHERE id = ?", (task_id,)).fetchone()[0])
+def _append_event(conn, task_id, kind, payload=None, *, run_id=None):
+    conn.execute("INSERT INTO task_events (task_id, kind, payload) VALUES (?, ?, ?)", (task_id, kind, json.dumps(payload)))
 `,
   "hermes_cli/web_server_oauth.py": `
 import threading
@@ -194,9 +190,6 @@ interface State {
   missing?: string[];
   warn_in?: Record<string, string>;
   prepared?: [string, string, string][];
-  tasks?: Record<string, { status: string; parents_done?: boolean }>;
-  moves?: [string, string, string][];
-  closed?: string[];
 }
 
 function seed(extra: Partial<State> = {}): void {
@@ -219,6 +212,7 @@ function run(args: string[], input = ""): Record<string, unknown>[] {
       PYTHONPATH: join(dir, "stubs"),
       PYTHONDONTWRITEBYTECODE: "1",
       STUB_STATE: join(dir, "state.json"),
+      STUB_KANBAN: join(dir, "kanban.db"),
     },
     encoding: "utf8",
   });
@@ -226,6 +220,50 @@ function run(args: string[], input = ""): Record<string, unknown>[] {
     .split("\n")
     .filter((line) => line.startsWith("{"))
     .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** A kanban DB with these tasks and their statuses; tasks named in `waiting` have an unfinished parent. */
+function kanban(tasks: Record<string, string>, waiting: string[] = []): void {
+  const statements = [
+    "CREATE TABLE tasks (id TEXT PRIMARY KEY, status TEXT, parents_done INTEGER)",
+    "CREATE TABLE task_events (id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, payload TEXT)",
+    "CREATE TABLE opened (board TEXT)",
+    ...Object.entries(tasks).map(
+      ([id, status]) =>
+        `INSERT INTO tasks VALUES ('${id}', '${status}', ${waiting.includes(id) ? "0" : "1"})`,
+    ),
+  ];
+  execFileSync(PYTHON ?? "python3", [
+    "-c",
+    "import sqlite3, sys\nconn = sqlite3.connect(sys.argv[1])\nfor sql in sys.argv[2:]:\n    conn.execute(sql)\nconn.commit()",
+    join(dir, "kanban.db"),
+    ...statements,
+  ]);
+}
+
+function kanbanRows(): {
+  tasks: Record<string, string>;
+  events: [string, string, unknown][];
+  opened: string[];
+} {
+  const output = execFileSync(
+    PYTHON ?? "python3",
+    [
+      "-c",
+      [
+        "import json, sqlite3, sys",
+        "conn = sqlite3.connect(sys.argv[1])",
+        "print(json.dumps({",
+        "  'tasks': dict(conn.execute('SELECT id, status FROM tasks ORDER BY id').fetchall()),",
+        "  'events': [[t, k, json.loads(p)] for t, k, p in conn.execute('SELECT task_id, kind, payload FROM task_events ORDER BY id')],",
+        "  'opened': [b for (b,) in conn.execute('SELECT board FROM opened')],",
+        "}))",
+      ].join("\n"),
+      join(dir, "kanban.db"),
+    ],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(output) as ReturnType<typeof kanbanRows>;
 }
 
 function models(): Record<string, string | undefined> {
@@ -394,8 +432,9 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     expect(result?.outdated).toMatch(/^ModuleNotFoundError|^ImportError/);
   });
 
-  it("moves a task Hermes parked in triage on the named board, and closes the board", () => {
-    seed({ tasks: { t_1: { status: "triage" }, t_2: { status: "triage" } } });
+  it("moves a task Hermes parked in triage on the named board, and records the move", () => {
+    seed();
+    kanban({ t_1: "triage", t_2: "triage" });
 
     expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_1"])).toEqual([
       { ok: true, status: "ready" },
@@ -403,28 +442,49 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     expect(run(["move-task", "--board=factory", "--to=scheduled", "--", "t_2"])).toEqual([
       { ok: true, status: "scheduled" },
     ]);
-    expect(state().moves).toEqual([
-      ["factory", "t_1", "ready"],
-      ["factory", "t_2", "scheduled"],
-    ]);
-    expect(state().closed).toEqual(["factory", "factory"]);
+    expect(kanbanRows()).toEqual({
+      tasks: { t_1: "ready", t_2: "scheduled" },
+      events: [
+        ["t_1", "status", { status: "ready", requested_status: "ready", by: "hephaestus" }],
+        ["t_2", "status", { status: "scheduled", requested_status: "scheduled", by: "hephaestus" }],
+      ],
+      opened: ["factory", "factory"],
+    });
   });
 
   it("leaves a task with an unfinished parent in todo, where Hermes readies it later", () => {
-    seed({ tasks: { t_1: { status: "triage", parents_done: false } } });
+    seed();
+    kanban({ t_1: "triage" }, ["t_1"]);
 
     expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_1"])).toEqual([
       { ok: true, status: "todo" },
     ]);
   });
 
-  it("moves only a task in triage, and refuses a task that does not exist", () => {
-    seed({ tasks: { t_1: { status: "running" } } });
+  it("moves a parked or triaged task to blocked, so Hermes can complete it", () => {
+    seed();
+    kanban({ t_1: "scheduled", t_2: "triage" });
+
+    run(["move-task", "--board=factory", "--to=blocked", "--", "t_1"]);
+    run(["move-task", "--board=factory", "--to=blocked", "--", "t_2"]);
+
+    expect(kanbanRows().tasks).toEqual({ t_1: "blocked", t_2: "blocked" });
+  });
+
+  it("moves a task only from the statuses it allows, and refuses a task that does not exist", () => {
+    seed();
+    kanban({ t_1: "running", t_2: "archived", t_3: "scheduled" });
 
     expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_1"])).toEqual([
       { ok: true, status: "running" },
     ]);
-    expect(state().moves).toBeUndefined();
+    expect(run(["move-task", "--board=factory", "--to=blocked", "--", "t_2"])).toEqual([
+      { ok: true, status: "archived" },
+    ]);
+    expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_3"])).toEqual([
+      { ok: true, status: "scheduled" },
+    ]);
+    expect(kanbanRows().events).toEqual([]);
     expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_9"])).toEqual([
       { refused: "Task t_9 is not on board factory." },
     ]);

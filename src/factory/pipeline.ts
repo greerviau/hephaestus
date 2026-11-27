@@ -399,7 +399,9 @@ export class Pipeline {
       });
       if (card.implementThread !== null && card.workerEnv !== null) {
         const message = `New brief from the lead:\n\n${brief}\n\nContinue the work.\n\n${implementBlock()}`;
-        this.cards.update(cardId, { pendingMessage: message });
+        const next = this.cards.update(cardId, { pendingMessage: message });
+        // Parked before the thread resumes, so the lead's run cannot leave the task where a hand-back cannot reach it.
+        await this.mirror(next, "Implementing", card.implementThread);
         await this.resume(this.cards.get(cardId));
         return this.cards.get(cardId);
       }

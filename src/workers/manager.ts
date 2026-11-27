@@ -759,15 +759,28 @@ export class WorkerManager {
    * again now.
    */
   private async failLimited(task: WorkerTask, limit: string): Promise<void> {
+    const now = this.now().getTime();
+    const fallback = new Date(now + LIMIT_RECHECK_MS).toISOString();
+    // Settled before T3 is read, so a pass that overlaps this one finds the check no longer running.
     this.update(task.id, {
       status: "failed",
       detail: {
         ...task.detail,
         reason: `the provider's usage limit: ${limit}`,
         limited: true,
-        recheckAt: await this.limitReset(task),
+        recheckAt: fallback,
       },
     });
+    const reset = await this.limitReset(task);
+    const latest = this.task(task.id);
+    if (reset !== undefined && latest?.detail.recheckAt === fallback) {
+      this.update(task.id, {
+        detail: {
+          ...latest.detail,
+          recheckAt: new Date(Math.max(reset + LIMIT_GRACE_MS, now)).toISOString(),
+        },
+      });
+    }
     const signIn = task.kind === "test-claude" ? "claude-sign-in" : "codex-sign-in";
     const after = [
       this.latestTask(task.environmentId, "deploy", "succeeded"),
@@ -778,24 +791,17 @@ export class WorkerManager {
     }
   }
 
-  /**
-   * When a check that hit a usage limit runs again: just after the reset, which T3 reports
-   * as the time it wakes the snoozed thread, or after LIMIT_RECHECK_MS when T3 has no time.
-   */
-  private async limitReset(task: WorkerTask): Promise<string> {
-    const now = this.now().getTime();
-    let snooze = Number.NaN;
-    if (task.threadId !== null) {
-      try {
-        const state = await this.options.t3.threadState(task.environmentId, task.threadId);
-        snooze = state.snoozedUntil === null ? Number.NaN : Date.parse(state.snoozedUntil);
-      } catch (error) {
-        console.error(`Reading check thread ${task.threadId} after its usage limit failed`, error);
-      }
+  /** When the usage limit a check hit resets, as the time T3 wakes the snoozed thread; undefined when T3 has none. */
+  private async limitReset(task: WorkerTask): Promise<number | undefined> {
+    if (task.threadId === null) return undefined;
+    try {
+      const state = await this.options.t3.threadState(task.environmentId, task.threadId);
+      const reset = state.snoozedUntil === null ? Number.NaN : Date.parse(state.snoozedUntil);
+      return Number.isFinite(reset) ? reset : undefined;
+    } catch (error) {
+      console.error(`Reading check thread ${task.threadId} after its usage limit failed`, error);
+      return undefined;
     }
-    return new Date(
-      Number.isFinite(snooze) && snooze > now ? snooze + LIMIT_GRACE_MS : now + LIMIT_RECHECK_MS,
-    ).toISOString();
   }
 
   /** Runs a sign-in check again once a check that hit a usage limit is due. */
