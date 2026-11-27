@@ -67,7 +67,8 @@ function toVersion(row: Row): ConfigVersion {
     author: row.author,
     message: row.message,
     createdAt: row.created_at,
-    document: JSON.parse(row.document) as FactoryConfig,
+    // A setting added since the version was saved reads as its default.
+    document: normalizeConfig(JSON.parse(row.document)) as FactoryConfig,
   };
 }
 
@@ -264,7 +265,8 @@ export class ConfigStore {
     );
     this.db.transaction(() => {
       for (const version of versions) {
-        validateConfig(version.document);
+        // A backup from before a setting existed restores with that setting's default.
+        const document = validateConfig(normalizeConfig(structuredClone(version.document)));
         insert.run(
           version.id,
           version.parentId,
@@ -272,7 +274,7 @@ export class ConfigStore {
           version.author,
           version.message,
           version.createdAt,
-          JSON.stringify(version.document),
+          JSON.stringify(document),
         );
       }
     })();

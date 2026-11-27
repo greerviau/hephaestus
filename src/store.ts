@@ -329,6 +329,10 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
+  // When a task's start was first asked for while its worker had no free task slot, for its place in the queue.
+  // A start asked for while paused, before queues existed, keeps its place from when it was asked.
+  `ALTER TABLE tasks ADD COLUMN queued_at TEXT;
+   UPDATE tasks SET queued_at = updated_at WHERE stage = 'Admitted' AND brief IS NOT NULL;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

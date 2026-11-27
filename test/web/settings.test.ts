@@ -38,6 +38,7 @@ const TABS = [
 
 const FACTORY_FIELDS = {
   parentId: "1",
+  "limits.tasksPerWorker": "2",
   "limits.threadsPerWorker": "2",
   "limits.threads": "4",
   "limits.startsPerDay": "40",
@@ -153,6 +154,7 @@ describe("Factory tab", () => {
 
     const response = await dashboard.post("/config/factory", {
       parentId: String(id),
+      "limits.tasksPerWorker": "3",
       "limits.threadsPerWorker": "1",
       "limits.threads": "2",
       "limits.startsPerDay": "10",
@@ -168,6 +170,7 @@ describe("Factory tab", () => {
     expect(saved?.state).toBe("approved");
     expect(saved?.message).toBe("Change the factory settings");
     expect(saved?.document.factory.limits).toEqual({
+      tasksPerWorker: 3,
       threadsPerWorker: 1,
       threads: 2,
       startsPerDay: 10,

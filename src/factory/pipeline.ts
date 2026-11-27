@@ -310,6 +310,101 @@ export class Pipeline {
     }).length;
   }
 
+  /**
+   * The worker an admitted task starts on, or why it waits. Each worker takes at most
+   * tasksPerWorker tasks in progress, and a task whose start was asked for earlier goes first.
+   */
+  private taskSlot(task: Task): Worker | string {
+    const limit = this.options.config()?.document.factory.limits.tasksPerWorker;
+    if (limit === undefined) return "No config version is deployed.";
+    if (this.readyHomes().length === 0) return "No worker is ready.";
+    const ahead = this.tasks.list(["Admitted"]).filter(
+      (other) =>
+        other.id !== task.id &&
+        other.queuedAt !== null &&
+        // A task whose project was removed cannot start, so it holds no place.
+        this.isFactoryProject(other.repo) &&
+        (task.queuedAt === null ||
+          other.queuedAt < task.queuedAt ||
+          (other.queuedAt === task.queuedAt && other.id < task.id)),
+    ).length;
+    const free = this.readyHomes().reduce(
+      (sum, worker) => sum + Math.max(0, limit - this.tasksInProgress(worker.environmentId)),
+      0,
+    );
+    if (free > ahead) return this.freeWorker();
+    const reached = limitReached(limit);
+    return ahead === 0
+      ? `${reached}.`
+      : `${reached}; ${ahead === 1 ? "1 task that has" : `${String(ahead)} tasks that have`} waited longer ${ahead === 1 ? "starts" : "start"} first.`;
+  }
+
+  /**
+   * The ready worker a task takes a task slot on: one with a free slot, preferring one whose
+   * thread limit has room too, then the fewest tasks in progress, then the fewest threads.
+   */
+  private freeWorker(): Worker | string {
+    const limits = this.options.config()?.document.factory.limits;
+    if (limits === undefined) return "No config version is deployed.";
+    const ready = this.readyHomes();
+    if (ready.length === 0) return "No worker is ready.";
+    const open = ready
+      .map((worker) => ({
+        worker,
+        tasks: this.tasksInProgress(worker.environmentId),
+        threads:
+          this.runningThreads(worker.environmentId) + this.heldTasks(worker.environmentId).total,
+      }))
+      .filter(({ tasks }) => tasks < limits.tasksPerWorker)
+      .sort(
+        (a, b) =>
+          Number(b.threads < limits.threadsPerWorker) -
+            Number(a.threads < limits.threadsPerWorker) ||
+          a.tasks - b.tasks ||
+          a.threads - b.threads ||
+          a.worker.environmentId.localeCompare(b.worker.environmentId),
+      );
+    return open[0]?.worker ?? `${limitReached(limits.tasksPerWorker)}.`;
+  }
+
+  /** Ready workers with a known home, which a thread can start on. */
+  private readyHomes(): (Worker & { label: string })[] {
+    return this.options.workers
+      .readyWorkers()
+      .flatMap((worker) =>
+        worker.home === null
+          ? []
+          : [{ environmentId: worker.environmentId, home: worker.home, label: worker.label }],
+      );
+  }
+
+  /**
+   * Tasks in progress on a worker: from Implementing through Reverting, or with the lead. A
+   * task whose launch reply was lost counts on the worker that got the launch, and a task
+   * whose project was removed counts only while its merge or rollback is in flight.
+   */
+  private tasksInProgress(environmentId: string): number {
+    return this.tasks
+      .list(["Implementing", "Reviewing", "Merging", "Validating", "Reverting", "Escalated"])
+      .filter(
+        (task) =>
+          (task.stage !== "Escalated" || task.escalatedTo === "lead") &&
+          (task.workerEnv ?? this.pendingLaunchFor(task.id)) === environmentId &&
+          this.works(task),
+      ).length;
+  }
+
+  /** The worker a task's unanswered launch went to, if any. */
+  private pendingLaunchFor(taskId: number): string | undefined {
+    return (
+      this.options.db
+        .prepare(
+          "SELECT environment_id AS env FROM factory_launches WHERE task_id = ? AND status = 'pending' LIMIT 1",
+        )
+        .get(String(taskId)) as { env: string } | undefined
+    )?.env;
+  }
+
   /** The worker a launch went to whose reply never came, if any. */
   private pendingLaunch(request: string): string | undefined {
     return (
@@ -397,13 +492,25 @@ export class Pipeline {
 
   private async startWorkNow(taskId: number, brief: string): Promise<Task> {
     const task = this.tasks.get(taskId);
-    if (task.stage === "Admitted" && this.paused()) {
-      // The task stays admitted, so a pause starts no new work; the brief starts it on resume.
-      this.wait(this.tasks.update(taskId, { brief }), "The factory is paused.");
-      return this.tasks.get(taskId);
-    }
     if (task.stage === "Admitted") {
-      this.tasks.transition(taskId, "Implementing", "work started", { brief, waiting: null });
+      const slot = this.paused() ? "The factory is paused." : this.taskSlot(task);
+      if (typeof slot === "string") {
+        // The task stays admitted with its brief, and a later pass starts it when a slot frees
+        // or the factory resumes. A pass that changes nothing writes nothing.
+        const queued: Partial<Task> = {
+          ...(task.brief === brief ? {} : { brief }),
+          ...(task.queuedAt === null ? { queuedAt: this.now().toISOString() } : {}),
+        };
+        this.wait(Object.keys(queued).length > 0 ? this.tasks.update(taskId, queued) : task, slot);
+        return this.tasks.get(taskId);
+      }
+      // The worker is chosen now, so a second task started in the same pass sees this one in progress.
+      this.tasks.transition(taskId, "Implementing", "work started", {
+        brief,
+        waiting: null,
+        queuedAt: null,
+        workerEnv: slot.environmentId,
+      });
     } else if (task.stage === "Escalated" && task.escalatedTo === "lead") {
       await this.refuseOnUnrecordedMerge(task);
       // A fresh brief replaces the escalation; an open PR stays, and the implementer continues it.
@@ -633,28 +740,43 @@ export class Pipeline {
     }
   }
 
-  /** The task's worker, or the ready worker with the fewest running factory threads. */
+  /**
+   * The task's worker. A task that never launched a thread moves to another worker when its
+   * own is not ready, and a task with no worker gets one with a free task slot.
+   */
   private pickWorker(task: Task): Worker | string {
-    const ready = this.options.workers.readyWorkers();
     if (task.workerEnv !== null) {
-      const own = ready.find((worker) => worker.environmentId === task.workerEnv);
-      if (own === undefined || own.home === null) {
-        const label = this.options.workers.worker(task.workerEnv)?.label ?? task.workerEnv;
-        return `The task's worker ${label} is not ready.`;
+      const own = this.readyHomes().find((worker) => worker.environmentId === task.workerEnv);
+      if (own !== undefined) return { environmentId: own.environmentId, home: own.home };
+      const label = this.options.workers.worker(task.workerEnv)?.label ?? task.workerEnv;
+      const notReady = `The task's worker ${label} is not ready.`;
+      // Launch records outlive the task's thread pointers, which a restart or a rollback
+      // retry clears, so a task that ever sent a launch keeps its worker.
+      if (
+        task.implementThread !== null ||
+        task.reviewThread !== null ||
+        this.everLaunched(task.id)
+      ) {
+        return notReady;
       }
-      return { environmentId: own.environmentId, home: own.home };
+      const other = this.freeWorker();
+      if (typeof other === "string") return notReady;
+      this.tasks.update(task.id, { workerEnv: other.environmentId });
+      return other;
     }
-    const candidates = ready
-      .filter((worker) => worker.home !== null)
-      .map((worker) => ({
-        worker,
-        load:
-          this.runningThreads(worker.environmentId) + this.heldTasks(worker.environmentId).total,
-      }))
-      .sort((a, b) => a.load - b.load || a.worker.label.localeCompare(b.worker.label));
-    const best = candidates[0]?.worker;
-    if (best?.home === undefined || best.home === null) return "No worker is ready.";
-    return { environmentId: best.environmentId, home: best.home };
+    // Recorded before the launch is sent, so the slot stays taken while T3 answers.
+    const free = this.freeWorker();
+    if (typeof free !== "string") this.tasks.update(task.id, { workerEnv: free.environmentId });
+    return free;
+  }
+
+  /** Whether any launch was ever sent for the task. */
+  private everLaunched(taskId: number): boolean {
+    return (
+      this.options.db
+        .prepare("SELECT 1 FROM factory_launches WHERE task_id = ? LIMIT 1")
+        .get(String(taskId)) !== undefined
+    );
   }
 
   /** The T3 project for the repo on the worker, cloning it the first time. */
@@ -2170,4 +2292,9 @@ function mergeInFlight(task: Task): boolean {
     task.stage === "Reverting" ||
     task.reverting
   );
+}
+
+/** The start of the reason a task waits for a task slot. */
+function limitReached(limit: number): string {
+  return `The limit of ${String(limit)} ${limit === 1 ? "task" : "tasks"} in progress per worker is reached`;
 }

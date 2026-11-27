@@ -62,6 +62,8 @@ export interface Task {
    */
   limitUntil: string | null;
   limitRun: string | null;
+  /** When the task's start was first asked for while no task slot was free; its place in the queue. */
+  queuedAt: string | null;
   /** Counts every change, so a form from an earlier state of the task is refused. */
   version: number;
   createdAt: string;
@@ -135,6 +137,7 @@ interface Row {
   policy: string | null;
   limit_until: string | null;
   limit_run: string | null;
+  queued_at: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -174,6 +177,7 @@ const COLUMNS: Record<keyof Omit<Task, "id" | "createdAt" | "updatedAt" | "versi
   policy: "policy",
   limitUntil: "limit_until",
   limitRun: "limit_run",
+  queuedAt: "queued_at",
 };
 
 function toTask(row: Row): Task {
@@ -214,6 +218,7 @@ function toTask(row: Row): Task {
     policy: row.policy === null ? null : (JSON.parse(row.policy) as PolicySettings),
     limitUntil: row.limit_until,
     limitRun: row.limit_run,
+    queuedAt: row.queued_at,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

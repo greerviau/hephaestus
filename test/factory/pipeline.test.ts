@@ -4,6 +4,7 @@ import {
   MergeOutcomeUnknownError,
   MergeRefusedError,
 } from "../../src/factory/github.js";
+import type { LaunchOptions } from "../../src/t3/adapter.js";
 import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import {
@@ -360,6 +361,7 @@ describe("Pipeline", () => {
     const h = harness((config) => {
       config.factory.limits.threads = 2;
       config.factory.limits.threadsPerWorker = 3;
+      config.factory.limits.tasksPerWorker = 3;
     });
     const limited = admitted(h);
     await h.pipeline.startWork(limited, "brief");
@@ -1906,5 +1908,249 @@ describe("Pipeline usage-limit waits", () => {
     expect(h.t3.launches.at(-1)?.message).toContain(sha3);
     expect(h.tasks.get(id)).toMatchObject({ limitUntil: null });
     expect(h.tasks.get(id).reviewThread).not.toBe(review);
+  });
+});
+
+describe("Pipeline task limit", () => {
+  /** A harness whose worker takes one task at a time, with thread limits that never bind. */
+  function oneTask(): Harness {
+    return harness((config) => {
+      config.factory.limits.tasksPerWorker = 1;
+      config.factory.limits.threadsPerWorker = 4;
+      config.factory.limits.threads = 4;
+    });
+  }
+
+  function another(h: Harness, title: string): number {
+    return h.tasks.create({ repo: "octo/app", issueNumber: 5, title }).id;
+  }
+
+  it("keeps a started task admitted while its worker has a task in progress without a thread", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await toReview(h, first);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.tasks.get(first).stage).toBe("Validating");
+    const second = another(h, "Second");
+
+    await h.pipeline.startWork(second, "brief two");
+
+    expect(h.tasks.get(second)).toMatchObject({
+      stage: "Admitted",
+      brief: "brief two",
+      waiting: "The limit of 1 task in progress per worker is reached.",
+    });
+    expect(h.t3.launches).toHaveLength(2);
+  });
+
+  it("counts a task with the lead, frees the slot of a task with the owner, and then starts the queued task", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    expect(h.tasks.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    const second = another(h, "Second");
+    await h.pipeline.startWork(second, "brief two");
+    await h.pipeline.tick();
+    expect(h.tasks.get(second).stage).toBe("Admitted");
+
+    await h.pipeline.escalateToOwner(first, "needs a decision");
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(second)).toMatchObject({ stage: "Implementing", waiting: null });
+    expect(h.t3.launches.at(-1)?.message).toContain("brief two");
+  });
+
+  it("starts the task that has waited longest, even when the lead starts a newer one", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    const older = another(h, "Older");
+    const newer = another(h, "Newer");
+    await h.pipeline.startWork(older, "older brief");
+    await h.pipeline.escalateToOwner(first, "needs a decision");
+
+    await h.pipeline.startWork(newer, "newer brief");
+
+    expect(h.tasks.get(newer)).toMatchObject({
+      stage: "Admitted",
+      waiting:
+        "The limit of 1 task in progress per worker is reached; 1 task that has waited longer starts first.",
+    });
+    await h.pipeline.tick();
+    expect(h.tasks.get(older).stage).toBe("Implementing");
+    expect(h.tasks.get(newer).stage).toBe("Admitted");
+  });
+
+  it("counts a started task on its worker before its thread launches", async () => {
+    const h = harness((config) => {
+      config.factory.limits.tasksPerWorker = 1;
+      config.factory.limits.threads = 0;
+    });
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    expect(h.tasks.get(first)).toMatchObject({ stage: "Implementing", workerEnv: "w1" });
+    expect(h.t3.launches).toHaveLength(0);
+    const second = another(h, "Second");
+
+    await h.pipeline.startWork(second, "brief two");
+
+    expect(h.tasks.get(second).stage).toBe("Admitted");
+  });
+
+  it("puts a started task on the worker with room for both a task and a thread", async () => {
+    const h = harness((config) => {
+      config.factory.limits.tasksPerWorker = 3;
+      config.factory.limits.threadsPerWorker = 1;
+    });
+    h.ready.push({ environmentId: "w2", label: "w2", home: "/home/w2" });
+    // w1 has fewer tasks, but its task with the lead holds its one thread slot; w2 has two
+    // tasks verifying, which hold no thread.
+    const place = (title: string, stage: string, env: string): void => {
+      const id = another(h, title);
+      h.db
+        .prepare("UPDATE tasks SET stage = ?, worker_env = ?, escalated_to = ? WHERE id = ?")
+        .run(stage, env, stage === "Escalated" ? "lead" : null, id);
+    };
+    place("With the lead", "Escalated", "w1");
+    place("Verifying", "Validating", "w2");
+    place("Verifying too", "Validating", "w2");
+    const task = admitted(h);
+
+    await h.pipeline.startWork(task, "brief");
+
+    expect(h.tasks.get(task).workerEnv).toBe("w2");
+    expect(h.t3.launches.at(-1)?.environmentId).toBe("w2");
+  });
+
+  it("moves a task whose worker went away before its first launch", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 0;
+    });
+    const task = admitted(h);
+    await h.pipeline.startWork(task, "brief");
+    expect(h.tasks.get(task).workerEnv).toBe("w1");
+    h.ready.splice(0, 1, { environmentId: "w2", label: "w2", home: "/home/w2" });
+    h.config.factory.limits.threads = 4;
+
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(task).workerEnv).toBe("w2");
+    expect(h.t3.launches.at(-1)?.environmentId).toBe("w2");
+  });
+
+  it("launches a task with no worker yet only on a worker with a free task slot", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    // A task started before workers were assigned at start.
+    const legacy = another(h, "Legacy");
+    h.tasks.transition(legacy, "Implementing", "test", { brief: "old brief" });
+
+    await h.pipeline.tick();
+
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.tasks.get(legacy)).toMatchObject({
+      workerEnv: null,
+      waiting: "The limit of 1 task in progress per worker is reached.",
+    });
+  });
+
+  it("frees the slot of a task whose project was removed, and skips its queued tasks", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    const removed = h.tasks.create({ repo: "octo/gone", issueNumber: 5, title: "Gone" }).id;
+    await h.pipeline.startWork(removed, "brief gone");
+    const next = another(h, "Next");
+    await h.pipeline.startWork(next, "brief next");
+    // The task of a repo that is not a factory project holds no place ahead of it.
+    expect(h.tasks.get(next).waiting).toBe(
+      "The limit of 1 task in progress per worker is reached.",
+    );
+
+    delete h.config.projects["octo/app"];
+    h.config.projects["octo/other"] = { policy: { preset: "standard", overrides: {} } };
+    h.tasks.update(next, { repo: "octo/other" });
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(next).stage).toBe("Implementing");
+  });
+
+  it("starts queued tasks in the order their starts were asked for", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    const created = another(h, "Created first");
+    const asked = another(h, "Asked first");
+    await h.pipeline.startWork(asked, "asked brief");
+    h.setClock(Date.parse("2026-11-25T12:05:00Z"));
+    await h.pipeline.startWork(created, "created brief");
+    expect(h.tasks.get(created).waiting).toMatch(/1 task that has waited longer starts first/);
+
+    await h.pipeline.escalateToOwner(first, "needs a decision");
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(asked).stage).toBe("Implementing");
+    expect(h.tasks.get(created).stage).toBe("Admitted");
+  });
+
+  it("leaves a queued task unchanged on a pass that cannot start it", async () => {
+    const h = oneTask();
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    const queued = another(h, "Queued");
+    await h.pipeline.startWork(queued, "brief two");
+    expect(h.tasks.get(queued).stage).toBe("Admitted");
+    const version = h.tasks.get(queued).version;
+
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(queued).version).toBe(version);
+  });
+
+  it("keeps a task on its worker once a launch for it was sent", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 0;
+    });
+    const task = admitted(h);
+    await h.pipeline.startWork(task, "brief");
+    // A launch T3 answered, recorded before the process stopped and the task got its thread.
+    h.db
+      .prepare(
+        `INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id,
+           model, config_version, task_id, status, thread_id, kind, created_at, updated_at)
+         VALUES ('r', 'w1', 't', 'p', 'm', 1, ?, 'launched', 't9', 'implement', 'x', 'x')`,
+      )
+      .run(String(task));
+    h.ready.splice(0, 1, { environmentId: "w2", label: "w2", home: "/home/w2" });
+    h.config.factory.limits.threads = 4;
+
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(task)).toMatchObject({
+      workerEnv: "w1",
+      waiting: "The task's worker w1 is not ready.",
+    });
+    expect(h.t3.launches).toHaveLength(0);
+  });
+
+  it("records the worker of a task with none before its launch is sent", async () => {
+    const h = oneTask();
+    const legacy = admitted(h);
+    h.tasks.transition(legacy, "Implementing", "test", { brief: "old brief" });
+    const launch = h.t3.launchThread.bind(h.t3);
+    let workerAtLaunch: string | null | undefined;
+    h.t3.launchThread = (options: LaunchOptions) => {
+      workerAtLaunch = h.tasks.get(legacy).workerEnv;
+      return launch(options);
+    };
+
+    await h.pipeline.tick();
+
+    expect(workerAtLaunch).toBe("w1");
   });
 });
