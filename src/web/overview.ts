@@ -138,7 +138,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
               kind: "proposal",
               title: `Proposal v${String(version.id)}: ${version.message}`,
               href,
-              sub: "The improver proposed a config change. Approving it deploys it.",
+              sub: `${version.author === "improver" ? "The improver proposed a config change" : "A Hephaestus update brings starter skills"}. Approving it deploys it.`,
               aside: buttonLink(href, "Review proposal"),
             });
           }

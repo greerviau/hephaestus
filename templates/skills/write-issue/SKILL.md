@@ -10,7 +10,7 @@ An issue is the whole specification a factory engineer gets, and a reviewer chec
 ## Before you write
 
 - Ask the requester when the goal, the scope, or who it is for is unclear. Do not guess.
-- Check `get_status` and the project's open issues for one that already covers the request, and say so instead of filing a second.
+- Check `get_status` and `list_cards` for work that already covers the request, and say so instead of filing a second issue.
 - Split the request into issues that each deliver one thing a user can see or a test can check, and that can merge on their own. When one depends on another, file the first one first and name it in the second.
 
 ## The issue

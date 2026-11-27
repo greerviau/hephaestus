@@ -1,6 +1,6 @@
 ---
 name: find-root-cause
-description: Use in a factory thread when a bug, a crash, wrong output, or a failing or flaky test has a cause you have not confirmed yet.
+description: Use in a factory implement thread when a bug, a crash, wrong output, or a failing or flaky test has a cause you have not confirmed yet.
 ---
 
 # find-root-cause

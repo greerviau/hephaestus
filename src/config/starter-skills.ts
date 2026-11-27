@@ -71,53 +71,101 @@ export function withStarterSkill(config: FactoryConfig, skill: StarterSkill): Fa
   return next;
 }
 
+interface Offers {
+  /** Starter skill texts the owner has decided on, by name: deployed, rejected, or installed. */
+  decided: Record<string, string>;
+  /** The draft waiting for the owner, and the texts it carries. */
+  pending?: { id: number; skills: Record<string, string> };
+}
+
+function readOffers(db: Database): Offers {
+  const raw = getMeta(db, OFFERED_KEY);
+  return raw === undefined ? { decided: {} } : (JSON.parse(raw) as Offers);
+}
+
+/** Records the starter skills install put in version 1 as decided, so an update can update them. */
+export function recordInstalledStarterSkills(db: Database, config: FactoryConfig): void {
+  const offers = readOffers(db);
+  for (const skill of starterSkills()) {
+    const have = Object.hasOwn(config.skills, skill.name) ? config.skills[skill.name] : undefined;
+    if (have !== undefined && skillDigest(have) === skillDigest(skill.files)) {
+      offers.decided[skill.name] = skillDigest(skill.files);
+    }
+  }
+  setMeta(db, OFFERED_KEY, JSON.stringify(offers));
+}
+
 /**
  * Proposes, as a draft version for the owner to approve, the starter skills this build ships
- * that the deployed version lacks, and new text for a starter skill the owner left as an
- * earlier build offered it. A skill the owner edited, or one of their own with the same name,
- * stays as it is. Each text is offered once, so a rejected offer does not come back. Returns
- * the draft, or undefined when there is nothing to offer or no version is deployed.
+ * that the deployed version never had, and new text for a starter skill the owner left as an
+ * earlier build offered it. A skill the owner edited, deleted, or never took, and one of their
+ * own with the same name, stays as it is. A text counts as decided once its draft is deployed
+ * or rejected; a draft left behind when another version was deployed is replaced by one built
+ * on the deployed version. Returns the new draft, or undefined when there is nothing to offer.
  */
 export function offerStarterSkills(options: {
   db: Database;
   store: ConfigStore;
 }): ConfigVersion | undefined {
   const { db, store } = options;
-  const deployed = store.current();
-  if (deployed?.state !== "deployed") return undefined;
-  const offered = JSON.parse(getMeta(db, OFFERED_KEY) ?? "{}") as Record<string, string>;
-  let document = deployed.document;
-  const added: string[] = [];
-  const updated: string[] = [];
-  for (const skill of starterSkills()) {
-    const digest = skillDigest(skill.files);
-    if (offered[skill.name] === digest) continue;
-    const have = Object.hasOwn(document.skills, skill.name)
-      ? document.skills[skill.name]
-      : undefined;
-    if (have === undefined) {
-      document = withStarterSkill(document, skill);
-      added.push(skill.name);
-    } else if (offered[skill.name] === skillDigest(have)) {
-      document = structuredClone(document);
-      document.skills[skill.name] = { ...skill.files };
-      updated.push(skill.name);
+  // One transaction, so a crash cannot file a draft without recording it.
+  return db.transaction((): ConfigVersion | undefined => {
+    const deployed = store.current();
+    if (deployed?.state !== "deployed") return undefined;
+    const offers = readOffers(db);
+    if (offers.pending !== undefined) {
+      const draft = store.get(offers.pending.id);
+      if (
+        draft.state === "deployed" ||
+        draft.state === "superseded" ||
+        draft.state === "rejected"
+      ) {
+        Object.assign(offers.decided, offers.pending.skills);
+      } else if (draft.parentId === deployed.id) {
+        return undefined;
+      } else if (draft.state === "draft") {
+        // Built on a version that is no longer deployed, it can never be deployed.
+        store.reject(draft.id);
+      }
+      delete offers.pending;
     }
-    offered[skill.name] = digest;
-  }
-  let draft: ConfigVersion | undefined;
-  if (added.length > 0 || updated.length > 0) {
-    const parts = [
-      ...(added.length === 0 ? [] : [`add ${added.join(", ")}`]),
-      ...(updated.length === 0 ? [] : [`update ${updated.join(", ")}`]),
-    ];
-    draft = store.createVersion({
-      document,
-      author: STARTER_AUTHOR,
-      message: `Starter skills from Hephaestus: ${parts.join("; ")}`,
-      parentId: deployed.id,
-    });
-  }
-  setMeta(db, OFFERED_KEY, JSON.stringify(offered));
-  return draft;
+    let document = deployed.document;
+    const added: string[] = [];
+    const updated: string[] = [];
+    const carried: Record<string, string> = {};
+    for (const skill of starterSkills()) {
+      const digest = skillDigest(skill.files);
+      const decided = offers.decided[skill.name];
+      if (decided === digest) continue;
+      const have = Object.hasOwn(document.skills, skill.name)
+        ? document.skills[skill.name]
+        : undefined;
+      if (have === undefined && decided === undefined) {
+        document = withStarterSkill(document, skill);
+        added.push(skill.name);
+        carried[skill.name] = digest;
+      } else if (have !== undefined && decided !== undefined && skillDigest(have) === decided) {
+        document = structuredClone(document);
+        document.skills[skill.name] = { ...skill.files };
+        updated.push(skill.name);
+        carried[skill.name] = digest;
+      }
+    }
+    let draft: ConfigVersion | undefined;
+    if (added.length > 0 || updated.length > 0) {
+      const parts = [
+        ...(added.length === 0 ? [] : [`add ${added.join(", ")}`]),
+        ...(updated.length === 0 ? [] : [`update ${updated.join(", ")}`]),
+      ];
+      draft = store.createVersion({
+        document,
+        author: STARTER_AUTHOR,
+        message: `Starter skills from Hephaestus: ${parts.join("; ")}`,
+        parentId: deployed.id,
+      });
+      offers.pending = { id: draft.id, skills: carried };
+    }
+    setMeta(db, OFFERED_KEY, JSON.stringify(offers));
+    return draft;
+  })();
 }

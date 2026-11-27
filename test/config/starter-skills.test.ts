@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { ConfigStore } from "../../src/config/store.js";
+import { defaultConfig } from "../../src/config/defaults.js";
 import {
   offerStarterSkills,
+  recordInstalledStarterSkills,
   skillDigest as starterDigest,
   starterSkills,
 } from "../../src/config/starter-skills.js";
@@ -78,8 +80,10 @@ describe("offerStarterSkills", () => {
     db.prepare("INSERT INTO meta (key, value) VALUES (?, ?)").run(
       "starter_skills_offered",
       JSON.stringify({
-        [first.name]: starterDigest({ "SKILL.md": "an older shipped text\n" }),
-        [second.name]: starterDigest({ "SKILL.md": "an older shipped text\n" }),
+        decided: {
+          [first.name]: starterDigest({ "SKILL.md": "an older shipped text\n" }),
+          [second.name]: starterDigest({ "SKILL.md": "an older shipped text\n" }),
+        },
       }),
     );
 
@@ -88,6 +92,67 @@ describe("offerStarterSkills", () => {
     expect(draft?.author).toBe("hephaestus");
     expect(draft?.document.skills[first.name]).toEqual(first.files);
     expect(draft?.document.skills[second.name]).toEqual({ "SKILL.md": "the owner's own text\n" });
+    db.close();
+  });
+
+  it("replaces a draft that another deploy left behind, and keeps a deleted starter skill out", () => {
+    const { store, db } = deployedStore();
+    const stranded = offerStarterSkills({ db, store });
+    // The owner deploys another change first, so the draft can never be deployed.
+    const base = store.current();
+    if (base === undefined || stranded === undefined) throw new Error("no version");
+    const edit = store.createVersion({
+      document: base.document,
+      author: "owner",
+      message: "Another change",
+      parentId: base.id,
+    });
+    store.approve(edit.id);
+    store.markDeployed(edit.id);
+
+    const replacement = offerStarterSkills({ db, store });
+    expect(store.get(stranded.id).state).toBe("rejected");
+    expect(replacement?.parentId).toBe(edit.id);
+
+    // Deployed, then the owner deletes one: a later build does not bring it back.
+    store.approve(replacement?.id ?? 0);
+    store.markDeployed(replacement?.id ?? 0);
+    expect(offerStarterSkills({ db, store })).toBeUndefined();
+    const current = store.current();
+    if (current === undefined) throw new Error("no version");
+    const document = structuredClone(current.document);
+    delete document.skills["write-brief"];
+    document.roles.lead.skills = [];
+    const without = store.createVersion({
+      document,
+      author: "owner",
+      message: "No briefs",
+      parentId: current.id,
+    });
+    store.approve(without.id);
+    store.markDeployed(without.id);
+    expect(offerStarterSkills({ db, store })).toBeUndefined();
+    db.close();
+  });
+
+  it("counts the starter skills install shipped as decided, so an update can bring new text", () => {
+    const db = openStore(":memory:");
+    const store = new ConfigStore(db);
+    const document = defaultConfig([]);
+    const first = store.createVersion({ document, author: "install", message: "v1" });
+    store.approve(first.id);
+    recordInstalledStarterSkills(db, document);
+    store.markDeployed(first.id);
+
+    expect(offerStarterSkills({ db, store })).toBeUndefined();
+    const offers = JSON.parse(
+      (
+        db.prepare("SELECT value FROM meta WHERE key = 'starter_skills_offered'").get() as {
+          value: string;
+        }
+      ).value,
+    ) as { decided: Record<string, string> };
+    expect(Object.keys(offers.decided)).toHaveLength(starterSkills().length);
     db.close();
   });
 });

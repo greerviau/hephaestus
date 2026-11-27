@@ -480,16 +480,23 @@ async function main(argv: string[]): Promise<number> {
           console.error("Applying the shipped role instructions failed", error);
         });
       };
+      // An update that ships new starter skills offers them on Proposals, and a draft that a
+      // deploy left behind is offered again on the deployed version.
+      const offerStarters = (): void => {
+        try {
+          offerStarterSkills({ db, store });
+        } catch (error) {
+          console.error("Offering the starter skills failed", error);
+        }
+      };
       applyShipped();
-      // An update that ships new starter skills offers them on Proposals.
-      try {
-        offerStarterSkills({ db, store });
-      } catch (error) {
-        console.error("Offering the starter skills failed", error);
-      }
+      offerStarters();
       const mcpServer = engine.mcp.listen(config.port + 1);
       const engineTicks = [
-        setInterval(applyShipped, 5 * 60_000),
+        setInterval(() => {
+          applyShipped();
+          offerStarters();
+        }, 5 * 60_000),
         setInterval(() => {
           engine.pipeline.tick().catch((error: unknown) => {
             console.error("Advancing cards failed", error);

@@ -30,4 +30,5 @@ Bring the base branch into the PR's branch so both changes keep working. Never p
    Read each resolved file whole, not only the former hunks. Regenerate generated files and lockfiles with the repository's own tools instead of editing their conflicts by hand.
 
 5. Run every check the repository runs, including the whole test suite. When one fails, compare with the base branch to see whether the merge caused it, and fix only what the merge caused.
-6. Push the same branch. After a rebase, push with `--force-with-lease`. End with the result block and the new head commit.
+6. Finish the operation with `git merge --continue` or `git rebase --continue`. Never use `--skip`, which drops a commit, or `--abort` to give up quietly; when a conflict cannot be resolved, end blocked with the reason.
+7. Push the same branch. After a rebase, push with `--force-with-lease`. End with the result block and the new head commit.

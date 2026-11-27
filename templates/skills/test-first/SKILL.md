@@ -22,8 +22,9 @@ A bug fix starts from a test that reproduces the bug: it fails before the fix an
 ## Check each test
 
 - Break the behavior on purpose (return a wrong value, skip a side effect, do it twice) and rerun the test. It must fail. Then undo the break.
+- Restructure the code behind the test without changing what it does. The test must still pass. A test that breaks on a refactor tests the implementation, not the behavior.
 - Expected values come from the issue or the domain, never from running the code under test.
-- Fake only an external system the test cannot run, such as a third-party API, and only where the code already puts a boundary in front of it.
+- Fake only an external system the test cannot run, such as a third-party API, and only where the code already puts a boundary in front of it. When the code calls one directly, add that boundary as part of the change, so production uses the real client and the test a fake.
 - No unseeded randomness, real clocks, sleeps, test order dependence, or real network calls.
 
 Documentation, comments, formatting, and renames that existing tests cover need no new test. A dependency upgrade rests on the existing suite.

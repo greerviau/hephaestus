@@ -43,7 +43,7 @@ A reload discards typed text and closes an open dialog, so no reloading page hol
 
 ## Home
 
-"Needs you" on Home is one list. It holds tasks escalated to you, issues waiting for admission (including issues held by a project's cap), improver proposals, T3 links that expire within 7 days, workers whose next step is yours, and notifications you have not dismissed. Each row names its kind and has one main action; a task's other actions are in its "..." menu. A task's main action is the merge to approve, or Send to lead when it waits on no merge. An issue's row shows its number and title as a link to the issue on GitHub, with its repo and why it waits underneath.
+"Needs you" on Home is one list. It holds tasks escalated to you, issues waiting for admission (including issues held by a project's cap), proposals, T3 links that expire within 7 days, workers whose next step is yours, and notifications you have not dismissed. Each row names its kind and has one main action; a task's other actions are in its "..." menu. A task's main action is the merge to approve, or Send to lead when it waits on no merge. An issue's row shows its number and title as a link to the issue on GitHub, with its repo and why it waits underneath.
 
 The Project picker narrows Home's tasks and issues to the chosen project, and leaves out a notification about another project's task, as Activity does. Proposals, workers, T3 links, and notifications about no task stay. Home shows a box with a Resume button while the factory is paused. While a setup step is left, the page is titled "Set up the factory", and the lists appear under the steps only once one of them has a row.
 
