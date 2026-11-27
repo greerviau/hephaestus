@@ -192,6 +192,18 @@ export class FakeT3 {
       projectId: "proj",
     });
   }
+  /** The threads this fake started with exactly `title` on the environment, newest first. */
+  threadsTitled(environmentId: string, title: string): Promise<string[]> {
+    return Promise.resolve(
+      this.launches
+        .flatMap((launch, index) =>
+          launch.environmentId === environmentId && launch.title === title
+            ? [`t${String(index + 1)}`]
+            : [],
+        )
+        .reverse(),
+    );
+  }
   settled: string[] = [];
   settle(_environmentId: string, threadId: string): Promise<void> {
     this.settled.push(threadId);
