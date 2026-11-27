@@ -57,10 +57,16 @@ export class FakeGitHub {
     );
   }
 
+  /** Issues GitHub creates and then loses the reply to, before one answers. */
+  createIssueLostReplies = 0;
   createIssue(_repo: string, title: string, body: string): Promise<number> {
     const number = this.nextIssue++;
     this.writes.push("issue");
     this.issues.set(number, { number, title, body, author: "owner", state: "OPEN" });
+    if (this.createIssueLostReplies > 0) {
+      this.createIssueLostReplies -= 1;
+      return Promise.reject(new Error("gh issue create failed: timed out"));
+    }
     return Promise.resolve(number);
   }
   /** Comments posted, in order. */
@@ -124,7 +130,9 @@ export class FakeGitHub {
   }
   merge(_repo: string, number: number, headSha: string): Promise<string> {
     const pr = this.prs.get(number);
-    if (pr?.state === "MERGED") return Promise.reject(new AlreadyMergedError(number, pr.mergeSha));
+    if (pr?.state === "MERGED") {
+      return Promise.reject(new AlreadyMergedError(number, pr.mergeSha, pr.headSha));
+    }
     if (pr === undefined || pr.headSha !== headSha) return Promise.reject(new Error("head moved"));
     this.merged.push(number);
     pr.state = "MERGED";
@@ -189,8 +197,24 @@ export class FakeT3 {
     this.settled.push(threadId);
     return Promise.resolve();
   }
-  send(_environmentId: string, threadId: string, message: string): Promise<void> {
-    this.sends.push({ threadId, message });
+  /** Sends T3 applies and then loses the reply to, before one answers. */
+  sendLostReplies = 0;
+  /** Request ids T3 has applied, so a retried send is applied once, as T3 does. */
+  private sentRequests = new Set<string>();
+  send(
+    _environmentId: string,
+    threadId: string,
+    message: string,
+    clientRequestId?: string,
+  ): Promise<void> {
+    if (clientRequestId === undefined || !this.sentRequests.has(clientRequestId)) {
+      this.sends.push({ threadId, message });
+      if (clientRequestId !== undefined) this.sentRequests.add(clientRequestId);
+    }
+    if (this.sendLostReplies > 0) {
+      this.sendLostReplies -= 1;
+      return Promise.reject(new Error("the reply from T3 was lost"));
+    }
     return Promise.resolve();
   }
   /** What T3 reports for each thread; a thread not listed failed in run r1 and is not snoozed. */

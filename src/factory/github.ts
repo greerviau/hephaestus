@@ -10,6 +10,13 @@ export type MergeState = Pick<PullRequest, "number" | "state" | "headSha" | "mer
 /** How long an intake read may run before it is killed, so a stalled read cannot hold up the poll. */
 export const INTAKE_READ_TIMEOUT_MS = 30_000;
 
+/**
+ * How long any other gh call may run, writes included, so one that never returns
+ * cannot hold up the pipeline pass or the intake queue. A write killed by it may
+ * still have happened on GitHub, so each write's caller reads back what it did.
+ */
+export const GH_TIMEOUT_MS = 120_000;
+
 /** The most open issues one read lists; an issue missing from a full list may still be open. */
 export const OPEN_ISSUES_LIMIT = 200;
 
@@ -90,6 +97,8 @@ export class AlreadyMergedError extends Error {
   constructor(
     readonly number: number,
     readonly mergeSha: string | null,
+    /** The head that merged, when it was read: someone may have pushed a newer one and merged that. */
+    readonly headSha?: string,
   ) {
     super(`PR #${String(number)} was already merged.`);
   }
@@ -194,12 +203,11 @@ export class GitHub {
     private readonly exec: CommandRun = commandRunner,
   ) {}
 
-  /**
-   * Only reads that are safe to repeat take a timeout. A write that outlives
-   * one may still have happened on GitHub, which the caller could not tell
-   * from a failure.
-   */
-  private gh(args: string[], timeoutMs?: number, input?: string): Promise<string> {
+  /** The gh account's login, read once. */
+  private viewer: Promise<string> | undefined;
+
+  /** Every call is bounded, by {@link GH_TIMEOUT_MS} unless the caller passes a shorter limit. */
+  private gh(args: string[], timeoutMs = GH_TIMEOUT_MS, input?: string): Promise<string> {
     return this.exec(this.ghPath, args, undefined, timeoutMs, input);
   }
 
@@ -395,7 +403,13 @@ export class GitHub {
       ],
       undefined,
       JSON.stringify({ body }),
-    );
+    ).catch((error: unknown) => {
+      // A call that timed out or lost its reply may have posted, and posting again would repeat it.
+      throw new Error(
+        `Posting the comment on ${label} failed, but GitHub may have posted it; check the issue before posting again.`,
+        { cause: error },
+      );
+    });
     return url.trim();
   }
 
@@ -593,10 +607,10 @@ export class GitHub {
         }
         throw error;
       }
-      const ours = await this.mergedWith(repo, current.mergeSha, marker);
+      const ours = await this.mergedWith(repo, current.mergeSha, marker, number);
       if (ours === undefined) throw new MergeOutcomeUnknownError(number, { cause: error });
       if (ours) return current.mergeSha;
-      throw new AlreadyMergedError(number, current.mergeSha);
+      throw new AlreadyMergedError(number, current.mergeSha, current.headSha);
     }
     if (answer.merged !== true || typeof answer.sha !== "string") {
       throw new Error(`GitHub did not merge PR #${String(number)}.`);
@@ -604,16 +618,44 @@ export class GitHub {
     return answer.sha;
   }
 
-  /** Whether a merge commit carries `marker`, or undefined when GitHub could not be read. */
-  async mergedWith(repo: string, mergeSha: string, marker: string): Promise<boolean | undefined> {
+  /**
+   * Whether PR `number` merged as `mergeSha` was Hephaestus's merge: the commit carries
+   * `marker`, and the gh account performed the merge, since anyone who can merge could copy
+   * the marker into a merge of their own. Undefined when GitHub could not be read.
+   */
+  async mergedWith(
+    repo: string,
+    mergeSha: string,
+    marker: string,
+    number: number,
+  ): Promise<boolean | undefined> {
     try {
       const message = await retry(() =>
         this.gh(["api", `repos/${repo}/commits/${mergeSha}`, "--jq", ".commit.message"]),
       );
-      return message.includes(marker);
+      if (!message.includes(marker)) return false;
+      const mergedBy = (
+        await retry(() =>
+          this.gh(["api", `repos/${repo}/pulls/${String(number)}`, "--jq", ".merged_by.login"]),
+        )
+      ).trim();
+      const viewer = await this.viewerLogin();
+      if (viewer === "" || mergedBy === "") return undefined;
+      return mergedBy.toLowerCase() === viewer.toLowerCase();
     } catch {
       return undefined;
     }
+  }
+
+  private viewerLogin(): Promise<string> {
+    const read = (this.viewer ??= retry(() => this.gh(["api", "user", "--jq", ".login"])).then(
+      (login) => login.trim(),
+    ));
+    // A failed read is tried again next time.
+    read.catch(() => {
+      if (this.viewer === read) this.viewer = undefined;
+    });
+    return read;
   }
 
   /** Every check run and the latest status of each context on a commit, all pages. */
@@ -654,8 +696,14 @@ export class GitHub {
     ]);
   }
 
-  /** Opens GitHub's revert PR for a merged PR and returns its number. */
+  /**
+   * Opens GitHub's revert PR for a merged PR and returns its number. An open revert PR of
+   * the merged PR is taken instead, so an earlier call whose reply was lost after GitHub
+   * opened one leaves no second one.
+   */
   async revertPullRequest(repo: string, number: number): Promise<number> {
+    const open = await this.openRevert(repo, number);
+    if (open !== undefined) return open;
     const { id } = await this.json<{ id: string }>([
       "pr",
       "view",
@@ -665,16 +713,56 @@ export class GitHub {
       "--json",
       "id",
     ]);
-    const result = await this.json<{
-      data: { revertPullRequest: { revertPullRequest: { number: number } } };
-    }>([
-      "api",
-      "graphql",
-      "-f",
-      "query=mutation($id: ID!) { revertPullRequest(input: {pullRequestId: $id}) { revertPullRequest { number } } }",
-      "-f",
-      `id=${id}`,
-    ]);
+    let result: { data: { revertPullRequest: { revertPullRequest: { number: number } } } };
+    try {
+      result = await this.json([
+        "api",
+        "graphql",
+        "-f",
+        "query=mutation($id: ID!) { revertPullRequest(input: {pullRequestId: $id}) { revertPullRequest { number } } }",
+        "-f",
+        `id=${id}`,
+      ]);
+    } catch (error) {
+      const opened = await retry(() => this.openRevert(repo, number)).catch(() => undefined);
+      if (opened !== undefined) return opened;
+      throw error;
+    }
     return result.data.revertPullRequest.revertPullRequest.number;
+  }
+
+  /**
+   * The oldest open revert PR of PR `number`, as GitHub's revert names it: a branch in this
+   * repo named `revert-<number>-...`, and a body that says it reverts the PR.
+   */
+  private async openRevert(repo: string, number: number): Promise<number | undefined> {
+    const prs = await this.json<
+      { number: number; headRefName: string; body: string; isCrossRepository: boolean }[]
+    >([
+      "pr",
+      "list",
+      "-R",
+      repo,
+      "--state",
+      "open",
+      "--limit",
+      "100",
+      "--json",
+      "number,headRefName,body,isCrossRepository",
+    ]);
+    const says = new RegExp(
+      `\\bReverts ${repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}#${String(number)}\\b`,
+      "i",
+    );
+    const found = prs
+      .filter(
+        (pr) =>
+          !pr.isCrossRepository &&
+          pr.headRefName.startsWith(`revert-${String(number)}-`) &&
+          says.test(pr.body),
+      )
+      .map((pr) => pr.number)
+      .sort((a, b) => a - b);
+    return found[0];
   }
 }

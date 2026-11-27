@@ -370,6 +370,17 @@ const MIGRATIONS: Migration[] = [
   // A version's short title, apart from the message that describes it. A version saved before
   // keeps an empty title, and reads with one made from its message.
   `ALTER TABLE config_versions ADD COLUMN title TEXT NOT NULL DEFAULT '';`,
+  // A filing sent to GitHub that no issue is recorded for yet, so an issue GitHub created though
+  // its reply was lost is still taken as factory-filed. The attachments are what the upload returned.
+  `CREATE TABLE pending_issues (
+     repo TEXT NOT NULL COLLATE NOCASE,
+     title TEXT NOT NULL,
+     body TEXT NOT NULL,
+     filed_by TEXT NOT NULL,
+     attachments TEXT NOT NULL,
+     created_at TEXT NOT NULL,
+     PRIMARY KEY (repo, title)
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

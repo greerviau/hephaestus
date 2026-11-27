@@ -83,6 +83,17 @@ describe("file_issue attachments", () => {
     expect(h.github.writes).toEqual(["store", "issue"]);
   });
 
+  it("keeps the attachments of an issue whose filing reply was lost, once the poll finds it", async () => {
+    const h = harness();
+    h.github.createIssueLostReplies = 1;
+    await expect(fileIssue(h, [await file("banner.png")], "Use the banner")).rejects.toThrow(
+      /timed out/,
+    );
+    await h.intake.poll();
+    expect(h.intake.issue("octo/app", 100)?.provenance).toBe("factory");
+    expect(storedAttachments(h.db, "octo/app", 100)).toHaveLength(1);
+  });
+
   it("links a file that is not an image without embedding it", async () => {
     const h = harness();
     const issue = await fileIssue(h, [await file("notes.pdf", Buffer.from("%PDF"))], "t", "");
