@@ -338,14 +338,16 @@ const MIGRATIONS: Migration[] = [
   renamePlannerInStore,
   // The lead's queue of work waiting to start, in the lead's order, and its deferrals. A task
   // whose start was asked for before the queue existed waited as Admitted with a brief, or in
-  // Implementing with no thread; both move to the queue, oldest request first. A task with any
-  // launch recorded keeps its stage, since T3 may have its thread.
+  // Implementing with no thread; both move to the queue, oldest request first. A task with a
+  // pending or answered launch keeps its stage, since T3 may have its thread, and a task whose
+  // launch was refused keeps its worker. Their board tasks are parked on the next pass.
   `ALTER TABLE tasks ADD COLUMN queue_order INTEGER;
    ALTER TABLE tasks ADD COLUMN defer_reason TEXT;
    ALTER TABLE tasks ADD COLUMN defer_after INTEGER;
    ALTER TABLE tasks ADD COLUMN defer_mark INTEGER;
    ALTER TABLE tasks ADD COLUMN triage_since TEXT;
    ALTER TABLE tasks ADD COLUMN triage_alerted INTEGER NOT NULL DEFAULT 0;
+   ALTER TABLE tasks ADD COLUMN park_pending INTEGER NOT NULL DEFAULT 0;
    CREATE TEMP TABLE queued_on_upgrade AS
      SELECT id, ROW_NUMBER() OVER (ORDER BY COALESCE(queued_at, updated_at), id) AS place
      FROM tasks
@@ -353,8 +355,11 @@ const MIGRATIONS: Migration[] = [
             OR (stage = 'Admitted' AND brief IS NOT NULL))
        AND NOT EXISTS (SELECT 1 FROM factory_launches l
                        WHERE l.task_id = CAST(tasks.id AS TEXT) AND l.status IN ('pending', 'launched'));
-   UPDATE tasks SET stage = 'Queued', worker_env = NULL, waiting = NULL, version = version + 1,
-     queue_order = (SELECT place FROM queued_on_upgrade q WHERE q.id = tasks.id)
+   UPDATE tasks SET stage = 'Queued', waiting = NULL, version = version + 1, park_pending = 1,
+     queue_order = (SELECT place FROM queued_on_upgrade q WHERE q.id = tasks.id),
+     worker_env = CASE WHEN EXISTS (SELECT 1 FROM factory_launches l
+                                    WHERE l.task_id = CAST(tasks.id AS TEXT))
+                  THEN worker_env ELSE NULL END
    WHERE id IN (SELECT id FROM queued_on_upgrade);
    INSERT INTO task_events (task_id, at, kind, detail)
      SELECT id, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), 'stage:Queued',

@@ -74,6 +74,8 @@ export interface Task {
   triageSince: string | null;
   /** Whether the owner was told the task waits too long for the lead, since triageSince. */
   triageAlerted: boolean;
+  /** A queued task whose board task may still be on the lead's ready list, such as one an upgrade queued. */
+  parkPending: boolean;
   /** Counts every change, so a form from an earlier state of the task is refused. */
   version: number;
   createdAt: string;
@@ -156,6 +158,7 @@ interface Row {
   defer_mark: number | null;
   triage_since: string | null;
   triage_alerted: number;
+  park_pending: number;
   version: number;
   created_at: string;
   updated_at: string;
@@ -201,6 +204,7 @@ const COLUMNS: Record<keyof Omit<Task, "id" | "createdAt" | "updatedAt" | "versi
   deferMark: "defer_mark",
   triageSince: "triage_since",
   triageAlerted: "triage_alerted",
+  parkPending: "park_pending",
 };
 
 function toTask(row: Row): Task {
@@ -247,6 +251,7 @@ function toTask(row: Row): Task {
     deferMark: row.defer_mark,
     triageSince: row.triage_since,
     triageAlerted: row.triage_alerted === 1,
+    parkPending: row.park_pending === 1,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -409,7 +414,10 @@ export class TaskStore {
     if (entries.length > 0) {
       const sets = entries.map(([key]) => `${COLUMNS[key]} = ?`).join(", ");
       const values = entries.map(([key, value]) =>
-        key === "foreignMerge" || key === "reverting" || key === "triageAlerted"
+        key === "foreignMerge" ||
+        key === "reverting" ||
+        key === "triageAlerted" ||
+        key === "parkPending"
           ? value === true
             ? 1
             : 0

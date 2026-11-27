@@ -1,5 +1,22 @@
 import { describe, expect, it } from "vitest";
+import { T3ToolError } from "../../src/t3/connection.js";
 import { SHA, harness, implementResult, pr, type Harness } from "./harness.js";
+
+/** Records the implement thread a task's launch started, as T3 answered it, before the task learned of it. */
+function recordedThread(h: Harness, id: number, threadId: string): void {
+  lostLaunch(h, id);
+  h.events.recordThread({
+    environmentId: "w1",
+    threadId,
+    title: "Task",
+    providerInstanceId: "hephaestus-claude",
+    model: "m",
+    configVersion: 3,
+    taskId: String(id),
+    kind: "implement",
+  });
+  h.events.finishLaunch(`hephaestus-implement-${String(id)}-0`, { threadId });
+}
 
 /** Records a launch of the task's implement thread whose reply never came. */
 function lostLaunch(h: Harness, id: number): void {
@@ -425,5 +442,152 @@ describe("the lead's queue", () => {
     h.setClock(Date.parse("2026-11-25T13:31:00Z"));
     await h.pipeline.tick();
     expect(h.tasks.notifications()).toHaveLength(1);
+  });
+
+  it("takes up a recorded thread before it starts a task moved ahead of it", async () => {
+    const h = harness((config) => {
+      config.factory.limits.tasksPerWorker = 1;
+    });
+    const a = admitted(h, "A");
+    const b = admitted(h, "B");
+    h.pipeline.setPaused(true);
+    await h.pipeline.queue(a, "brief a");
+    await h.pipeline.queue(b, "brief b");
+    recordedThread(h, a, "t-a");
+    h.tasks.enqueue(b, a, "the lead queued the work", { brief: "brief b" });
+    h.pipeline.setPaused(false);
+
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(a)).toMatchObject({ stage: "Implementing", implementThread: "t-a" });
+    expect(h.tasks.get(b)).toMatchObject({
+      stage: "Queued",
+      waiting: "The limit of 1 task in progress per worker is reached.",
+    });
+    expect(h.t3.launches).toHaveLength(0);
+  });
+
+  it("closes the pending launch of a thread it takes up, so the thread holds one slot", async () => {
+    const h = harness();
+    const a = admitted(h, "A");
+    h.pipeline.setPaused(true);
+    await h.pipeline.queue(a, "brief a");
+    lostLaunch(h, a);
+    h.events.recordThread({
+      environmentId: "w1",
+      threadId: "t-a",
+      title: "Task",
+      providerInstanceId: "hephaestus-claude",
+      model: "m",
+      configVersion: 3,
+      taskId: String(a),
+      kind: "implement",
+    });
+    h.pipeline.setPaused(false);
+
+    await h.pipeline.tick();
+
+    expect(h.tasks.get(a).implementThread).toBe("t-a");
+    expect(h.pipeline.runningThreads()).toBe(1);
+  });
+
+  it("starts a task whose start a move stopped before the tasks behind it", async () => {
+    const h = harness((config) => {
+      config.factory.limits.tasksPerWorker = 4;
+      config.factory.limits.threadsPerWorker = 4;
+    });
+    const a = admitted(h, "A");
+    const b = admitted(h, "B");
+    const c = admitted(h, "C");
+    h.pipeline.setPaused(true);
+    for (const id of [a, b, c]) await h.pipeline.queue(id, "brief");
+    h.pipeline.setPaused(false);
+    const branch = h.github.defaultBranch.bind(h.github);
+    let moved = false;
+    h.github.defaultBranch = async () => {
+      if (!moved) {
+        moved = true;
+        h.tasks.enqueue(b, a, "the lead queued the work", { brief: "brief" });
+      }
+      return branch();
+    };
+
+    await h.pipeline.tick();
+
+    expect(h.t3.launches.map((launch) => launch.title)).toEqual([
+      `Task ${String(b)}: B`,
+      `Task ${String(a)}: A`,
+      `Task ${String(c)}: C`,
+    ]);
+  });
+
+  it("keeps a queued task on the worker that refused its launch", async () => {
+    const h = harness();
+    const a = admitted(h, "A");
+    const launch = h.t3.launchThread.bind(h.t3);
+    h.t3.launchThread = () =>
+      Promise.reject(new T3ToolError("t3_thread_launch", "worktree_failed", "no worktree"));
+    await h.pipeline.queue(a, "brief");
+    expect(h.tasks.get(a)).toMatchObject({ stage: "Queued", workerEnv: "w1" });
+
+    h.t3.launchThread = launch;
+    h.ready.splice(0, 1, { environmentId: "w2", label: "w2", home: "/home/w2" });
+    await h.pipeline.tick();
+
+    expect(h.t3.launches.filter((sent) => sent.environmentId === "w2")).toHaveLength(0);
+    expect(h.tasks.get(a)).toMatchObject({
+      stage: "Queued",
+      waiting: "The task's worker w1 is not ready.",
+    });
+    // The lead's later moves keep the task on that worker too.
+    await h.pipeline.queue(a, "another brief");
+    expect(h.tasks.get(a).workerEnv).toBe("w1");
+  });
+
+  it("queues nothing the board cannot take off the lead's list, and parks a task left unparked", async () => {
+    const h = harness();
+    const a = admitted(h, "A");
+    const setStage = h.hermesBoard.setStage.bind(h.hermesBoard);
+    h.hermesBoard.setStage = () => Promise.reject(new Error("Hermes is down"));
+    await expect(h.pipeline.queue(a, "brief")).rejects.toThrow(/Hermes is down/);
+    expect(h.tasks.get(a)).toMatchObject({ stage: "Admitted", brief: null });
+
+    h.hermesBoard.setStage = setStage;
+    h.pipeline.setPaused(true);
+    await h.pipeline.queue(a, "brief");
+    // A task the upgrade queued never had its board task parked.
+    h.tasks.update(a, { parkPending: true });
+    await h.pipeline.tick();
+    expect(h.board.at(-1)).toBe(`h${String(a)} Queued`);
+    expect(h.tasks.get(a).parkPending).toBe(false);
+  });
+
+  it("starts a task queued while a pass that has passed the queue is still running", async () => {
+    const h = harness();
+    const running = admitted(h, "Running");
+    await h.pipeline.queue(running, "brief");
+    h.tasks.update(running, { prNumber: 5, headSha: SHA });
+    h.github.prs.set(5, pr(5, SHA));
+    // The pass's scan for outside merges waits on GitHub, after the queue already ran.
+    let release = (): void => undefined;
+    const state = h.github.mergeState.bind(h.github);
+    h.github.mergeState = async (repo, number) => {
+      await new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      return state(repo, number);
+    };
+    h.setClock(Date.parse("2026-11-25T12:06:00Z"));
+    const passing = h.pipeline.tick();
+    await new Promise((resolve) => setImmediate(resolve));
+    const next = admitted(h, "Next");
+    const queued = h.pipeline.queue(next, "brief");
+    await new Promise((resolve) => setImmediate(resolve));
+    h.github.mergeState = state;
+    release();
+    await passing;
+    await queued;
+
+    expect(h.tasks.get(next).stage).toBe("Implementing");
   });
 });

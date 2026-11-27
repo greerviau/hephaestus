@@ -36,6 +36,7 @@ function backToBeforeQueue(db: Database): void {
     ALTER TABLE tasks DROP COLUMN defer_mark;
     ALTER TABLE tasks DROP COLUMN triage_since;
     ALTER TABLE tasks DROP COLUMN triage_alerted;
+    ALTER TABLE tasks DROP COLUMN park_pending;
     ALTER TABLE tasks ADD COLUMN queued_at TEXT;`);
 }
 
@@ -263,30 +264,73 @@ describe("store migrations", () => {
              (4, 'octo/app', 'waiting for a task slot', 'Admitted', 'b', NULL, NULL, NULL, 'The limit is reached.', '2026-11-25T12:01:00Z', 'x', 'x'),
              (5, 'octo/app', 'untriaged', 'Admitted', NULL, NULL, NULL, NULL, NULL, NULL, 'x', 'x'),
              (6, 'octo/app', 'restarted, waiting for a slot', 'Implementing', 'b', NULL, 'x', 'w1', NULL, NULL, 'x', 'x'),
-             (7, 'octo/app', 'launched before a crash', 'Implementing', 'b', NULL, NULL, 'w1', NULL, NULL, 'x', 'x');
+             (7, 'octo/app', 'launched before a crash', 'Implementing', 'b', NULL, NULL, 'w1', NULL, NULL, 'x', 'x'),
+             (8, 'octo/app', 'launch refused', 'Implementing', 'b', NULL, NULL, 'w1', NULL, NULL, 'x', '2026-11-25T12:05:00Z');
       INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id, model, config_version, task_id, status, created_at, updated_at)
       VALUES ('hephaestus-implement-3-0', 'w1', 'Task 3', 'p', 'm', 1, '3', 'pending', 'x', 'x'),
-             ('hephaestus-implement-7-0', 'w1', 'Task 7', 'p', 'm', 1, '7', 'launched', 'x', 'x');`);
+             ('hephaestus-implement-7-0', 'w1', 'Task 7', 'p', 'm', 1, '7', 'launched', 'x', 'x'),
+             ('hephaestus-implement-8-0', 'w1', 'Task 8', 'p', 'm', 1, '8', 'failed', 'x', 'x');`);
     db.pragma(`user_version = ${String(latest - 1)}`);
     db.close();
 
     db = openStore(path);
     expect(
-      db.prepare("SELECT id, stage, queue_order, worker_env, waiting FROM tasks ORDER BY id").all(),
+      db
+        .prepare(
+          "SELECT id, stage, queue_order, worker_env, waiting, park_pending FROM tasks ORDER BY id",
+        )
+        .all(),
     ).toEqual([
-      { id: 1, stage: "Queued", queue_order: 2, worker_env: null, waiting: null },
-      { id: 2, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
-      { id: 3, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
-      { id: 4, stage: "Queued", queue_order: 1, worker_env: null, waiting: null },
-      { id: 5, stage: "Admitted", queue_order: null, worker_env: null, waiting: null },
-      { id: 6, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
-      { id: 7, stage: "Implementing", queue_order: null, worker_env: "w1", waiting: null },
+      { id: 1, stage: "Queued", queue_order: 2, worker_env: null, waiting: null, park_pending: 1 },
+      {
+        id: 2,
+        stage: "Implementing",
+        queue_order: null,
+        worker_env: "w1",
+        waiting: null,
+        park_pending: 0,
+      },
+      {
+        id: 3,
+        stage: "Implementing",
+        queue_order: null,
+        worker_env: "w1",
+        waiting: null,
+        park_pending: 0,
+      },
+      { id: 4, stage: "Queued", queue_order: 1, worker_env: null, waiting: null, park_pending: 1 },
+      {
+        id: 5,
+        stage: "Admitted",
+        queue_order: null,
+        worker_env: null,
+        waiting: null,
+        park_pending: 0,
+      },
+      {
+        id: 6,
+        stage: "Implementing",
+        queue_order: null,
+        worker_env: "w1",
+        waiting: null,
+        park_pending: 0,
+      },
+      {
+        id: 7,
+        stage: "Implementing",
+        queue_order: null,
+        worker_env: "w1",
+        waiting: null,
+        park_pending: 0,
+      },
+      // A refused launch pins the task to its worker.
+      { id: 8, stage: "Queued", queue_order: 3, worker_env: "w1", waiting: null, park_pending: 1 },
     ]);
     expect(
       db
         .prepare("SELECT task_id FROM task_events WHERE kind = 'stage:Queued' ORDER BY task_id")
         .all(),
-    ).toEqual([{ task_id: 1 }, { task_id: 4 }]);
+    ).toEqual([{ task_id: 1 }, { task_id: 4 }, { task_id: 8 }]);
     db.close();
   });
 

@@ -495,24 +495,54 @@ export class Pipeline {
       this.refuseWhileStarting(task, "moved or given a new brief");
       await this.enqueue(task, before, brief);
     });
-    // A whole pass, so tasks already in progress take their slots before the queue does.
-    await this.tick();
+    await this.passAfterQueuing();
     return this.tasks.get(taskId);
   }
 
+  /**
+   * A whole pass, so tasks already in progress take their slots before the queue does. A pass
+   * already running may be past its queue step, so a second pass follows it.
+   */
+  private async passAfterQueuing(): Promise<void> {
+    const joined = this.running !== undefined;
+    await this.tick();
+    if (joined) await this.tick();
+  }
+
   private async enqueue(task: Task, before: number | undefined, brief: string): Promise<void> {
+    if (before !== undefined) {
+      const target = this.tasks.find(before);
+      if (target?.stage !== "Queued" || target.id === task.id) {
+        throw new Error(
+          `Task ${String(before)} is not queued, so nothing can be queued before it.`,
+        );
+      }
+    }
+    // Off the lead's queue on the board first: a task queued while its board task stays on the
+    // lead's ready list would come back to the lead. A board that refuses changes nothing.
+    const board = this.options.board?.();
+    if (task.stage !== "Queued" && board !== undefined && task.hermesTaskId !== null) {
+      await board.setStage(task.hermesTaskId, "Queued");
+    }
     const detail =
       task.stage === "Escalated" ? "the lead restarted the work" : "the lead queued the work";
-    const queued = this.tasks.enqueue(task.id, before, detail, {
+    this.tasks.enqueue(task.id, before, detail, {
       brief,
       waiting: null,
       escalatedTo: null,
       reason: null,
       ownerAction: null,
-      workerEnv: null,
+      parkPending: false,
+      workerEnv: this.keptWorker(task),
     });
-    // Off the lead's queue on the board at once, so the lead is not given the task again.
-    if (task.stage !== "Queued") await this.mirror(queued, "Queued");
+  }
+
+  /**
+   * The worker a waiting task keeps: none, so its launch picks one with a free slot, unless a
+   * launch for it was ever sent, which pins the task to that launch's worker.
+   */
+  private keptWorker(task: Task): string | null {
+    return this.everLaunched(task.id) ? task.workerEnv : null;
   }
 
   /** Refuses a change to a queued task whose launch T3 may already have answered with a thread. */
@@ -588,7 +618,7 @@ export class Pipeline {
         deferMark,
         queueOrder: null,
         waiting: null,
-        workerEnv: null,
+        workerEnv: this.keptWorker(task),
       };
       if (task.stage === "Queued") {
         this.tasks.transition(taskId, "Admitted", "the lead deferred the work", fields);
@@ -603,7 +633,7 @@ export class Pipeline {
   /** The lead's start_work: restarts a task escalated to the lead with a new brief. */
   async startWork(taskId: number, brief: string): Promise<Task> {
     const task = await this.withTask(taskId, () => this.startWorkNow(taskId, brief));
-    if (task.stage === "Queued") await this.tick();
+    if (task.stage === "Queued") await this.passAfterQueuing();
     return this.tasks.get(taskId);
   }
 
@@ -2256,16 +2286,33 @@ export class Pipeline {
   }
 
   /**
-   * Launches queued tasks in the lead's order while the limits allow. Once a
-   * limit, a pause, a missing worker, or a failed start holds one back, it
-   * holds back every task after it too, so a later task never starts ahead
-   * of an earlier one. The queue is read again before each task, so a move
-   * the lead makes during the pass counts. A task whose launch is already
-   * pending is replayed wherever it stands, since it holds its slot anyway.
+   * Launches queued tasks in the lead's order while the limits allow. A queued task whose
+   * thread is already recorded runs whatever its place, so it is taken up first, and its board
+   * task parked when an upgrade left it unparked. Then, once a limit, a pause, a missing worker,
+   * or a failed start holds one task back, it holds back every task after it too, so a later
+   * task never starts ahead of an earlier one. The queue is read again before each task, so a
+   * move the lead makes during the pass counts, and a task whose start such a move stopped is
+   * tried again after the task that moved ahead. A task whose launch is already pending is
+   * replayed wherever it stands, since it holds its slot anyway.
    */
   private async startQueued(): Promise<void> {
+    for (const { id } of this.tasks.queue()) {
+      await this.withTask(id, async () => {
+        const task = this.tasks.get(id);
+        if (task.stage !== "Queued") return;
+        try {
+          if (task.parkPending) await this.parkQueued(task);
+          const recorded = this.recordedImplementThread(id);
+          if (recorded !== undefined) await this.adoptThread(task, recorded);
+        } catch (error) {
+          console.error(`Taking up queued task ${String(id)} failed`, error);
+          this.tasks.event(id, "error", "A step failed; the service log has the error.");
+        }
+      });
+    }
     let blocked: string | undefined;
     const tried = new Set<number>();
+    const retries = new Map<number, number>();
     for (;;) {
       const next = this.tasks.queue().find((task) => !tried.has(task.id));
       if (next === undefined) return;
@@ -2278,7 +2325,14 @@ export class Pipeline {
           return;
         }
         try {
-          blocked = (await this.launchQueued(task)) ?? blocked;
+          const outcome = await this.launchQueued(task);
+          blocked = outcome.blocked ?? blocked;
+          const tries = retries.get(task.id) ?? 0;
+          // Bounded, so a lead that keeps moving tasks cannot hold the pass in this loop.
+          if (outcome.preempted && tries < 3) {
+            retries.set(task.id, tries + 1);
+            tried.delete(task.id);
+          }
         } catch (error) {
           console.error(`Starting queued task ${String(task.id)} failed`, error);
           this.tasks.event(task.id, "error", "A step failed; the service log has the error.");
@@ -2288,13 +2342,28 @@ export class Pipeline {
     }
   }
 
-  /** Launches one queued task; returns why it could not start when that holds back the rest. */
-  private async launchQueued(task: Task): Promise<string | undefined> {
-    const recorded = this.recordedImplementThread(task.id);
-    if (recorded !== undefined) {
-      await this.adoptThread(task, recorded);
-      return undefined;
+  /** Parks the board task of a queued task that may still be on the lead's ready list. */
+  private async parkQueued(task: Task): Promise<void> {
+    const board = this.options.board?.();
+    if (board !== undefined && task.hermesTaskId !== null) {
+      try {
+        await board.setStage(task.hermesTaskId, "Queued");
+      } catch (error) {
+        // Tried again on the next pass.
+        console.error(`Parking queued task ${String(task.id)} on the Hermes board failed`, error);
+        return;
+      }
     }
+    this.tasks.update(task.id, { parkPending: false });
+  }
+
+  /**
+   * Launches one queued task. Says why it could not start when that holds back the rest, and
+   * whether a task the lead moved ahead of it during its start stopped that start.
+   */
+  private async launchQueued(
+    task: Task,
+  ): Promise<{ blocked?: string | undefined; preempted: boolean }> {
     const queue = this.tasks.queue();
     const place = queue.findIndex((queued) => queued.id === task.id);
     const ahead = new Set(queue.slice(0, place).map((queued) => queued.id));
@@ -2303,25 +2372,47 @@ export class Pipeline {
     if (this.pendingLaunch(implementRequest(task)) === undefined) {
       if (!this.works(task)) {
         this.wait(task, `${task.repo} is no longer a factory project.`);
-        return undefined;
+        return { preempted: false };
       }
+      const pinned = task.workerEnv !== null && this.everLaunched(task.id);
       // Paused first, then a free task slot on a worker, then that worker's thread slots.
-      const worker = this.paused() ? "The factory is paused." : this.freeWorker();
+      const worker = this.paused()
+        ? "The factory is paused."
+        : pinned
+          ? this.pinnedWorker(task)
+          : this.freeWorker();
       const reason =
         typeof worker === "string" ? worker : this.blockedBecause(worker.environmentId);
       if (reason !== undefined) {
         this.wait(task, reason);
-        return reason;
+        return { blocked: reason, preempted: false };
       }
-      // The launch picks the worker afresh, and a reason left from an earlier pass must not
-      // hold back the tasks after this one.
-      if (task.workerEnv !== null || task.waiting !== null) {
-        fresh = this.tasks.update(task.id, { workerEnv: null, waiting: null });
-      }
+      // An unpinned launch picks its worker afresh, and a reason left from an earlier pass must
+      // not hold back the tasks after this one.
+      const clear = {
+        ...(pinned || task.workerEnv === null ? {} : { workerEnv: null }),
+        ...(task.waiting === null ? {} : { waiting: null }),
+      };
+      if (Object.keys(clear).length > 0) fresh = this.tasks.update(task.id, clear);
     }
     await this.launchImplement(fresh, ahead);
     const after = this.tasks.get(task.id);
-    return after.stage === "Queued" ? (after.waiting ?? undefined) : undefined;
+    if (after.stage !== "Queued") return { preempted: false };
+    if (movedAhead(this.tasks.queue(), task.id, ahead)) return { preempted: true };
+    return { blocked: after.waiting ?? undefined, preempted: false };
+  }
+
+  /** The worker a task that once sent a launch is pinned to, when it is ready and has a task slot. */
+  private pinnedWorker(task: Task): Worker | string {
+    const env = task.workerEnv ?? "";
+    const own = this.readyHomes().find((worker) => worker.environmentId === env);
+    if (own === undefined) {
+      return `The task's worker ${this.options.workers.worker(env)?.label ?? env} is not ready.`;
+    }
+    const limit = this.options.config()?.document.factory.limits.tasksPerWorker;
+    if (limit === undefined) return "No config version is deployed.";
+    if (this.tasksInProgress(env) >= limit) return `${limitReached(limit)}.`;
+    return { environmentId: own.environmentId, home: own.home };
   }
 
   /** Moves a queued task onto the implement thread its launch started, without launching again. */
@@ -2346,6 +2437,11 @@ export class Pipeline {
       startedAt: task.startedAt ?? this.now().toISOString(),
     });
     this.tasks.event(task.id, "thread:implement", thread.threadId);
+    // A launch whose record was cut short still holds a slot, which the thread now holds instead.
+    const request = implementRequest(task);
+    if (this.pendingLaunch(request) !== undefined) {
+      this.options.events.finishLaunch(request, { threadId: thread.threadId });
+    }
     await this.mirror(updated, "Implementing", thread.threadId);
   }
 
