@@ -391,6 +391,10 @@ export class WorkerManager {
     } else if (this.redeployDue(worker)) {
       blocker = "Due for its periodic redeploy, which refreshes the factory skill settings.";
       automatic = true;
+    } else if (this.clonedSinceDeploy(id)) {
+      blocker =
+        "A project with skills of its own was cloned here since its last deploy; deploying again installs them.";
+      automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
     else if (
       (claude === "limited" && (codex === "signed-in" || codex === "limited")) ||
@@ -497,6 +501,22 @@ export class WorkerManager {
     );
   }
 
+  /**
+   * Whether the worker cloned a project that loads skills of its own after its last successful
+   * deploy started. The deploy puts the hook in each clone that links those skills into a
+   * thread's worktree, so a later clone has none until the next deploy.
+   */
+  private clonedSinceDeploy(environmentId: string): boolean {
+    const last = this.latestTask(environmentId, "deploy", "succeeded");
+    return (
+      this.db
+        .prepare(
+          "SELECT 1 FROM worker_projects WHERE environment_id = ? AND skills_cloned_at >= ? LIMIT 1",
+        )
+        .get(environmentId, last?.createdAt ?? "") !== undefined
+    );
+  }
+
   private redeployDue(worker: Worker): boolean {
     const last = this.latestTask(worker.environmentId, "deploy", "succeeded");
     return last !== undefined && this.now().getTime() - Date.parse(last.updatedAt) >= REDEPLOY_MS;
@@ -569,7 +589,14 @@ export class WorkerManager {
       const current =
         worker.deployedVersion === desired.version && worker.deployedSha === desired.sha;
       const age = last === undefined ? Infinity : this.now().getTime() - Date.parse(last.updatedAt);
-      if (current && last?.status === "succeeded" && age < REDEPLOY_MS) continue;
+      if (
+        current &&
+        last?.status === "succeeded" &&
+        age < REDEPLOY_MS &&
+        !this.clonedSinceDeploy(environmentId)
+      ) {
+        continue;
+      }
       if (!now && last?.status === "failed" && age < DEPLOY_RETRY_MS) continue;
       await this.startDeploy(environmentId, desired);
     }

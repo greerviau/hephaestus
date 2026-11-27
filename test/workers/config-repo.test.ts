@@ -34,6 +34,25 @@ describe("versionFiles", () => {
     });
   });
 
+  it("puts each project's skills in a folder of its own, named for the repo in lower case", () => {
+    const config = sampleConfig();
+    config.skills.migrations = { "SKILL.md": "# Migrations\n", "notes/a.md": "A\n" };
+    config.factory.threadSkills = ["triage"];
+    config.projects["Octo/App"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: ["migrations"],
+    };
+    const files = versionFiles(3, config);
+    expect(
+      Object.fromEntries(Object.entries(files).filter(([path]) => path.startsWith("projects/"))),
+    ).toEqual({
+      "projects/octo__app/skills/migrations/SKILL.md": "# Migrations\n",
+      "projects/octo__app/skills/migrations/notes/a.md": "A\n",
+    });
+    expect(files["claude/skills/migrations/SKILL.md"]).toBeUndefined();
+    expect(files["codex/skills/migrations/SKILL.md"]).toBeUndefined();
+  });
+
   it("leaves out the coding thread instructions earlier builds shipped, and keeps the owner's", () => {
     const config = sampleConfig();
     // What install copied into version 1, with one rule the owner added to the list.

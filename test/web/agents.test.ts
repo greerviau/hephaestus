@@ -662,6 +662,47 @@ describe("Skill editor", () => {
     expect(document.factory.threadSkills).toEqual(["triage-issues"]);
   });
 
+  it("renames and deletes a skill in every project that loads it", async () => {
+    const config = agentsConfig();
+    config.projects["octo/app"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: ["triage"],
+    };
+    config.projects["octo/lib"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: ["brief", "triage"],
+    };
+    const loaded = dashboard.store.createVersion({
+      document: config,
+      author: "owner",
+      message: "Project skills",
+      parentId: base,
+    });
+    dashboard.store.approve(loaded.id);
+    dashboard.store.markDeployed(loaded.id);
+    expect((await dashboard.get("/config/skills/triage")).html).toContain(
+      "Communicator, Coding threads, threads for octo/app, and threads for octo/lib load it",
+    );
+
+    await post("/config/skills/triage/rename", {
+      parentId: String(loaded.id),
+      name: "triage-issues",
+      deploy: "on",
+    });
+    const renamed = newest();
+    expect(renamed.document.projects["octo/app"]?.skills).toEqual(["triage-issues"]);
+    expect(renamed.document.projects["octo/lib"]?.skills).toEqual(["brief", "triage-issues"]);
+
+    await post("/config/skills/triage-issues/delete", {
+      parentId: String(renamed.id),
+      deploy: "on",
+    });
+    const deleted = newest();
+    expect(deleted.id).toBe(renamed.id + 1);
+    expect(deleted.document.projects["octo/app"]?.skills).toEqual([]);
+    expect(deleted.document.projects["octo/lib"]?.skills).toEqual(["brief"]);
+  });
+
   it("refuses to rename a skill onto another skill", async () => {
     const response = await post("/config/skills/triage/rename", {
       parentId: String(base),

@@ -736,7 +736,7 @@ export class FactoryMcp {
         const unloaded = unloadedNewSkills(config, deployed.document);
         if (unloaded.length > 0) {
           throw new Error(
-            `The proposal adds ${unloaded.length === 1 ? "skill" : "skills"} ${unloaded.join(", ")} but nothing loads ${unloaded.length === 1 ? "it" : "them"}. Load each new skill in the same proposal: add it to factory.threadSkills for coding threads, or to roles.<role>.skills for a role, and say in the message which loads it.`,
+            `The proposal adds ${unloaded.length === 1 ? "skill" : "skills"} ${unloaded.join(", ")} but nothing loads ${unloaded.length === 1 ? "it" : "them"}. Load each new skill in the same proposal: add it to factory.threadSkills for every coding thread, to projects.<repo>.skills for the coding threads of one project, or to roles.<role>.skills for a role, and say in the message which loads it.`,
           );
         }
         const version = store.createVersion({
@@ -780,6 +780,7 @@ function unloadedNewSkills(proposed: unknown, deployed: unknown): string[] {
   const loaded = new Set([
     ...names(record(config.factory).threadSkills),
     ...Object.values(record(config.roles)).flatMap((role) => names(record(role).skills)),
+    ...Object.values(record(config.projects)).flatMap((project) => names(record(project).skills)),
   ]);
   return Object.keys(record(config.skills)).filter(
     (name) => !Object.hasOwn(existing, name) && !loaded.has(name),

@@ -156,11 +156,22 @@ export function withSkillFile(
 function replaceIn(config: FactoryConfig, change: (skills: string[]) => string[]): void {
   config.factory.threadSkills = change(config.factory.threadSkills);
   for (const role of ROLE_NAMES) config.roles[role].skills = change(config.roles[role].skills);
+  for (const project of Object.values(config.projects)) {
+    if (project.skills !== undefined) project.skills = change(project.skills);
+  }
+}
+
+/** The projects whose factory threads load `skill`, besides every thread's own skills. */
+export function skillProjects(config: FactoryConfig, skill: string): string[] {
+  return Object.entries(config.projects)
+    .filter(([, project]) => project.skills?.includes(skill) === true)
+    .map(([repo]) => repo)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /**
  * A copy of `config` with a skill renamed: its place in the list, every
- * instruction set that loads it, and the `name` in its SKILL.md when that
+ * instruction set and project that loads it, and the `name` in its SKILL.md when that
  * was the old name.
  */
 export function withSkillRenamed(config: FactoryConfig, from: string, to: string): FactoryConfig {
@@ -185,7 +196,7 @@ export function withSkillRenamed(config: FactoryConfig, from: string, to: string
   return next;
 }
 
-/** A copy of `config` without a skill, unloaded from every instruction set that loaded it. */
+/** A copy of `config` without a skill, unloaded from every instruction set and project that loaded it. */
 export function withoutSkill(config: FactoryConfig, name: string): FactoryConfig {
   requireSkill(config, name);
   const next = structuredClone(config);

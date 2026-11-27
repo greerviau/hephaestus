@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import type { FactoryConfig } from "../config/document.js";
+import { projectFolder, type FactoryConfig } from "../config/document.js";
 
 const run = promisify(execFile);
 
@@ -58,6 +58,14 @@ export function versionFiles(version: number, config: FactoryConfig): Record<str
     for (const [path, text] of Object.entries(config.skills[name] ?? {})) {
       files[`claude/skills/${name}/${path}`] = text;
       files[`codex/skills/${name}/${path}`] = text;
+    }
+  }
+  // One folder for both providers: the worker links it into each new worktree of the project.
+  for (const [repo, project] of Object.entries(config.projects)) {
+    for (const name of project.skills ?? []) {
+      for (const [path, text] of Object.entries(config.skills[name] ?? {})) {
+        files[`projects/${projectFolder(repo)}/skills/${name}/${path}`] = text;
+      }
     }
   }
   return files;

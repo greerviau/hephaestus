@@ -5,6 +5,7 @@ import {
   skillDescription,
   skillFiles,
   skillPathProblem,
+  skillProjects,
   skillUsers,
   withInstructionSet,
   withNewSkill,
@@ -102,6 +103,14 @@ function count(n: number, one: string): string {
 }
 
 /** "A", "A and B", or "A, B, and C". */
+/** What loads a skill: each instruction set, then each project's threads. */
+function loadedBy(config: FactoryConfig, skill: string): string[] {
+  return [
+    ...skillUsers(config, skill).map((user) => SETS[user].title),
+    ...skillProjects(config, skill).map((repo) => `threads for ${repo}`),
+  ];
+}
+
 function sentenceList(items: readonly string[]): string {
   if (items.length <= 2) return items.join(" and ");
   return `${items.slice(0, -1).join(", ")}, and ${items.at(-1) ?? ""}`;
@@ -296,7 +305,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
     const names = Object.keys(config.skills);
     const skills = names.map((name) => {
       const files = skillFiles(config, name) ?? {};
-      const users = skillUsers(config, name).map((user) => SETS[user].title);
+      const users = loadedBy(config, name);
       const description = skillDescription(files);
       return {
         title: name,
@@ -462,7 +471,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       notFound(context, "file");
       return;
     }
-    const users = skillUsers(config, name).map((user) => SETS[user].title);
+    const users = loadedBy(config, name);
     const description = skillDescription(files);
     const typed = refused?.form;
     // Only the editor's own form carries the file's text; a refused dialog leaves the editor as saved.

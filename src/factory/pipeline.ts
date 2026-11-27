@@ -1166,13 +1166,21 @@ export class Pipeline {
     );
   }
 
-  /** The T3 project for the repo on the worker, cloning it the first time. */
-  private async project(environmentId: string, home: string, repo: string): Promise<string> {
+  /**
+   * The T3 project for the repo on the worker, cloning it the first time. A new clone of a
+   * project that loads skills of its own is `held`: its worktrees get those skills only once a
+   * deploy has put the clone's hook in place, and the worker manager deploys again for it.
+   */
+  private async project(
+    environmentId: string,
+    home: string,
+    repo: string,
+  ): Promise<{ id: string; held: boolean }> {
     const db = this.options.db;
     const known = db
       .prepare("SELECT project_id AS id FROM worker_projects WHERE environment_id = ? AND repo = ?")
       .get(environmentId, repo) as { id: string } | undefined;
-    if (known !== undefined) return known.id;
+    if (known !== undefined) return { id: known.id, held: false };
     const path = `${home}/.hephaestus/projects/${repo.replace("/", "__")}`;
     let projectId: string;
     try {
@@ -1185,10 +1193,12 @@ export class Pipeline {
       if (existing === undefined) throw error;
       projectId = existing.projectId;
     }
+    const skills = projectFor(this.options.config()?.document.projects, repo)?.skills ?? [];
+    const held = skills.length > 0;
     db.prepare(
-      "INSERT OR REPLACE INTO worker_projects (environment_id, repo, project_id) VALUES (?, ?, ?)",
-    ).run(environmentId, repo, projectId);
-    return projectId;
+      "INSERT OR REPLACE INTO worker_projects (environment_id, repo, project_id, skills_cloned_at) VALUES (?, ?, ?, ?)",
+    ).run(environmentId, repo, projectId, held ? this.now().toISOString() : null);
+    return { id: projectId, held };
   }
 
   /**
@@ -1199,7 +1209,9 @@ export class Pipeline {
     task: Task,
     request: string,
     still: (current: Task) => boolean,
-    build: (worker: Worker) => Promise<{ options: LaunchOptions; kind: "implement" | "review" }>,
+    build: (
+      worker: Worker,
+    ) => Promise<{ options: LaunchOptions; kind: "implement" | "review"; hold?: string }>,
   ): Promise<{ threadId: string; worker: Worker } | undefined> {
     return this.serialLaunch(async () => {
       const config = this.options.config();
@@ -1226,11 +1238,17 @@ export class Pipeline {
       if (!still(current)) return undefined;
       // Everything is checked again after the preparation's awaits, on the same worker.
       const again = pending === undefined ? this.pickWorker(current) : worker;
-      const blocked = !this.works(current)
-        ? `${task.repo} is no longer a factory project.`
-        : typeof again === "string" || again.environmentId !== worker.environmentId
-          ? "The task's worker changed or is not ready."
-          : this.blockedBecause(worker.environmentId, undefined, prepared.options.clientRequestId);
+      const blocked =
+        prepared.hold ??
+        (!this.works(current)
+          ? `${task.repo} is no longer a factory project.`
+          : typeof again === "string" || again.environmentId !== worker.environmentId
+            ? "The task's worker changed or is not ready."
+            : this.blockedBecause(
+                worker.environmentId,
+                undefined,
+                prepared.options.clientRequestId,
+              ));
       if (blocked !== undefined) {
         this.wait(current, blocked);
         return undefined;
@@ -1298,7 +1316,8 @@ export class Pipeline {
         current.implementThread === null,
       async (worker) => {
         // Project ids belong to one worker, so the id comes from the worker chosen now.
-        const projectId = await this.project(worker.environmentId, worker.home, task.repo);
+        const project = await this.project(worker.environmentId, worker.home, task.repo);
+        const projectId = project.id;
         const base = task.baseBranch ?? (await this.options.github.defaultBranch(task.repo));
         const issue =
           task.issueNumber === null
@@ -1307,6 +1326,11 @@ export class Pipeline {
         this.tasks.update(task.id, { baseBranch: base, branch });
         return {
           kind: "implement",
+          ...(project.held
+            ? {
+                hold: "The worker just cloned the project and deploys again to install its skills.",
+              }
+            : {}),
           options: {
             environmentId: worker.environmentId,
             projectId,

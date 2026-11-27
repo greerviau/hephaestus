@@ -615,7 +615,7 @@ describe("FactoryMcp", () => {
     const text = JSON.stringify(refused.content);
     expect(text).toContain("debugging");
     expect(text).toContain("factory.threadSkills");
-    expect(text).toContain("skills");
+    expect(text).toContain("projects.<repo>.skills");
     expect(store.count()).toBe(2);
 
     const viaThreads = structuredClone(unloaded);
@@ -626,6 +626,15 @@ describe("FactoryMcp", () => {
     viaRole.roles.lead.skills = ["debugging"];
     expect((await propose(viaRole)).isError).toBeFalsy();
 
+    const viaProject = structuredClone(unloaded);
+    viaProject.projects["octo/app"] = {
+      policy: { preset: "standard", overrides: {} },
+      skills: ["debugging"],
+    };
+    const loaded = await propose(viaProject);
+    expect(loaded.isError).toBeFalsy();
+    expect(store.list()[0]?.document.projects["octo/app"]?.skills).toEqual(["debugging"]);
+
     // Unloading a skill the deployed version has, or editing one already unloaded, is the owner's call.
     const unloadExisting = structuredClone(deployed);
     unloadExisting.roles.communicator.skills = [];
@@ -634,7 +643,7 @@ describe("FactoryMcp", () => {
     const editIdle = structuredClone(deployed);
     editIdle.skills.idle = { "SKILL.md": "# Idle\nMore.\n" };
     expect((await propose(editIdle)).isError).toBeFalsy();
-    expect(store.count()).toBe(6);
+    expect(store.count()).toBe(7);
     await c.close();
   });
 
