@@ -10,6 +10,7 @@ describe("analytics", () => {
     const tasks = new TaskStore(db, () => new Date(clock));
     const a = tasks.create({ repo: "octo/app", issueNumber: 1, title: "a" }).id;
     tasks.update(a, { startedAt: new Date(clock).toISOString() });
+    tasks.transition(a, "Queued", "the lead queued the work");
     tasks.transition(a, "Implementing", "work started");
     tasks.transition(a, "Reviewing", "PR #5 at x");
     tasks.transition(a, "Merging", "approved at x");

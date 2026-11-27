@@ -69,6 +69,7 @@ describe("Projects", () => {
   it("counts a project's active tasks and puts Remove behind a menu that asks first", async () => {
     dashboard = await startDashboard({ github });
     const id = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
+    dashboard.h.tasks.transition(id, "Queued", "the lead queued the work");
     dashboard.h.tasks.transition(id, "Implementing", "started");
     const { html } = await dashboard.get("/projects");
 
@@ -314,6 +315,7 @@ describe("Projects, under concurrent changes", () => {
   it("removes a project with a merge in flight, and says the merge finishes under its policy", async () => {
     dashboard = await startDashboard({ github, deploy: markDeployed });
     const id = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
+    dashboard.h.tasks.transition(id, "Queued", "the lead queued the work");
     dashboard.h.tasks.transition(id, "Implementing", "started");
     dashboard.h.tasks.transition(id, "Reviewing", "PR #5");
     dashboard.h.tasks.transition(id, "Merging", "approved");

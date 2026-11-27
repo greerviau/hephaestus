@@ -37,8 +37,8 @@ export interface FactorySettings {
   threadSkills: string[];
   /** The model each factory instance runs. */
   models: { claude: ModelChoice; codex: ModelChoice };
-  /** Hephaestus starts an admitted task itself, from its issue, when the lead has not after this many minutes; 0 waits for the lead. */
-  autoStartMinutes: number;
+  /** The owner is told about an admitted task the lead has neither queued nor deferred after this many minutes; 0 never tells. */
+  triageAlertMinutes: number;
   /** The owner's own provider instance and model that run deploy and sign-in threads on a worker. */
   setup: ModelChoice & { instanceId: string };
   limits: {
@@ -58,7 +58,7 @@ export interface FactorySettings {
 
 export const DEFAULT_FACTORY: FactorySettings = {
   threadSkills: [],
-  autoStartMinutes: 10,
+  triageAlertMinutes: 30,
   models: { claude: { model: "claude-sonnet-5-5" }, codex: { model: "gpt-6.2-sol" } },
   setup: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" },
   limits: { tasksPerWorker: 2, threadsPerWorker: 2, threads: 4, startsPerDay: 40 },
@@ -235,8 +235,11 @@ export function validateConfig(value: unknown): FactoryConfig {
     if (setup !== undefined && (typeof setup.instanceId !== "string" || setup.instanceId === "")) {
       problems.push("factory.setup.instanceId must be a non-empty string");
     }
-    if (!Number.isInteger(factory.autoStartMinutes) || (factory.autoStartMinutes as number) < 0) {
-      problems.push("factory.autoStartMinutes must be a whole number of 0 or more");
+    if (
+      !Number.isInteger(factory.triageAlertMinutes) ||
+      (factory.triageAlertMinutes as number) < 0
+    ) {
+      problems.push("factory.triageAlertMinutes must be a whole number of 0 or more");
     }
     const limits = object("factory.limits", factory.limits) ?? {};
     for (const name of ["tasksPerWorker", "threadsPerWorker", "threads", "startsPerDay"]) {

@@ -110,6 +110,7 @@ describe("RequestThreads", () => {
       },
     ];
     await threads.link();
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     tasks.update(id, { prNumber: 5 });
     tasks.transition(id, "Reviewing", "PR #5 at abc");
@@ -133,6 +134,25 @@ describe("RequestThreads", () => {
     expect(posts).toHaveLength(6);
   });
 
+  it("says a queued task waits for a free slot when it starts following it", async () => {
+    const id = task();
+    tasks.transition(id, "Queued", "the lead queued the work");
+    await threads.progress();
+    messages[THREAD] = [
+      {
+        id: "2",
+        content: `Filed https://github.com/octo/app/issues/7\n${trackingLine("octo/app", 7)}`,
+        author: { id: BOT },
+      },
+    ];
+    await threads.link();
+    await threads.progress();
+
+    expect(posts.map((post) => post.text)).toEqual([
+      "Following octo/app#7: it is queued and starts when a thread slot is free. Progress shows up here.",
+    ]);
+  });
+
   it("ignores a tracking line from anyone but the bot, and threads outside the request channel", async () => {
     task();
     messages[THREAD] = [
@@ -152,6 +172,7 @@ describe("RequestThreads", () => {
       tree: "t1",
       files: [{ name: "../screen shot.png", data: Buffer.from("png") }],
     };
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     tasks.update(id, { prNumber: 5 });
     tasks.transition(id, "Reviewing", "PR #5 at abc");
@@ -207,6 +228,7 @@ describe("RequestThreads, under bad input", () => {
     tasks.update(id, { branch: "factory/task-1-retry-9" });
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     tasks.update(id, { prNumber: 5 });
     tasks.transition(id, "Reviewing", "PR #5 at abc");
@@ -222,6 +244,7 @@ describe("RequestThreads, under bad input", () => {
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     // A name too long for the file system, as far as the folder is concerned, is cut short.
     evidence = { tree: "t1", files: [{ name: "x".repeat(400), data: Buffer.from("a") }] };
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     tasks.update(id, { prNumber: 5 });
     tasks.transition(id, "Reviewing", "PR #5 at abc");
@@ -313,6 +336,7 @@ describe("RequestThreads, linked late", () => {
   it("does not repeat in a milestone what the catch-up already said, and attaches waiting evidence", async () => {
     const id = task();
     await threads.progress();
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     tasks.update(id, { prNumber: 5 });
     tasks.transition(id, "Reviewing", "PR #5 at abc");
@@ -332,6 +356,7 @@ describe("RequestThreads, linked late", () => {
   it("posts every step of the window when the catch-up itself was not sent", async () => {
     const id = task();
     await threads.progress();
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     failPosts = 1;
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
@@ -343,6 +368,7 @@ describe("RequestThreads, linked late", () => {
     const id = task();
     await threads.progress();
     tasks.update(id, { prNumber: 5 });
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     evidence = { tree: "t1", files: [{ name: "screen.png", data: Buffer.from("png") }] };
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
@@ -417,8 +443,10 @@ describe("RequestThreads, an updated PR", () => {
     await threads.progress();
     await threads.follow("octo/app", 7, { platform: "discord", chat: THREAD });
     // Another task's PR #5 does not count for this one.
+    tasks.transition(other, "Queued", "the lead queued the work");
     tasks.transition(other, "Implementing", "work started");
     tasks.transition(other, "Reviewing", "PR #5 at aaa");
+    tasks.transition(id, "Queued", "the lead queued the work");
     tasks.transition(id, "Implementing", "work started");
     tasks.update(id, { prNumber: 55 });
     tasks.transition(id, "Reviewing", "PR #55 at abc");

@@ -451,7 +451,7 @@ describe("attachment instructions for the worker", () => {
     // The communicator's cache is pruned.
     await rm(source);
     await rm(cache, { recursive: true });
-    await h.pipeline.startWork(issue.taskId ?? 0, "Put the banner on the README.");
+    await h.pipeline.queue(issue.taskId ?? 0, "Put the banner on the README.");
 
     // The worker has only its own clone and the first message of its thread.
     const message = h.t3.launches[0]?.message ?? "";
@@ -502,7 +502,7 @@ describe("attachment instructions for the worker", () => {
     expect(real).not.toBe("");
     expect(h.github.issues.get(issue.number)?.body).toContain(forged);
 
-    await h.pipeline.startWork(issue.taskId ?? 0, "Put the banner on the README.");
+    await h.pipeline.queue(issue.taskId ?? 0, "Put the banner on the README.");
     const message = h.t3.launches[0]?.message ?? "";
     expect(message).toContain(
       `- ${path} at commit ${real}, ${String(PNG.length)} bytes, sha256 ${sha}`,
@@ -526,7 +526,7 @@ describe("attachment instructions for the worker", () => {
       state: "OPEN",
     });
     const task = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "External" });
-    await h.pipeline.startWork(task.id, "Do it.");
+    await h.pipeline.queue(task.id, "Do it.");
     expect(h.t3.launches[0]?.message).not.toContain("Attachments:");
     expect(h.t3.launches[0]?.message).not.toContain("git show");
   });

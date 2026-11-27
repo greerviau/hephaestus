@@ -68,7 +68,7 @@ const SETS: Record<InstructionSetName, { title: string; does: string }> = {
   },
   lead: {
     title: "Lead",
-    does: "Starts work on admitted tasks with a brief, and handles escalations.",
+    does: "Queues admitted tasks with a brief in the order they start, defers what must wait, and handles escalations.",
   },
   improver: {
     title: "Improver",

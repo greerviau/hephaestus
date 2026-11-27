@@ -8,13 +8,14 @@ function taskIn(store: TaskStore, stage: Stage): number {
   const id = store.create({ repo: "octo/app", issueNumber: 1, title: "t" }).id;
   const path: Record<Stage, Stage[]> = {
     Admitted: [],
-    Implementing: ["Implementing"],
-    Reviewing: ["Implementing", "Reviewing"],
-    Merging: ["Implementing", "Reviewing", "Merging"],
-    Validating: ["Implementing", "Reviewing", "Merging", "Validating"],
-    Reverting: ["Implementing", "Reviewing", "Merging", "Validating", "Reverting"],
+    Queued: ["Queued"],
+    Implementing: ["Queued", "Implementing"],
+    Reviewing: ["Queued", "Implementing", "Reviewing"],
+    Merging: ["Queued", "Implementing", "Reviewing", "Merging"],
+    Validating: ["Queued", "Implementing", "Reviewing", "Merging", "Validating"],
+    Reverting: ["Queued", "Implementing", "Reviewing", "Merging", "Validating", "Reverting"],
     Escalated: ["Escalated"],
-    Done: ["Implementing", "Reviewing", "Merging", "Validating", "Done"],
+    Done: ["Queued", "Implementing", "Reviewing", "Merging", "Validating", "Done"],
     Abandoned: ["Abandoned"],
   };
   for (const step of path[stage]) store.transition(id, step, "setup");

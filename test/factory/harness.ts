@@ -239,6 +239,8 @@ export interface Harness {
   board: string[];
   /** The Hermes board as the lead and Hermes leave it, which the pipeline reads. */
   hermes: FakeBoardState;
+  /** The board the pipeline calls, which records into `board`; a test may replace its methods. */
+  hermesBoard: PipelineBoard;
   setClock(ms: number): void;
   /** Ends a thread with a final assistant message. */
   finish(threadId: string, text: string, status?: string): void;
@@ -265,7 +267,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
   const github = new FakeGitHub();
   const t3 = new FakeT3();
   const config = sampleConfig();
-  config.factory.autoStartMinutes = 0;
+  config.factory.triageAlertMinutes = 0;
   configure(config);
   const ready = [{ environmentId: "w1", label: "w1", home: "/home/w" }];
   const workers = {
@@ -299,11 +301,9 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
         ? Promise.reject(new Error("hermes kanban show timed out"))
         : Promise.resolve(hermes.parked.get(id));
     },
-    claim: (id, stage) => {
-      if (hermes.readFails) return Promise.reject(new Error("hermes kanban show timed out"));
-      const reason = hermes.parked.get(id);
-      if (reason === undefined) board.push(`${id} ${stage}`);
-      return Promise.resolve(reason);
+    park: (id, note) => {
+      board.push(`${id} park: ${note}`);
+      return Promise.resolve();
     },
   };
   const pipeline = new Pipeline({
@@ -333,6 +333,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     ready,
     board,
     hermes,
+    hermesBoard: recordingBoard,
     setClock: (ms) => {
       clock = ms;
     },

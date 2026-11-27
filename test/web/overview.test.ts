@@ -128,6 +128,7 @@ describe("Home", () => {
     dashboard = await startDashboard(setUp());
     const { h } = dashboard;
     const id = h.tasks.create({ repo: "octo/app", issueNumber: 11, title: "Pick an approach" }).id;
+    h.tasks.transition(id, "Queued", "the lead queued the work");
     h.tasks.transition(id, "Implementing", "work started");
     h.tasks.transition(id, "Escalated", "needs a decision", {
       escalatedTo: "owner",
@@ -148,7 +149,7 @@ describe("Home", () => {
     const { h } = dashboard;
     const running = runningTask(h);
     const waiting = h.tasks.create({ repo: "octo/app", issueNumber: 9, title: "Queued work" }).id;
-    h.tasks.transition(waiting, "Implementing", "work started", {
+    h.tasks.transition(waiting, "Queued", "the lead queued the work", {
       waiting: "The limit of 2 running factory threads is reached.",
     });
     const done = h.tasks.create({ repo: "octo/app", issueNumber: 10, title: "Shipped work" }).id;
@@ -184,10 +185,12 @@ describe("Home", () => {
     escalatedTask(h);
     runningTask(h);
     const other = h.tasks.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
+    h.tasks.transition(other, "Queued", "the lead queued the work");
     h.tasks.transition(other, "Implementing", "work started");
     const gone = h.tasks.create({ repo: "octo/other", issueNumber: 4, title: "Dropped" }).id;
     h.tasks.transition(gone, "Abandoned", "not needed");
     const asked = h.tasks.create({ repo: "octo/other", issueNumber: 5, title: "Their call" }).id;
+    h.tasks.transition(asked, "Queued", "the lead queued the work");
     h.tasks.transition(asked, "Implementing", "work started");
     h.tasks.transition(asked, "Escalated", "needs a decision", {
       escalatedTo: "owner",
@@ -217,6 +220,7 @@ describe("Home", () => {
     const { h } = dashboard;
     const mine = runningTask(h);
     const other = h.tasks.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
+    h.tasks.transition(other, "Queued", "the lead queued the work");
     h.tasks.transition(other, "Implementing", "work started");
     h.tasks.notify("Reverted PR #4 in octo/other", other);
     h.tasks.notify("Reverted PR #2 in octo/app", mine);

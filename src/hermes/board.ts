@@ -2,6 +2,7 @@ import { lastJsonLine, type FactoryHermes } from "./cli.js";
 
 export const STAGES = [
   "Admitted",
+  "Queued",
   "Implementing",
   "Reviewing",
   "Merging",
@@ -151,23 +152,6 @@ export class FactoryBoard {
     return heldBy(await this.show(id));
   }
 
-  /**
-   * Takes the task off the lead's queue for `stage` unless the lead or Hermes parked it first,
-   * and says why when they did. Hermes takes no condition on a move, so a block that lands
-   * while Hephaestus parks the task is found in the events that came after the first read.
-   */
-  async claim(id: string, stage: Stage): Promise<string | undefined> {
-    const before = await this.show(id);
-    const held = heldBy(before);
-    if (held !== undefined) return held;
-    const seen = before.events.length;
-    await this.setStage(id, stage);
-    const late = (await this.show(id)).events
-      .slice(seen)
-      .findLast((event) => PARKING_EVENTS.has(event.kind));
-    return late === undefined ? undefined : holdReason(late);
-  }
-
   private async show(id: string): Promise<{ status: unknown; events: KanbanEvent[] }> {
     const shown = parseJson(await this.kanban("show", "--json", "--", id)) as { events?: unknown };
     const events = Array.isArray(shown.events) ? (shown.events as unknown[]) : [];
@@ -192,8 +176,7 @@ export class FactoryBoard {
     const note = threadId === undefined ? `stage=${stage}` : `stage=${stage} thread=${threadId}`;
     const current = await this.status(id);
     if (target === "scheduled") {
-      if (current === "triage") await this.moveTask(id, "scheduled");
-      else if (current !== "scheduled") await this.kanban("schedule", "--", id, `stage=${stage}`);
+      await this.schedule(id, current, `stage=${stage}`);
     } else if (target === "done") {
       // Hermes completes nothing from scheduled or triage; blocked, unlike ready, is never claimed meanwhile.
       if (current === "scheduled" || current === "triage") await this.moveTask(id, "blocked");
@@ -229,6 +212,29 @@ export class FactoryBoard {
         `Task ${id} is ${reached} on the Hermes board; it did not go back to the lead.`,
       );
     }
+  }
+
+  /**
+   * Parks an admitted task the lead deferred as `scheduled`, which no worker
+   * claims, so the lead is not given it again until Hephaestus hands it back.
+   */
+  async park(id: string, note: string): Promise<void> {
+    await this.schedule(id, await this.status(id), "deferred");
+    const reached = await this.status(id);
+    if (reached !== "scheduled") {
+      throw new Error(`Task ${id} is still ${reached}; expected scheduled.`);
+    }
+    try {
+      await this.comment(id, note);
+    } catch (error) {
+      // The task is parked, which is what the deferral needs; the note only tells the lead why.
+      console.error(`Adding the deferral note to task ${id} failed`, error);
+    }
+  }
+
+  private async schedule(id: string, current: string, reason: string): Promise<void> {
+    if (current === "triage") await this.moveTask(id, "scheduled");
+    else if (current !== "scheduled") await this.kanban("schedule", "--", id, reason);
   }
 
   /** Moves a parked task toward the lead's ready queue; false when its status has no way back. */

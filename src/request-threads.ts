@@ -291,6 +291,8 @@ function stageText(task: Task, dashboard: string): string {
   switch (task.stage) {
     case "Admitted":
       return "it is admitted and waiting to start.";
+    case "Queued":
+      return "it is queued and starts when a thread slot is free.";
     case "Implementing":
       return "the engineer is working on it.";
     case "Reviewing":

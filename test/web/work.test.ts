@@ -27,6 +27,7 @@ const MERGE = "3333333333333333333333333333333333333333";
 /** A task whose PR 6 was reviewed and sits at the merge gate. */
 function mergingTask(h: Harness, waiting: string | null = null): number {
   const id = h.tasks.create({ repo: "octo/app", issueNumber: 11, title: "Under test" }).id;
+  h.tasks.transition(id, "Queued", "the lead queued the work");
   h.tasks.transition(id, "Implementing", "work started", { workerEnv: "w1" });
   h.tasks.transition(id, "Reviewing", "PR #6 at 2222222", { prNumber: 6, headSha: SHA2 });
   h.tasks.transition(id, "Merging", `approved at ${SHA2}`);
@@ -37,6 +38,7 @@ function mergingTask(h: Harness, waiting: string | null = null): number {
 /** A task the reviewer sent back once and a conflict sent back once, now in review again. */
 function sentBackTask(h: Harness): number {
   const id = h.tasks.create({ repo: "octo/app", issueNumber: 12, title: "Twice sent back" }).id;
+  h.tasks.transition(id, "Queued", "the lead queued the work");
   h.tasks.transition(id, "Implementing", "work started", {
     workerEnv: "w1",
     policy: PRESETS.standard,
@@ -114,6 +116,11 @@ async function getAs(running: Dashboard, path: string, repo: string): Promise<st
     headers: { cookie: `${running.cookie}; ${PROJECT_COOKIE}=${encodeURIComponent(repo)}` },
   });
   return response.text();
+}
+
+/** The page's main content, without the sidebar. */
+function main(html: string): string {
+  return html.slice(html.indexOf('<main id="main"'));
 }
 
 /** The tracker's steps as `class:name` pairs. */
@@ -219,9 +226,83 @@ describe("Work", () => {
     expect(html).toContain("Implement on w1, Factory Codex");
     expect(html).toContain("checks are running");
     expect(html).toContain("no PR to merge");
-    expect(html).toContain("No tasks in Admitted, Reviewing, Merging, Verifying, or Reverting.");
+    expect(html).toContain("No tasks in Reviewing, Merging, Verifying, or Reverting.");
     expect(html).not.toContain("Fix &lt;the&gt; parser");
     expect(html).toContain("1 of 4 threads running");
+  });
+
+  it("lists the queue in the lead's order, then the tasks waiting for the lead, then the deferred ones", async () => {
+    dashboard = await startDashboard();
+    const { h } = dashboard;
+    h.pipeline.setPaused(true);
+    const later = h.tasks.create({ repo: "octo/app", issueNumber: 20, title: "Queued later" }).id;
+    const first = h.tasks.create({ repo: "octo/app", issueNumber: 21, title: "Queued first" }).id;
+    const untriaged = h.tasks.create({ repo: "octo/app", issueNumber: 22, title: "Untriaged" }).id;
+    const deferred = h.tasks.create({ repo: "octo/app", issueNumber: 23, title: "Deferred" }).id;
+    await h.pipeline.queue(later, "brief");
+    await h.pipeline.queue(first, "brief", later);
+    await h.pipeline.defer(deferred, "needs <the> parser", later);
+    runningTask(h);
+
+    const { status, html } = await dashboard.get("/work?tab=queue");
+
+    expect(status).toBe(200);
+    expect(html).toContain(
+      '<a href="/work?tab=queue" aria-current="page">Queue<span class="n">4</span></a>',
+    );
+    expect(html).toContain('<a href="/work">In progress<span class="n">1</span></a>');
+    const page = main(html);
+    const order = ["#21 Queued first", "#20 Queued later", "#22 Untriaged", "#23 Deferred"].map(
+      (text) => page.indexOf(text),
+    );
+    expect(order.every((index) => index >= 0)).toBe(true);
+    expect(order).toEqual([...order].sort((a, b) => a - b));
+    expect(page).toContain('<h2>Queued<span class="n">2</span></h2>');
+    expect(page).toContain('<h2>Waiting for the lead<span class="n">1</span></h2>');
+    expect(page).toContain('<h2>Deferred<span class="n">1</span></h2>');
+    expect(page).toContain("1st in the queue");
+    expect(page).toContain("2nd in the queue");
+    expect(page).toContain(`Until task ${String(later)} is finished: needs &lt;the&gt; parser`);
+    expect(page).not.toContain("#8 Add a cache");
+    expect(page).not.toContain(`href="/work/${String(untriaged)}/abandon`);
+  });
+
+  it("says when nothing waits to start", async () => {
+    dashboard = await startDashboard();
+    runningTask(dashboard.h);
+
+    const page = main((await dashboard.get("/work?tab=queue")).html);
+
+    expect(page).toContain("No task is waiting to start.");
+  });
+
+  it("shows a queued task's place in the queue and a deferred task's reason on its page", async () => {
+    dashboard = await startDashboard();
+    const { h } = dashboard;
+    h.pipeline.setPaused(true);
+    const queued = h.tasks.create({ repo: "octo/app", issueNumber: 20, title: "Queued" }).id;
+    const deferred = h.tasks.create({ repo: "octo/app", issueNumber: 21, title: "Deferred" }).id;
+    await h.pipeline.queue(queued, "brief");
+    await h.pipeline.defer(deferred, "wait for room");
+
+    const queuedPage = (await dashboard.get(`/work/${String(queued)}`)).html;
+    expect(steps(queuedPage).slice(0, 3)).toEqual([
+      "past:Admitted",
+      "now hold:Queued",
+      ":Implementing",
+    ]);
+    expect(queuedPage).toContain("1st in the queue. The factory is paused.");
+    expect(queuedPage).toContain(`href="/work/${String(queued)}/abandon`);
+
+    const deferredPage = (await dashboard.get(`/work/${String(deferred)}`)).html;
+    expect(steps(deferredPage)[0]).toBe("now hold:Admitted");
+    expect(deferredPage).toContain("Deferred");
+    expect(deferredPage).toContain("Until a task finishes: wait for room");
+
+    await h.pipeline.abandon(deferred, "not needed");
+    const abandonedPage = (await dashboard.get(`/work/${String(deferred)}`)).html;
+    expect(abandonedPage).toContain("not needed");
+    expect(abandonedPage).not.toContain("Until a task finishes");
   });
 
   it("keeps the board view on the tabs and the reload", async () => {
@@ -237,6 +318,7 @@ describe("Work", () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
     const id = h.tasks.create({ repo: "octo/app", issueNumber: 11, title: "Pick an approach" }).id;
+    h.tasks.transition(id, "Queued", "the lead queued the work");
     h.tasks.transition(id, "Implementing", "work started");
     h.tasks.transition(id, "Escalated", "needs a decision", {
       escalatedTo: "owner",
@@ -328,14 +410,15 @@ describe("Work", () => {
     runningTask(dashboard.h);
     dashboard.h.tasks.create({ repo: "octo/lib", issueNumber: 3, title: "Lib work" });
 
-    const all = (await dashboard.get("/work")).html;
+    const all = (await dashboard.get("/work?tab=queue")).html;
     expect(all).toContain("Lib work");
-    expect(all).toContain('In progress<span class="n">2</span>');
+    expect(all).toContain('Queue<span class="n">1</span>');
+    expect(all).toContain('In progress<span class="n">1</span>');
     expect(all).not.toContain('name="stage"');
 
-    const one = await getAs(dashboard, "/work", "octo/app");
-    expect(one).toContain("Add a cache");
+    const one = await getAs(dashboard, "/work?tab=queue", "octo/app");
     expect(one).not.toContain("Lib work");
+    expect(one).toContain('Queue<span class="n">0</span>');
     expect(one).toContain('In progress<span class="n">1</span>');
   });
 
@@ -668,6 +751,7 @@ describe("Task page", () => {
     expect(html).toContain('content="10;url=/work/');
     expect(steps(html)).toEqual([
       "past:Admitted",
+      "past:Queued",
       "past:Implementing",
       "past:Reviewing",
       "now hold:Testing",
@@ -710,6 +794,7 @@ describe("Task page", () => {
     expect(html).not.toContain(">Attempts<");
     expect(steps(html)).toEqual([
       "past:Admitted",
+      "past:Queued",
       "now:Implementing",
       ":Reviewing",
       ":Testing",
@@ -724,11 +809,11 @@ describe("Task page", () => {
     const task = mergingTask(dashboard.h, "checks are running");
 
     const testing = (await dashboard.get(`/work/${String(task)}`)).html;
-    expect(steps(testing).slice(3, 5)).toEqual(["now hold:Testing", ":Merging"]);
+    expect(steps(testing).slice(4, 6)).toEqual(["now hold:Testing", ":Merging"]);
 
     dashboard.h.tasks.update(task, { waiting: "letting every check register on the head commit" });
     const merging = (await dashboard.get(`/work/${String(task)}`)).html;
-    expect(steps(merging).slice(3, 5)).toEqual(["past:Testing", "now hold:Merging"]);
+    expect(steps(merging).slice(4, 6)).toEqual(["past:Testing", "now hold:Merging"]);
   });
 
   it("marks how often a task was sent back, and lists the attempts from its history", async () => {
@@ -751,7 +836,7 @@ describe("Task page", () => {
     expect(html).toContain("Merge conflict");
     expect(html).toContain("Attempt 3");
     expect(html).toContain("Sent back to Implementing");
-    expect(steps(html)[2]).toBe("now:Reviewing");
+    expect(steps(html)[3]).toBe("now:Reviewing");
   });
 
   it("counts attempts only since the lead restarted the work", async () => {
@@ -778,6 +863,7 @@ describe("Task page", () => {
 
     expect(steps(html)).toEqual([
       "past:Admitted",
+      "past:Queued",
       "past:Implementing",
       "past:Reviewing",
       "past:Testing",
@@ -785,7 +871,7 @@ describe("Task page", () => {
       "past:Verifying",
       "done:Done",
     ]);
-    expect(html.match(/Complete: /g)).toHaveLength(7);
+    expect(html.match(/Complete: /g)).toHaveLength(8);
     expect(html).not.toContain('aria-current="step"');
     expect(html).toContain("<strong>Complete.</strong>");
     expect(html).toContain(`Merged as <code title="${MERGE}">${MERGE.slice(0, 7)}</code>`);
@@ -829,7 +915,7 @@ describe("Task page", () => {
 
     const { html } = await dashboard.get(`/work/${String(task)}`);
 
-    expect(steps(html).slice(4)).toEqual(["past:Merging", "now hold:Verifying", ":Done"]);
+    expect(steps(html).slice(5)).toEqual(["past:Merging", "now hold:Verifying", ":Done"]);
     expect(html).toContain("Failed");
     expect(html).toContain('href="https://github.com/octo/app/pull/7"');
   });
@@ -934,7 +1020,7 @@ describe("Task page", () => {
     const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain("<strong>Stopped at Merging.</strong>");
-    expect(steps(html).slice(3, 5)).toEqual(["past:Testing", "now stop:Merging"]);
+    expect(steps(html).slice(4, 6)).toEqual(["past:Testing", "now stop:Merging"]);
   });
 
   it("keeps an abandoned task at Testing when its checks had not passed", async () => {
@@ -945,7 +1031,7 @@ describe("Task page", () => {
     const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain("<strong>Stopped at Testing.</strong>");
-    expect(steps(html).slice(3, 5)).toEqual(["now stop:Testing", ":Merging"]);
+    expect(steps(html).slice(4, 6)).toEqual(["now stop:Testing", ":Merging"]);
   });
 
   it("keeps a task that escalated past its checks at Merging, with the lead and abandoned", async () => {
@@ -957,14 +1043,14 @@ describe("Task page", () => {
       escalatedTo: "owner",
       reason,
     });
-    expect(steps((await dashboard.get(`/work/${String(task)}`)).html).slice(3, 5)).toEqual([
+    expect(steps((await dashboard.get(`/work/${String(task)}`)).html).slice(4, 6)).toEqual([
       "past:Testing",
       "now hold:Merging",
     ]);
 
     h.github.prs.set(6, pr(6, SHA2));
     await h.pipeline.sendToLead(task, "Ask the admin");
-    expect(steps((await dashboard.get(`/work/${String(task)}`)).html).slice(3, 5)).toEqual([
+    expect(steps((await dashboard.get(`/work/${String(task)}`)).html).slice(4, 6)).toEqual([
       "past:Testing",
       "now hold:Merging",
     ]);
@@ -1005,6 +1091,7 @@ describe("Task page", () => {
   it("shows where an abandoned task stopped, and offers no actions", async () => {
     dashboard = await startDashboard();
     const task = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "Old" }).id;
+    dashboard.h.tasks.transition(task, "Queued", "the lead queued the work");
     dashboard.h.tasks.transition(task, "Implementing", "work started");
     dashboard.h.tasks.transition(task, "Abandoned", "not needed", { reason: "not needed" });
 
@@ -1014,8 +1101,9 @@ describe("Task page", () => {
     expect(html).not.toContain("/abandon");
     expect(html).toContain("<strong>Stopped at Implementing.</strong> Nothing was merged.");
     expect(html).toContain("not needed");
-    expect(steps(html).slice(0, 3)).toEqual([
+    expect(steps(html).slice(0, 4)).toEqual([
       "past:Admitted",
+      "past:Queued",
       "now stop:Implementing",
       ":Reviewing",
     ]);
@@ -1030,7 +1118,7 @@ describe("Task page", () => {
 
     expect(html).toContain('<div class="box info">');
     expect(html).toContain("The factory is paused.");
-    expect(steps(html)[1]).toBe("now hold:Implementing");
+    expect(steps(html)[2]).toBe("now hold:Implementing");
   });
 
   it("answers 404 for a task that does not exist", async () => {

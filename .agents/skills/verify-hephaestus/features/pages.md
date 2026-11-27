@@ -9,7 +9,7 @@
 
 ## How to reach it
 
-Sign in, then follow the sidebar. The pages are `/`, `/work` (tabs `?tab=needs`, `?tab=finished`, `?tab=all`, and the board at `?view=board`), `/work/new`, `/activity`, `/analytics`, `/projects`, `/workers`, `/chat`, `/proposals`, and `/config` with its tabs (see settings.md).
+Sign in, then follow the sidebar. The pages are `/`, `/work` (tabs `?tab=needs`, `?tab=queue`, `?tab=finished`, `?tab=all`, and the board at `?view=board`), `/work/new`, `/activity`, `/analytics`, `/projects`, `/workers`, `/chat`, `/proposals`, and `/config` with its tabs (see settings.md).
 
 ## Driving it
 
@@ -17,7 +17,7 @@ Record each page's status, check the header, and check that no page holds a scri
 
 ```sh
 base=http://127.0.0.1:7700
-for path in / /work '/work?view=board' '/work?tab=needs' /work/new /activity /analytics /projects /workers /chat /proposals /config /config/models /config/models/planning /config/agents /config/versions /config/json; do
+for path in / /work '/work?view=board' '/work?tab=needs' '/work?tab=queue' /work/new /activity /analytics /projects /workers /chat /proposals /config /config/models /config/models/planning /config/agents /config/versions /config/json; do
   test/container/as-owner.sh "$name" sh -c "curl -s -D /tmp/h -o /tmp/b -w '%{http_code} ' -H 'cookie: $cookie' '$base$path'; grep -ci '<script' /tmp/b; grep -i '^content-security-policy' /tmp/h"
 done
 ```
@@ -45,5 +45,6 @@ A headless browser that signs in at `http://$ip:7700/login` holds the session co
 ## Gotchas
 
 - The container has no T3, no GitHub login, and no Hermes, so Workers answers 502, Add project is refused, and Chat and the planning model page say the install has no factory Hermes. The page tests in `test/web/` cover those pages with data.
+- The Queue tab is empty in the container: a task needs an issue the intake reads from GitHub, so queuing, deferring, and the queued and deferred task pages cannot be driven there. `test/factory/queue.test.ts` and the Work page tests cover them.
 - The Project picker is absent while the config has no project. Add one by saving the config JSON with a project in it; see settings.md.
 - `$cookie` comes from the login step in dashboard-auth.md.

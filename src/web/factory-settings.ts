@@ -51,7 +51,7 @@ function numberSetting(
   );
 }
 
-/** The Factory tab's fields: the thread limits, the auto-start wait, and each scheduled job. */
+/** The Factory tab's fields: the thread limits, the triage alert wait, and each scheduled job. */
 export function limitsAndSchedulesFields(
   config: FactoryConfig,
   submitted?: URLSearchParams,
@@ -69,11 +69,11 @@ export function limitsAndSchedulesFields(
       ),
     ),
     numberSetting(
-      "f-autostart",
-      "autoStartMinutes",
-      "Auto-start after (minutes)",
-      "Starts a task the lead has not started. 0 waits for the lead.",
-      value("autoStartMinutes", String(factory.autoStartMinutes)),
+      "f-triage-alert",
+      "triageAlertMinutes",
+      "Tell me after (minutes)",
+      "Tells you about a task the lead has neither queued nor deferred after this long. 0 never tells you.",
+      value("triageAlertMinutes", String(factory.triageAlertMinutes)),
     ),
   ].join("");
   const jobs = ROLE_NAMES.flatMap((role) =>
@@ -114,8 +114,8 @@ export function applyLimitsAndSchedules(
     const value = whole(`limits.${key}`, full);
     if (value !== undefined) next.factory.limits[key] = value;
   }
-  const autoStart = whole("autoStartMinutes", "Auto-start minutes");
-  if (autoStart !== undefined) next.factory.autoStartMinutes = autoStart;
+  const triageAlert = whole("triageAlertMinutes", "Tell me after (minutes)");
+  if (triageAlert !== undefined) next.factory.triageAlertMinutes = triageAlert;
   for (const role of ROLE_NAMES) {
     for (const job of next.roles[role].cron ?? []) {
       const schedule = (form.get(`cron.${role}.${job.name}`) ?? "").trim();
