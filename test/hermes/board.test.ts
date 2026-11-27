@@ -189,8 +189,8 @@ describe("FactoryBoard", () => {
     await b.setStage("t_1", "Admitted");
 
     expect(hermes.lines().filter((line) => !line.includes(" show "))).toEqual([
-      "hephaestus move-task --board=factory --to=ready -- t_1",
       "kanban --board factory comment --author=hephaestus -- t_1 Escalated to the lead: the review thread ended failed",
+      "hephaestus move-task --board=factory --to=ready -- t_1",
       "hephaestus move-task --board=factory --to=ready -- t_1",
       "kanban --board factory comment --author=hephaestus -- t_1 stage=Admitted",
     ]);
@@ -211,6 +211,129 @@ describe("FactoryBoard", () => {
     expect(hermes.lines()).toContain(
       "kanban --board factory comment --author=hephaestus -- t_1 note",
     );
+  });
+
+  it("leaves the note before moving a task back, and moves nothing when the note fails", async () => {
+    const { hermes, board: b } = board();
+    hermes.answer(
+      (args) => args.includes("show"),
+      JSON.stringify({ task: { id: "t_1", status: "scheduled" } }),
+    );
+    hermes.answer(
+      (args) => args.includes("comment"),
+      () => {
+        throw new Error("database is locked");
+      },
+    );
+
+    await expect(b.handBack("t_1", "note")).rejects.toThrow(/locked/);
+    expect(hermes.lines().some((line) => line.includes("unblock"))).toBe(false);
+  });
+
+  it("fails a hand-back of a task no status change can return to the lead", async () => {
+    const { hermes, board: b } = board();
+    hermes.answer(
+      (args) => args.includes("show"),
+      JSON.stringify({ task: { id: "t_1", status: "archived" } }),
+    );
+
+    await expect(b.handBack("t_1", "note")).rejects.toThrow(/archived/);
+  });
+
+  it("claims a task for a stage unless the lead parked it, even while the claim ran", async () => {
+    const { hermes, board: b } = board();
+    const created = { kind: "created", payload: {} };
+    const blocked = { kind: "blocked", payload: { reason: "Waiting on task 5." } };
+    // Each show answers from the next of these, then from the last.
+    let shows: unknown[] = [];
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify(shows.length > 1 ? shows.shift() : shows[0]),
+    );
+
+    shows = [
+      { task: { id: "t_1", status: "ready" }, events: [created] },
+      { task: { id: "t_1", status: "ready" }, events: [created] },
+      { task: { id: "t_1", status: "scheduled" }, events: [created] },
+    ];
+    expect(await b.claim("t_1", "Implementing")).toBeUndefined();
+    expect(hermes.lines()).toContain("kanban --board factory schedule -- t_1 stage=Implementing");
+
+    hermes.calls.length = 0;
+    shows = [{ task: { id: "t_1", status: "blocked" }, events: [created, blocked] }];
+    expect(await b.claim("t_1", "Implementing")).toBe("Waiting on task 5.");
+    expect(hermes.lines().some((line) => line.includes("schedule"))).toBe(false);
+
+    // The lead blocks the task after the first read; Hermes lets the schedule move it anyway.
+    shows = [
+      { task: { id: "t_1", status: "ready" }, events: [created] },
+      { task: { id: "t_1", status: "blocked" }, events: [created, blocked] },
+      { task: { id: "t_1", status: "scheduled" }, events: [created, blocked] },
+    ];
+    expect(await b.claim("t_1", "Implementing")).toBe("Waiting on task 5.");
+  });
+
+  it("fails a hand-back whose task is not in the lead's queue once it is done", async () => {
+    const { hermes, board: b } = board();
+    let statuses = ["triage", "archived"];
+    hermes.answer(
+      (args) => args.includes("show"),
+      () => JSON.stringify({ task: { id: "t_1", status: statuses.shift() ?? "archived" } }),
+    );
+    hermes.answer(
+      (args) => args.includes("move-task"),
+      JSON.stringify({ ok: true, status: "archived" }),
+    );
+
+    await expect(b.handBack("t_1", "note")).rejects.toThrow(/archived/);
+
+    // The lead blocks a ready task while the note goes on.
+    statuses = ["ready", "blocked"];
+    await expect(b.handBack("t_1", "note")).rejects.toThrow(/blocked/);
+  });
+
+  it("says why a task is parked from the event that parked it", async () => {
+    const { hermes, board: b } = board();
+    const block = (reason: string, kind = "blocked") => ({ kind, payload: { reason } });
+    const tasks: Record<string, unknown> = {
+      t_lead: {
+        task: { id: "t_lead", status: "blocked" },
+        events: [
+          { kind: "unblocked", payload: null },
+          block("Waiting on task 5 to merge."),
+          { kind: "commented", payload: { author: "lead" } },
+        ],
+      },
+      t_triage: {
+        task: { id: "t_triage", status: "triage" },
+        events: [block("Waiting on task 5.", "block_loop_detected")],
+      },
+      t_gave_up: {
+        task: { id: "t_gave_up", status: "blocked" },
+        events: [block("Old reason."), { kind: "unblocked" }, { kind: "gave_up", payload: {} }],
+      },
+      // Hermes reads the status and the events apart, so an unblock can land between them.
+      t_unblocking: {
+        task: { id: "t_unblocking", status: "blocked" },
+        events: [block("Waiting on task 5."), { kind: "unblocked", payload: null }],
+      },
+      t_ready: {
+        task: { id: "t_ready", status: "ready" },
+        events: [block("Waiting on task 5.")],
+      },
+    };
+    hermes.answer(
+      (args) => args.includes("show"),
+      (args) => JSON.stringify(tasks[args.at(-1) ?? ""]),
+    );
+
+    expect(await b.outsideBlock("t_lead")).toBe("Waiting on task 5 to merge.");
+    expect(await b.outsideBlock("t_triage")).toBe("Waiting on task 5.");
+    expect(await b.outsideBlock("t_gave_up")).toBe(
+      "Hermes stopped retrying the task after repeated failures.",
+    );
+    expect(await b.outsideBlock("t_unblocking")).toBeUndefined();
+    expect(await b.outsideBlock("t_ready")).toBeUndefined();
   });
 
   it("completes a parked task through blocked, which Hermes completes and no worker claims", async () => {

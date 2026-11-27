@@ -127,6 +127,7 @@ function isSentBack(event: TaskEvent): boolean {
 const EVENT_TITLES: Record<string, string> = {
   "escalated:lead": "Sent to the lead",
   "escalated:owner": "Escalated to you",
+  held: "Put on hold on the Hermes board",
   admitted: "Admitted",
   error: "Error",
   waiting: "Waiting",

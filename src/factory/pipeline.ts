@@ -59,6 +59,10 @@ export interface PipelineBoard {
   setStage(id: string, stage: Stage, threadId?: string): Promise<void>;
   /** Gives an escalated task back to the lead. */
   handBack(id: string, note: string): Promise<void>;
+  /** Why the task is parked where the lead's queue never reaches it; nothing when it is not. */
+  outsideBlock(id: string): Promise<string | undefined>;
+  /** Takes the task off the lead's queue for `stage`, unless it is parked; then says why it is. */
+  claim(id: string, stage: Stage): Promise<string | undefined>;
 }
 
 export interface PipelineOptions {
@@ -110,6 +114,11 @@ const CHECKS_DEADLINE_MS = 60 * 60_000;
 const CHECKS_SETTLE_MS = 3 * 60_000;
 /** A thread waiting on a question runs nothing, so it holds no slot. */
 const IDLE_STATUSES = ["waiting"];
+/** How often the board is read for parked tasks; each read runs the Hermes CLI once per task. */
+const PARKED_READ_MS = 60_000;
+/** Why a task the lead parked on the board waits for the owner. It reaches chat, so it names no role. */
+const HELD_REASON =
+  "It was put on hold on the Hermes board instead of being started; the task's history has the reason given";
 /** A thread stopped on a usage limit whose reset time T3 does not report is tried again after this. */
 const LIMIT_RECHECK_MS = 30 * 60_000;
 /** How long a thread stopped on a usage limit waits after T3 could not be read, or a pause or cap held it. */
@@ -187,6 +196,8 @@ export class Pipeline {
     { failures: number; until: number; last: number }
   >();
   private readonly taskLocks = new Map<number, Promise<unknown>>();
+  /** When the board was last read for tasks the lead parked. */
+  private parkedReadAt = Number.NEGATIVE_INFINITY;
   private launches: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly options: PipelineOptions) {
@@ -539,6 +550,9 @@ export class Pipeline {
         `Task ${String(taskId)} is ${task.stage}${task.escalatedTo === "owner" ? " with the owner" : ""}; start_work needs an admitted task or one escalated to the lead.`,
       );
     }
+    // Off the lead's queue at once, though the thread may wait for a free slot: a lead that ran on
+    // the task meanwhile could park it where no hand-back reaches it.
+    await this.mirror(this.tasks.get(taskId), "Implementing");
     await this.advance(this.tasks.get(taskId));
     return this.tasks.get(taskId);
   }
@@ -588,9 +602,14 @@ export class Pipeline {
         );
       }
       await this.refuseOnUnrecordedMerge(task);
+      // The board first: a task the lead's queue did not get back stays with the owner, instead
+      // of waiting on a lead that never runs on it.
+      const board = this.options.board?.();
+      if (board !== undefined && task.hermesTaskId !== null) {
+        await board.handBack(task.hermesTaskId, `Escalated to the lead: ${note}`);
+      }
       this.tasks.update(taskId, { escalatedTo: "lead", reason: note, ownerAction: null });
       this.tasks.event(taskId, "escalated:lead", note);
-      await this.mirrorHandBack(this.tasks.get(taskId), note);
       return this.tasks.get(taskId);
     });
   }
@@ -598,21 +617,91 @@ export class Pipeline {
   /** The lead's escalate tool: the task waits for the owner. */
   escalateToOwner(taskId: number, reason: string): Promise<Task> {
     return this.withTask(taskId, async () => {
-      const task = this.tasks.get(taskId);
-      if (task.stage === "Escalated") {
-        this.tasks.update(taskId, { escalatedTo: "owner", reason });
-        this.tasks.event(taskId, "escalated:owner", reason);
-        this.tasks.notify(
-          `Task ${String(taskId)} in ${task.repo} needs you: ${reason}`,
-          taskId,
-          "escalation",
-        );
-        await this.mirror(this.tasks.get(taskId), "Escalated");
-      } else {
-        await this.escalate(task, "owner", reason);
-      }
+      await this.toOwner(this.tasks.get(taskId), reason);
       return this.tasks.get(taskId);
     });
+  }
+
+  private async toOwner(task: Task, reason: string): Promise<void> {
+    if (task.stage === "Escalated") {
+      this.tasks.update(task.id, { escalatedTo: "owner", reason });
+      this.tasks.event(task.id, "escalated:owner", reason);
+      this.tasks.notify(
+        `Task ${String(task.id)} in ${task.repo} needs you: ${reason}`,
+        task.id,
+        "escalation",
+      );
+      await this.mirror(this.tasks.get(task.id), "Escalated");
+    } else {
+      await this.escalate(task, "owner", reason);
+    }
+  }
+
+  /**
+   * Sends the task to the owner when the lead parked its task with Hermes's own block tool,
+   * instead of starting or escalating it, or Hermes parked it. Nothing else would move such a
+   * task, so it would wait on the lead for good. A board that cannot be read holds nothing.
+   */
+  private async escalateIfParked(task: Task): Promise<void> {
+    const board = this.options.board?.();
+    if (board === undefined || task.hermesTaskId === null) return;
+    let reason: string | undefined;
+    try {
+      reason = await board.outsideBlock(task.hermesTaskId);
+    } catch (error) {
+      console.error(`Reading task ${String(task.id)} on the Hermes board failed`, error);
+      return;
+    }
+    if (reason !== undefined) await this.hold(task, reason);
+  }
+
+  /** Sends a task the lead or Hermes parked on the board to the owner. */
+  private async hold(task: Task, reason: string): Promise<void> {
+    // The lead's own words stay in the task's history, which never reaches chat; chat never
+    // names the factory's roles, and the lead's words may.
+    this.tasks.event(task.id, "held", reason);
+    await this.toOwner(task, HELD_REASON);
+  }
+
+  /**
+   * Takes an admitted task off the lead's queue on the board before an auto-start, and says whether
+   * the start may go ahead: not when the lead or Hermes parked the task, even while it was
+   * being taken, nor when the board cannot be read.
+   */
+  private async claimForAutoStart(task: Task): Promise<boolean> {
+    const board = this.options.board?.();
+    if (board === undefined || task.hermesTaskId === null) return true;
+    let reason: string | undefined;
+    try {
+      reason = await board.claim(task.hermesTaskId, "Implementing");
+    } catch (error) {
+      console.error(`Taking task ${String(task.id)} on the Hermes board failed`, error);
+      this.wait(task, "The Hermes board could not be read, so the task is not started yet.");
+      return false;
+    }
+    if (reason === undefined) return true;
+    await this.hold(task, reason);
+    return false;
+  }
+
+  /**
+   * Reads the board, at most once a minute, for tasks waiting on the lead that are parked. Each
+   * task is read with `show`, which changes nothing; `list` would first promote tasks.
+   */
+  private async escalateParkedCards(): Promise<void> {
+    const board = this.options.board?.();
+    if (board === undefined) return;
+    const now = this.now().getTime();
+    if (now - this.parkedReadAt < PARKED_READ_MS) return;
+    const held = this.tasks.list(["Admitted", "Escalated"]).filter(withLead);
+    if (held.length === 0) return;
+    this.parkedReadAt = now;
+    for (const { id } of held) {
+      await this.withTask(id, async () => {
+        const task = this.tasks.get(id);
+        if (withLead(task)) await this.escalateIfParked(task);
+      });
+    }
   }
 
   /**
@@ -645,6 +734,8 @@ export class Pipeline {
   tick(): Promise<void> {
     this.running ??= (async () => {
       try {
+        // First, so an auto-start below never starts a task the lead parked.
+        await this.escalateParkedCards();
         for (const { id } of this.tasks.list(ACTIVE).reverse()) {
           await this.withTask(id, async () => {
             const task = this.tasks.get(id);
@@ -680,6 +771,8 @@ export class Pipeline {
         const minutes = this.options.config()?.document.factory.autoStartMinutes ?? 0;
         const age = this.now().getTime() - Date.parse(task.createdAt);
         if (minutes > 0 && age >= minutes * 60_000) {
+          // The once-a-minute read of the board can be stale, so the claim reads the task afresh.
+          if (!(await this.claimForAutoStart(task))) return;
           await this.startWorkNow(
             task.id,
             `The lead had not started this task ${String(minutes)} minutes after it was admitted, so Hephaestus started it. Work from the issue.`,
@@ -2098,6 +2191,15 @@ export class Pipeline {
       console.error(`Handing task ${String(task.id)} back to the lead failed`, error);
     }
   }
+}
+
+/** A task the lead has to act on: admitted and not yet started, or escalated to the lead. */
+function withLead(task: Task): boolean {
+  // An admitted task with a brief was started, and waits only for the factory to resume or a slot.
+  return (
+    (task.stage === "Admitted" && task.brief === null) ||
+    (task.stage === "Escalated" && task.escalatedTo === "lead")
+  );
 }
 
 /** In every squash commit Hephaestus makes, so a merge whose reply was lost can be recognized. */

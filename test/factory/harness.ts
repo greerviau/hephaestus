@@ -220,6 +220,8 @@ export interface Harness {
   ready: { environmentId: string; label: string; home: string | null }[];
   /** Each board change the pipeline mirrors, in order, for tasks with a Hermes task id. */
   board: string[];
+  /** The Hermes board as the lead and Hermes leave it, which the pipeline reads. */
+  hermes: FakeBoardState;
   setClock(ms: number): void;
   /** Ends a thread with a final assistant message. */
   finish(threadId: string, text: string, status?: string): void;
@@ -227,6 +229,16 @@ export interface Harness {
   limit(threadId: string, text?: string, runId?: string): void;
 }
 
+export interface FakeBoardState {
+  /** Why each task something other than Hephaestus parked is parked, by task id. */
+  parked: Map<string, string>;
+  /** How often the pipeline read a task to tell whether it is parked. */
+  reads: number;
+  /** Makes reading a task fail, as a Hermes CLI that times out would. */
+  readFails: boolean;
+  /** Makes hand-backs fail, as for a task Hermes cannot move. */
+  handBackFails: boolean;
+}
 export function harness(configure: (config: FactoryConfig) => void = () => undefined): Harness {
   let clock = Date.parse("2026-11-25T12:00:00Z");
   const now = (): Date => new Date(clock);
@@ -247,14 +259,34 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
   const threads = new FactoryThreads(t3 as unknown as T3Adapter, events);
   const intake = new Intake({ db, tasks, github, config: () => config, now });
   const board: string[] = [];
+  const hermes: FakeBoardState = {
+    parked: new Map(),
+    reads: 0,
+    readFails: false,
+    handBackFails: false,
+  };
   const recordingBoard: PipelineBoard = {
     setStage: (id, stage, threadId) => {
       board.push(`${id} ${stage}${threadId === undefined ? "" : ` ${threadId}`}`);
       return Promise.resolve();
     },
     handBack: (id, note) => {
+      if (hermes.handBackFails) return Promise.reject(new Error(`Task ${id} cannot move`));
+      hermes.parked.delete(id);
       board.push(`${id} hand back: ${note}`);
       return Promise.resolve();
+    },
+    outsideBlock: (id) => {
+      hermes.reads += 1;
+      return hermes.readFails
+        ? Promise.reject(new Error("hermes kanban show timed out"))
+        : Promise.resolve(hermes.parked.get(id));
+    },
+    claim: (id, stage) => {
+      if (hermes.readFails) return Promise.reject(new Error("hermes kanban show timed out"));
+      const reason = hermes.parked.get(id);
+      if (reason === undefined) board.push(`${id} ${stage}`);
+      return Promise.resolve(reason);
     },
   };
   const pipeline = new Pipeline({
@@ -283,6 +315,7 @@ export function harness(configure: (config: FactoryConfig) => void = () => undef
     config,
     ready,
     board,
+    hermes,
     setClock: (ms) => {
       clock = ms;
     },

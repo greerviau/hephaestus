@@ -341,6 +341,134 @@ describe("Pipeline", () => {
     expect(h.tasks.get(id).reason).toMatch(/no longer has the thread/);
   });
 
+  it("sends a task the lead parked on the Hermes board to the owner, with the lead's reason on the task", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+      config.factory.autoStartMinutes = 10;
+    });
+    const escalated = admitted(h);
+    h.tasks.update(escalated, { hermesTaskId: "t_escalated" });
+    await h.pipeline.startWork(escalated, "brief");
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    expect(h.tasks.get(escalated)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    const waiting = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    h.tasks.update(waiting, { hermesTaskId: "t_waiting" });
+
+    // The lead blocks both tasks with Hermes's own tool instead of calling start_work or escalate.
+    h.hermes.parked.set("t_escalated", "Waiting on task 5 to merge.");
+    h.hermes.parked.set("t_waiting", "The planner should clarify the issue first.");
+    h.setClock(Date.parse("2026-11-25T12:30:00Z"));
+    await h.pipeline.tick();
+
+    // The auto-start does not override the hold.
+    expect(h.t3.launches).toHaveLength(1);
+    for (const id of [escalated, waiting]) {
+      expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+      expect(h.tasks.get(id).reason).toMatch(/put on hold/);
+    }
+    // The lead's words go in the task's history; the rest can reach chat, which never names a role.
+    const held = h.tasks.events(waiting).find((event) => event.kind === "held");
+    expect(held?.detail).toBe("The planner should clarify the issue first.");
+    const chat = [
+      ...h.tasks.notifications().map((item) => item.text),
+      ...[escalated, waiting].map((id) => h.tasks.get(id).reason ?? ""),
+      ...h.tasks
+        .events(waiting)
+        .filter((event) => event.kind !== "held")
+        .map((event) => event.detail),
+    ];
+    expect(h.tasks.notifications()).toHaveLength(2);
+    for (const text of chat) expect(text).not.toMatch(/planner|lead|improver/i);
+    // Neither holds a thread slot while it waits for the owner.
+    const third = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Third" }).id;
+    await h.pipeline.startWork(third, "brief");
+    expect(h.tasks.get(third)).toMatchObject({ stage: "Implementing", waiting: null });
+
+    // Sent back, the task is unblocked and stays with the lead. Each read runs the Hermes CLI,
+    // so the board is read at most once a minute.
+    await h.pipeline.sendToLead(escalated, "task 5 merged; go on");
+    await h.pipeline.tick();
+    expect(h.hermes.reads).toBe(2);
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.hermes.reads).toBe(3);
+    expect(h.tasks.get(escalated)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+  });
+
+  it("reads the board before an auto-start, and starts nothing while it cannot", async () => {
+    const h = harness((config) => {
+      config.factory.autoStartMinutes = 10;
+    });
+    const id = admitted(h);
+    h.tasks.update(id, { hermesTaskId: "t_1" });
+    h.setClock(Date.parse("2026-11-25T12:09:40Z"));
+    await h.pipeline.tick();
+    expect(h.hermes.reads).toBe(1);
+
+    // Under a minute after the last read, Hermes cannot read the task.
+    h.hermes.readFails = true;
+    h.setClock(Date.parse("2026-11-25T12:10:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(0);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Admitted" });
+    expect(h.tasks.get(id).waiting).toMatch(/Hermes board could not be read/);
+
+    h.hermes.readFails = false;
+    h.hermes.parked.set("t_1", "Waiting on task 5 to merge.");
+    h.setClock(Date.parse("2026-11-25T12:10:20Z"));
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(0);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+  });
+
+  it("takes a started task off the lead's queue on the board before any thread runs", async () => {
+    // The worker has a free task slot but no free thread, so a started task waits for a thread.
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+      config.factory.limits.tasksPerWorker = 3;
+    });
+    const running = admitted(h);
+    await h.pipeline.startWork(running, "brief");
+    expect(h.t3.launches).toHaveLength(1);
+    const id = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Next" }).id;
+    h.tasks.update(id, { hermesTaskId: "t_1" });
+
+    await h.pipeline.startWork(id, "brief");
+
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", implementThread: null });
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.board).toEqual(["t_1 Implementing"]);
+
+    // A task held before its first thread, then sent back, is restarted with no thread to resume.
+    const held = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Held" }).id;
+    h.tasks.update(held, { hermesTaskId: "t_2" });
+    h.hermes.parked.set("t_2", "Waiting on task 1.");
+    await h.pipeline.tick();
+    await h.pipeline.sendToLead(held, "go on");
+    await h.pipeline.startWork(held, "brief");
+
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.board.at(-1)).toBe("t_2 Implementing");
+  });
+
+  it("keeps a task with the owner when the board cannot take it back for the lead", async () => {
+    const h = harness();
+    const id = admitted(h);
+    h.tasks.update(id, { hermesTaskId: "t_1" });
+    h.hermes.parked.set("t_1", "Waiting on task 5 to merge.");
+    await h.pipeline.tick();
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+
+    h.hermes.handBackFails = true;
+    await expect(h.pipeline.sendToLead(id, "go on")).rejects.toThrow(/cannot move/);
+
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    h.setClock(Date.parse("2026-11-25T12:05:00Z"));
+    await h.pipeline.tick();
+    expect(h.tasks.notifications()).toHaveLength(1);
+  });
+
   it("parks the lead's task on the board when the lead restarts a task on its own thread", async () => {
     const h = harness();
     const id = admitted(h);

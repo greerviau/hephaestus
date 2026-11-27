@@ -40,6 +40,50 @@ export function kanbanStateFor(stage: Stage): KanbanState {
   }
 }
 
+/**
+ * The newest of these events is what Hermes itself reads to tell why a task last changed state.
+ * Of them, these park a task where the lead's queue never reaches it.
+ */
+const LIFECYCLE_EVENTS = new Set([
+  "blocked",
+  "block_loop_detected",
+  "dependency_wait",
+  "gave_up",
+  "unblocked",
+  "changes_requested",
+  "review_reopened",
+  "status",
+  "reclaimed",
+  "stale",
+  "timed_out",
+  "crashed",
+  "spawn_failed",
+  "rate_limited",
+]);
+const PARKING_EVENTS = new Set(["blocked", "block_loop_detected", "gave_up"]);
+/** Statuses in which the lead's queue has the task, or the lead is running on it. */
+const IN_LEAD_QUEUE = new Set(["ready", "todo", "running"]);
+
+interface KanbanEvent {
+  kind: string;
+  reason: string | undefined;
+}
+
+/** Why a task is parked where the lead's queue never reaches it, as `show` gave it. */
+function heldBy(shown: { status: unknown; events: KanbanEvent[] }): string | undefined {
+  if (shown.status !== "blocked" && shown.status !== "triage") return undefined;
+  const cause = shown.events.findLast((event) => LIFECYCLE_EVENTS.has(event.kind));
+  return cause !== undefined && PARKING_EVENTS.has(cause.kind) ? holdReason(cause) : undefined;
+}
+
+/** The reason a parking event gives, or what it means when it gives none. */
+function holdReason(event: KanbanEvent): string {
+  if (event.reason !== undefined && event.reason.trim() !== "") return event.reason;
+  return event.kind === "gave_up"
+    ? "Hermes stopped retrying the task after repeated failures."
+    : "No reason was given.";
+}
+
 export interface NewTask {
   title: string;
   body: string;
@@ -97,6 +141,49 @@ export class FactoryBoard {
   }
 
   /**
+   * Why the task is parked where the lead's queue never reaches it: `blocked` or in `triage`,
+   * which Hephaestus never parks its own tasks as, so the lead's own block tool or Hermes did.
+   * Nothing when it is not parked. Hermes reads a task's status and its events apart, so an
+   * unblock can land between them; a newest lifecycle event that parks nothing counts as not
+   * parked. `show` changes nothing, unlike `list`, which first promotes tasks.
+   */
+  async outsideBlock(id: string): Promise<string | undefined> {
+    return heldBy(await this.show(id));
+  }
+
+  /**
+   * Takes the task off the lead's queue for `stage` unless the lead or Hermes parked it first,
+   * and says why when they did. Hermes takes no condition on a move, so a block that lands
+   * while Hephaestus parks the task is found in the events that came after the first read.
+   */
+  async claim(id: string, stage: Stage): Promise<string | undefined> {
+    const before = await this.show(id);
+    const held = heldBy(before);
+    if (held !== undefined) return held;
+    const seen = before.events.length;
+    await this.setStage(id, stage);
+    const late = (await this.show(id)).events
+      .slice(seen)
+      .findLast((event) => PARKING_EVENTS.has(event.kind));
+    return late === undefined ? undefined : holdReason(late);
+  }
+
+  private async show(id: string): Promise<{ status: unknown; events: KanbanEvent[] }> {
+    const shown = parseJson(await this.kanban("show", "--json", "--", id)) as { events?: unknown };
+    const events = Array.isArray(shown.events) ? (shown.events as unknown[]) : [];
+    return {
+      status: taskOf(shown).status,
+      events: events.map((event) => {
+        const record = event as { kind?: unknown; payload?: { reason?: unknown } | null };
+        return {
+          kind: typeof record.kind === "string" ? record.kind : "",
+          reason: typeof record.payload?.reason === "string" ? record.payload.reason : undefined,
+        };
+      }),
+    };
+  }
+
+  /**
    * Moves a task to the kanban state for `stage`, checks that it got there,
    * and only then records the stage in a comment.
    */
@@ -130,15 +217,18 @@ export class FactoryBoard {
    * and Hermes readies it when the parent is done.
    */
   async handBack(id: string, note: string): Promise<void> {
-    let failure: Error | undefined;
-    try {
-      await this.release(id, await this.status(id));
-    } catch (error) {
-      failure = error instanceof Error ? error : new Error(String(error));
-    }
-    // The note goes on even when the task could not move, so the lead sees it whenever it looks.
+    const current = await this.status(id);
+    // The note first: it is there whenever the lead looks, and a task whose note failed has not
+    // moved, so it never reaches the lead's queue while Hephaestus still holds it for the owner.
     await this.comment(id, note);
-    if (failure !== undefined) throw failure;
+    if (!IN_LEAD_QUEUE.has(current)) await this.release(id, current);
+    // Read back, since a move can report success for a task changed meanwhile, such as archived.
+    const reached = await this.status(id);
+    if (!IN_LEAD_QUEUE.has(reached)) {
+      throw new Error(
+        `Task ${id} is ${reached} on the Hermes board; it did not go back to the lead.`,
+      );
+    }
   }
 
   /** Moves a parked task toward the lead's ready queue; false when its status has no way back. */
