@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { checkoutOf, serviceProgram, update } from "./update.js";
+import { checkoutOf, serviceProgram, shellCommand, update } from "./update.js";
 import { VersionCheck, gitIn } from "./version-check.js";
 import { offerStarterSkills } from "./config/starter-skills.js";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
@@ -100,13 +100,6 @@ function npmFor(node: string): string[] {
 /** The environment with `node`'s folder first on PATH, so npm's scripts find the same node. */
 function pathWith(node: string): NodeJS.ProcessEnv {
   return { ...process.env, PATH: `${dirname(node)}:${process.env.PATH ?? ""}` };
-}
-
-/** A command line for the owner to paste, with each argument quoted only when it must be. */
-function shellCommand(args: string[]): string {
-  return args
-    .map((arg) => (/^[\w@%+=:,./-]+$/.test(arg) ? arg : `'${arg.replace(/'/g, "'\\''")}'`))
-    .join(" ");
 }
 
 /** A signed-in connection to this host's T3, through its outside MCP server. */
@@ -492,7 +485,7 @@ async function main(argv: string[]): Promise<number> {
       const root = checkoutOf(program.cli);
       const git = config.gitPath ?? "git";
       const env = pathWith(program.node);
-      const code = update({
+      return update({
         root,
         git,
         npm: npmFor(program.node),
@@ -508,26 +501,29 @@ async function main(argv: string[]): Promise<number> {
             encoding: "utf8",
             stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
           });
-          if (result.error) throw result.error;
-          return { status: result.status ?? 1, stdout: result.stdout };
+          // A command that cannot start fails like one that ran and failed, so update can roll back.
+          if (result.error) return { status: 127, stdout: "", stderr: result.error.message };
+          // With inherited output there is nothing to read back.
+          return {
+            status: result.status ?? 1,
+            stdout: typeof result.stdout === "string" ? result.stdout : "",
+            stderr: typeof result.stderr === "string" ? result.stderr : "",
+          };
         },
-        restart: () => {
-          new SystemdUserService(unitPath).restart();
+        restart: async () => {
+          try {
+            new SystemdUserService(unitPath).restart();
+            await waitForDashboard(config, { timeoutMs: 30_000 });
+            return true;
+          } catch (error) {
+            console.log(`The service did not come back: ${String(error)}`);
+            return false;
+          }
         },
         log: (line) => {
           console.log(line);
         },
       });
-      if (code !== 0) return code;
-      try {
-        await waitForDashboard(config);
-      } catch {
-        console.log(
-          "The service restarted, but the dashboard did not answer. See journalctl --user -u hephaestus.",
-        );
-        return 1;
-      }
-      return 0;
     }
     case "serve": {
       parseArgs({ args: rest, options: {} });

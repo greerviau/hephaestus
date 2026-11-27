@@ -247,14 +247,20 @@ test "$(main_pid)" != "$pid" || fail "the service was not restarted"
 test "$(systemctl --user is-active hephaestus.service)" = active || fail "service not active"
 wait_for_dashboard
 
-echo "== a build that fails leaves the old build running"
+echo "== a build that fails is rolled back, and the old build keeps running"
 pid=$(main_pid)
+built=$(git -C "$co" rev-parse HEAD)
 push "break the build" 'echo "export const BROKEN: number = \"text\";" > "$0/src/broken.ts"'
 update
 test "$code" != 0 || fail "update succeeded on a broken build"
 echo "$out" | grep -q "did not restart" || fail "update did not say it left the service running"
+echo "$out" | grep -q "rolled back" || fail "update did not say it rolled back"
+test "$(git -C "$co" rev-parse HEAD)" = "$built" || fail "the checkout was not rolled back"
 test "$(main_pid)" = "$pid" || fail "update restarted the service on a broken build"
 test "$(systemctl --user is-active hephaestus.service)" = active || fail "service not active"
+# The old build on disk still starts, so a restart or reboot is safe.
+systemctl --user restart hephaestus.service
+wait_for_dashboard
 run node "$co/dist/cli.js" uninstall
 test ! -e "$HOME/.hephaestus" || fail "~/.hephaestus still exists"
 
