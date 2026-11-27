@@ -395,6 +395,54 @@ describe("Home", () => {
     expect((await dashboard.get("/")).html).not.toContain("Set up the factory");
   });
 
+  it("counts a check stopped by a usage limit as signed in and says the limit was reached", async () => {
+    const limited: WorkerView = {
+      ...readyWorker(),
+      codex: "limited",
+      ready: false,
+      blocker:
+        "Factory Codex reached its provider's usage limit, so its check could not run. Hephaestus checks again at 09:00 UTC.",
+      ownerStep: false,
+    };
+    dashboard = await startDashboard({ workers: [limited] });
+    const html = (await dashboard.get("/")).html;
+    expect(html).toContain('<li class="done"><div><strong>Sign the worker in</strong>');
+    expect(html).not.toContain("Sign in Factory Claude and Factory Codex.");
+    expect(html).toContain("worker one: usage limit reached");
+    expect(html).toContain(
+      "Factory Codex reached its provider&#39;s usage limit, so its check could not run. Hephaestus checks again at 09:00 UTC.",
+    );
+    await dashboard.close();
+
+    // Once setup is done, Home still says the limit was reached.
+    dashboard = await startDashboard({ ...setUp(), workers: [limited] });
+    const home = (await dashboard.get("/")).html;
+    expect(home).toContain('<h1 id="page-title">Home</h1>');
+    expect(home).toContain("worker one: usage limit reached");
+    await dashboard.close();
+
+    // A real missing sign-in on the other instance still leaves the step to do.
+    dashboard = await startDashboard({
+      workers: [
+        { ...limited, claude: "signed-out", blocker: "Sign in Factory Claude.", ownerStep: true },
+      ],
+    });
+    const signedOut = (await dashboard.get("/")).html;
+    expect(signedOut).not.toContain('<li class="done"><div><strong>Sign the worker in</strong>');
+    expect(signedOut).toContain("worker one: Sign in Factory Claude.");
+    await dashboard.close();
+
+    // A state the check could not settle is neither signed in nor a usage limit.
+    dashboard = await startDashboard({
+      workers: [
+        { ...limited, codex: "unknown", blocker: "Sign in Factory Codex.", ownerStep: true },
+      ],
+    });
+    const unknown = (await dashboard.get("/")).html;
+    expect(unknown).not.toContain('<li class="done"><div><strong>Sign the worker in</strong>');
+    expect(unknown).not.toContain("usage limit reached");
+  });
+
   it("dismisses a notification", async () => {
     dashboard = await startDashboard();
     dashboard.h.tasks.notify("Something happened");
