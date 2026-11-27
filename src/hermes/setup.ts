@@ -9,9 +9,10 @@ import { FactoryBoard } from "./board.js";
 import type { HermesRun } from "./cli.js";
 import { gatewayUnitFile } from "./gateway.js";
 import { installModelPlugin } from "./plugin.js";
-import { FactoryProfiles } from "./profiles.js";
+import { FactoryProfiles, shippedInstructionsChanged } from "./profiles.js";
 
-import type { RoleName } from "../config/document.js";
+import { ROLE_NAMES, type RoleName } from "../config/document.js";
+import { join } from "node:path";
 
 /** Each factory profile's bearer token for Hephaestus's MCP server. */
 export function mcpTokenSecret(role: RoleName): string {
@@ -73,4 +74,26 @@ export async function syncFactoryHermes(options: SyncOptions): Promise<void> {
   } else {
     options.service.install(gatewayUnitFile(options.hermesPath, paths.hermes));
   }
+}
+
+/**
+ * Applies the current config version to the factory Hermes root again when this build ships
+ * role instructions the root has not been given, as after an update. A root without the role
+ * profiles is not set up yet, and its first deploy brings them. A sync that fails leaves the
+ * instructions unrecorded, so the next call tries again. Returns whether it synced; `sync`
+ * returns why it failed, if it did.
+ */
+export async function applyShippedInstructions(options: {
+  db: Database;
+  store: ConfigStore;
+  hermesRoot: string;
+  sync: () => Promise<string | undefined>;
+}): Promise<boolean> {
+  const ready = ROLE_NAMES.every((role) => existsSync(join(options.hermesRoot, "profiles", role)));
+  // The sync applies the current version, which is an approved one when none is deployed.
+  const deployed = options.store.current()?.state === "deployed";
+  if (!ready || !deployed || !shippedInstructionsChanged(options.db)) return false;
+  const error = await options.sync();
+  if (error !== undefined) console.error(`Applying the shipped role instructions failed: ${error}`);
+  return true;
 }

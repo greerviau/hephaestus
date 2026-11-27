@@ -323,10 +323,26 @@ describe("Instructions editor", () => {
     expect(html).toContain("Deploy now");
   });
 
+  it("shows a role's shipped instructions read-only, and says which of the owner's paragraphs repeat them", async () => {
+    editMeanwhile((config) => {
+      config.roles.lead.persona =
+        "You are the lead for a software factory run by Hephaestus.\n\nAsk for tests.\n";
+    });
+    const { html } = await dashboard.get("/config/agents/lead");
+
+    expect(html).toContain("Shipped with Hephaestus");
+    expect(html).toMatch(/<pre[^>]*>[^<]*`start_work`/);
+    expect(html).toContain("Your instructions");
+    expect(html).toContain("1 passage here repeats");
+  });
+
   it("shows the factory thread instructions and the skills threads load", async () => {
     const { html } = await dashboard.get("/config/agents/threads");
 
     expect(html).toContain("Coding threads instructions</h1>");
+    expect(html).toContain("Shipped with Hephaestus");
+    expect(html).toContain("Nobody watches this thread");
+    expect(html).toContain("Your instructions");
     expect(html).toContain("# Factory instructions\n</textarea>");
     expect(html).toContain('name="skills" value="triage" checked');
   });

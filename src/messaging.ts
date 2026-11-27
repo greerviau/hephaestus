@@ -1,3 +1,4 @@
+import { isProposal } from "./config/store.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
@@ -105,7 +106,7 @@ export function proposalAlerts(
   versions: readonly { id: number; author: string; state: string }[],
 ): ExtraAlert[] {
   return versions
-    .filter((version) => version.author === "improver" && version.state === "draft")
+    .filter((version) => isProposal(version) && version.state === "draft")
     .map((version) => ({
       key: `proposal-${String(version.id)}`,
       text: `Config version ${String(version.id)} is proposed and waits for your approval on Proposals.`,

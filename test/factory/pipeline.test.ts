@@ -92,6 +92,10 @@ describe("Pipeline", () => {
     });
     expect(implement?.message).toContain("Please add --flag.");
     expect(implement?.message).toContain("Closes #5");
+    expect(implement?.message).toContain("Nobody watches this thread");
+    expect(implement?.message).toContain("--force-with-lease");
+    expect(implement?.message).toContain("Before this thread has opened a PR");
+    expect(implement?.message).toContain("only the task");
     expect(implement?.message).toContain("refs/hephaestus/evidence/0123abcd-card-1");
     expect(h.cards.get(id).stage).toBe("Implementing");
 
@@ -102,6 +106,8 @@ describe("Pipeline", () => {
     const review = h.t3.launches[1];
     expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
     expect(review?.message).toContain(SHA);
+    expect(review?.message).toContain("Nobody watches this thread");
+    expect(review?.message).toContain("contribution rules");
     expect(review?.workspace).toMatchObject({ branch: "review/0123abcd-card-1-1" });
 
     h.finish("t2", reviewResult("approve", SHA));
@@ -133,6 +139,7 @@ describe("Pipeline", () => {
     expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
     expect(h.t3.sends.at(-1)).toMatchObject({ threadId: "t1" });
     expect(h.t3.sends.at(-1)?.message).toContain("handle the empty case");
+    expect(h.t3.sends.at(-1)?.message).toContain('"status": "done"');
 
     h.github.prs.set(5, pr(5, SHA2));
     h.finish("t1", implementResult(5, SHA2));
@@ -164,6 +171,225 @@ describe("Pipeline", () => {
       expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
       expect(h.cards.get(id).reason).toMatch(reason);
     }
+  });
+
+  it("waits on a usage limit instead of escalating, and follows the thread when T3 resumes it", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.t3.states.set("t1", {
+      status: "failed",
+      latestRunId: "r1",
+      snoozedUntil: "2026-11-25T14:00:00.000Z",
+    });
+    h.limit("t1");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", escalatedTo: null });
+    expect(h.cards.get(id).waiting).toMatch(
+      /Factory Claude reached its usage limit, which resets at 2026-11-25 14:00 UTC/,
+    );
+
+    // T3 resumes the thread itself once the limit resets, so Hephaestus sends nothing.
+    h.setClock(Date.parse("2026-11-25T13:59:00Z"));
+    await h.pipeline.tick();
+    h.t3.states.set("t1", { status: "running", latestRunId: "r2", snoozedUntil: null });
+    h.setClock(Date.parse("2026-11-25T14:06:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    expect(h.cards.get(id).waiting).toBeNull();
+    expect(h.events.thread("w1", "t1")?.status).toBe("starting");
+
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Reviewing");
+  });
+
+  it("continues a thread on a usage limit itself when T3 does not, and checks again on a new limit", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    // The review thread runs on Factory Codex. T3 reports no snooze, so the reset time is unknown.
+    h.limit("t2");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Reviewing", escalatedTo: null });
+    expect(h.cards.get(id).waiting).toMatch(/Factory Codex reached its usage limit.*30 minutes/);
+
+    h.setClock(Date.parse("2026-11-25T12:20:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends.map((send) => send.threadId)).toEqual(["t2"]);
+    expect(h.t3.sends[0]?.message).toMatch(/usage limit/);
+    // A review thread is reminded of its own result block, which a long thread may have compacted away.
+    expect(h.t3.sends[0]?.message).toContain('"verdict"');
+    expect(h.cards.get(id).waiting).toBeNull();
+
+    // The limit had not reset yet: the next run fails on it too, and the card waits again.
+    h.t3.states.set("t2", { status: "failed", latestRunId: "r2", snoozedUntil: null });
+    h.limit("t2", "You have hit your limit - resets 8pm");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Reviewing", escalatedTo: null });
+    expect(h.cards.get(id).waiting).toMatch(/usage limit/);
+
+    h.setClock(Date.parse("2026-11-25T13:02:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(2);
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).not.toBe("Escalated");
+  });
+
+  it("takes a limit reported as a completed reply for a usage limit too", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.t3.states.set("t1", { status: "completed", latestRunId: "r1", snoozedUntil: null });
+    h.finish("t1", "5-hour limit reached - resets 3pm");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", escalatedTo: null });
+    expect(h.cards.get(id).waiting).toMatch(/usage limit/);
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends.map((send) => send.threadId)).toEqual(["t1"]);
+  });
+
+  it("escalates a short reply about another service's rate limit", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.finish("t1", "Blocked: the GitHub API rate limit is hit, retry later.");
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+  });
+
+  it("puts a new card on the worker whose slots are free, counting held cards", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threadsPerWorker = 1;
+    });
+    h.ready.push({ environmentId: "w2", label: "w2", home: "/home/w" });
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    expect(h.t3.launches[0]?.environmentId).toBe("w1");
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    expect(h.cards.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    await h.pipeline.startWork(second, "brief");
+    expect(h.t3.launches[1]?.environmentId).toBe("w2");
+  });
+
+  it("lets the lead restart a card while other cards with the lead fill the cap", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+    });
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    // Another card with the lead, which never got a thread.
+    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    await h.pipeline.escalateToOwner(second, "unclear");
+    await h.pipeline.sendToLead(second, "decide");
+    await h.pipeline.startWork(first, "Try the other parser.");
+    expect(h.t3.sends.at(-1)?.message).toContain("Try the other parser.");
+  });
+
+  it("does not continue a thread on a usage limit while the factory is paused", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.limit("t1");
+    await h.pipeline.tick();
+    h.pipeline.setPaused(true);
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    expect(h.cards.get(id).waiting).toBe("The factory is paused.");
+    h.pipeline.setPaused(false);
+    // A held send is tried again a minute later.
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    h.setClock(Date.parse("2026-11-25T12:32:01Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(1);
+  });
+
+  it("reads T3 again a minute after a failed read about a usage limit, and escalates a thread T3 lost", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await h.pipeline.startWork(id, "brief");
+    h.limit("t1");
+    await h.pipeline.tick();
+    h.t3.stateFailures = 1;
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(0);
+    h.setClock(Date.parse("2026-11-25T12:32:01Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(1);
+
+    h.limit("t1");
+    await h.pipeline.tick();
+    h.t3.gone.add("t1");
+    h.setClock(Date.parse("2026-11-25T13:10:00Z"));
+    await h.pipeline.tick();
+    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.cards.get(id).reason).toMatch(/no longer has the thread/);
+  });
+
+  it("keeps the thread slot of a card waiting on a usage limit or on the lead", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threads = 1;
+    });
+    const first = admitted(h);
+    await h.pipeline.startWork(first, "brief");
+    h.limit("t1");
+    await h.pipeline.tick();
+    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    await h.pipeline.startWork(second, "brief");
+    expect(h.t3.launches).toHaveLength(1);
+    expect(h.cards.get(second).waiting).toMatch(/limit of 1 running factory threads/);
+
+    // The first card's next run fails for another reason, so it goes to the lead and keeps its slot.
+    h.setClock(Date.parse("2026-11-25T12:31:00Z"));
+    await h.pipeline.tick();
+    expect(h.t3.sends).toHaveLength(1);
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    expect(h.cards.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.t3.launches).toHaveLength(1);
+
+    // Once it is with the owner, it is blocked, and the next card may start.
+    await h.pipeline.escalateToOwner(first, "needs a decision");
+    await h.pipeline.tick();
+    expect(h.t3.launches).toHaveLength(2);
+  });
+
+  it("keeps an admitted card admitted while paused, and starts it with the lead's brief on resume", async () => {
+    const h = harness((config) => {
+      config.factory.autoStartMinutes = 10;
+    });
+    const id = admitted(h);
+    h.pipeline.setPaused(true);
+    h.setClock(Date.parse("2026-11-25T12:11:00Z"));
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Admitted");
+
+    await h.pipeline.startWork(id, "Use the v2 parser.");
+    expect(h.cards.get(id)).toMatchObject({
+      stage: "Admitted",
+      waiting: "The factory is paused.",
+      brief: "Use the v2 parser.",
+    });
+    expect(h.t3.launches).toHaveLength(0);
+
+    h.pipeline.setPaused(false);
+    await h.pipeline.tick();
+    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(h.t3.launches[0]?.message).toContain("Use the v2 parser.");
   });
 
   it("does not take a review of an older head commit", async () => {

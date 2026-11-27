@@ -48,6 +48,14 @@ Talk with the factory in the chat you connected: ask what it is doing, bounce an
 
 The policy decides what merges on its own. `standard` merges when checks pass and the other provider approved the exact head commit, and stops for you when a PR touches `.github/workflows/`. `strict` stops for you on every merge, and `yolo` needs no review.
 
+## Update
+
+```sh
+node dist/cli.js update
+```
+
+Update fast-forwards the checkout the service runs from to `origin/main`, installs, builds, and restarts the service. It refuses when the checkout has uncommitted changes or cannot fast-forward, and rolls back when the build fails. The sidebar shows when `origin/main` has new commits. See [Install and uninstall](docs/install.md#update).
+
 ## Uninstall
 
 ```sh
@@ -58,7 +66,7 @@ Uninstall removes the factory setup from every worker, then the service and `~/.
 
 ## Documentation
 
-- [Install and uninstall](docs/install.md): what install records and changes, and dashboard security
+- [Install and uninstall](docs/install.md): what install records and changes, updating, and dashboard security
 - [Configuration](docs/configuration.md): config versions, policies, factory settings, backups, and secrets
 - [Dashboard](docs/dashboard.md): the pages and the actions on each
 - [Workers](docs/workers.md): how workers are deployed, signed in, and cleaned up

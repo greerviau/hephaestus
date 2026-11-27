@@ -16,37 +16,40 @@ afterEach(() => {
 });
 
 describe("defaultConfig", () => {
-  it("ships a valid config with the three role templates and the factory instructions", () => {
+  it("ships a valid config with no owner role instructions and the factory instructions", () => {
     const config = defaultConfig([]);
 
     expect(validateConfig(config)).toBe(config);
-    expect(config.roles.planner.persona).toContain("file_issue");
-    expect(config.roles.lead.persona).toContain("start_work");
-    expect(config.roles.improver.persona).toContain("propose_version");
-    expect(config.instructions.factory).toContain("hephaestus-result");
+    // The roles' own instructions ship with Hephaestus; the config holds only the owner's additions.
+    expect(config.roles.planner.persona).toBe("");
+    expect(config.roles.lead.persona).toBe("");
+    expect(config.roles.improver.persona).toBe("");
+    // The coding threads' own rules ship in the messages that start them.
+    expect(config.instructions.factory).toBe("");
     expect(config.projects).toEqual({});
   });
 
-  it("ships a planner persona that talks beyond filing issues and files only on request", () => {
-    const persona = defaultConfig([]).roles.planner.persona;
+  it("ships the factory's starter skills, each loaded by the job that uses it", () => {
+    const config = defaultConfig([]);
 
-    expect(persona).toContain("general communicator");
-    expect(persona).not.toMatch(/^Turn each request/m);
-    // The conversations that file nothing, and the tools that answer them.
-    for (const tool of ["get_status", "list_cards", "read_thread"]) expect(persona).toContain(tool);
-    expect(persona).toMatch(/do not file an issue/i);
-    expect(persona).toMatch(/say so/i);
-    // Merge counts use the recorded merge time, never a card's last update, and admit when they are partial.
-    expect(persona).toContain("merged_at");
-    expect(persona).toMatch(/last update is not its merge date/);
-    expect(persona).toMatch(/at most 100 cards/);
-    expect(persona).toMatch(/at least that many/);
-    // The filing rules stay: file_issue only, a status check first, and the tracking line on its own.
-    expect(persona).toContain("file_issue");
-    expect(persona).toMatch(/duplicate/);
-    expect(persona).toMatch(/cap/);
-    expect(persona).toMatch(/`tracking` line/);
-    expect(persona).toMatch(/on a line of its own/);
+    expect(Object.keys(config.skills).sort()).toEqual([
+      "find-root-cause",
+      "resolve-conflicts",
+      "review-pr",
+      "test-first",
+      "write-brief",
+      "write-issue",
+    ]);
+    expect(config.skills["test-first"]?.["SKILL.md"]).toMatch(/^---\nname: test-first\n/);
+    expect(config.factory.threadSkills).toEqual([
+      "test-first",
+      "find-root-cause",
+      "resolve-conflicts",
+      "review-pr",
+    ]);
+    expect(config.roles.planner.skills).toEqual(["write-issue"]);
+    expect(config.roles.lead.skills).toEqual(["write-brief"]);
+    expect(config.roles.improver.skills).toEqual([]);
   });
 
   it("refuses two imported skills with the same name", () => {

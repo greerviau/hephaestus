@@ -133,6 +133,8 @@ const EVENT_TITLES: Record<string, string> = {
   "thread:implement": "Implement thread started",
   "thread:resume": "Implement thread resumed",
   "thread:review": "Review thread started",
+  "limit:resumed": "Thread resumed after the usage limit",
+  "limit:continued": "Thread continued after the usage limit",
   "merge-refused": "GitHub refused the merge",
   "foreign-merge": "Merged outside Hephaestus",
 };

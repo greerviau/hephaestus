@@ -1,3 +1,4 @@
+import { recordInstalledStarterSkills } from "./config/starter-skills.js";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import {
@@ -15,7 +16,6 @@ import {
 } from "./baseline.js";
 import { DEFAULT_HOST, readConfig, writeConfig, type Config } from "./config.js";
 import { defaultConfig, type ImportedSkill } from "./config/defaults.js";
-import { markUpgradesApplied } from "./config/upgrades.js";
 import { ConfigStore } from "./config/store.js";
 import type { Paths } from "./paths.js";
 import { UnitExistsError, unitFile, type ServiceManager } from "./service.js";
@@ -98,14 +98,14 @@ export async function install(options: InstallOptions): Promise<void> {
     try {
       writePasswordHash(db, hashPassword(password));
       const store = new ConfigStore(db);
+      const document = defaultConfig(options.skills);
       const first = store.createVersion({
-        document: defaultConfig(options.skills),
+        document,
         author: "install",
-        message: "First version from the shipped templates and imported skills",
+        message: "First version from the starter skills and imported skills",
       });
       store.approve(first.id);
-      // A fresh install starts from the current templates, so there is nothing to upgrade.
-      markUpgradesApplied(db);
+      recordInstalledStarterSkills(db, document);
     } finally {
       db.close();
     }

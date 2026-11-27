@@ -43,6 +43,21 @@ function navLink(html: string, href: string): string {
 }
 
 describe("layout", () => {
+  it("shows the commit the service runs, and how to update when origin/main is ahead", () => {
+    const command = "node /opt/hephaestus/dist/cli.js update";
+    const current = layout("Home", "<h1>Home</h1>", {
+      shell: { ...SHELL, version: { commit: "abcdef1234567890", command } },
+    });
+    expect(current).toContain("Version <code>abcdef1</code>");
+    expect(current).not.toContain("update");
+
+    const behind = layout("Home", "<h1>Home</h1>", {
+      shell: { ...SHELL, version: { commit: "abcdef1234567890", behind: 3, command } },
+    });
+    expect(behind).toContain("3 new commits on origin/main");
+    expect(behind).toContain(`<code>${command}</code>`);
+  });
+
   it("groups the pages under Factory and Setup, at the new paths", () => {
     const html = layout("Work", "<h1>Work</h1>", { section: "/work", shell: SHELL });
 

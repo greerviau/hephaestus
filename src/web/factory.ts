@@ -28,6 +28,8 @@ import type { Deploy } from "./settings.js";
 
 /** What the factory pages read and act on. */
 export interface FactoryPages {
+  /** The commit the service runs and the command that updates it, when the checkout can be read. */
+  version?: () => { commit: string; behind?: number; command: string } | undefined;
   cards: CardStore;
   intake: Pick<Intake, "issues" | "approve" | "reject" | "fileIssue">;
   pipeline: Pick<

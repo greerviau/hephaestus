@@ -10,7 +10,7 @@ node dist/cli.js hermes sync
 
 - It turns off model-driven triage and Hermes's own review dispatch, so cards move only through Hephaestus.
 - It creates the factory board.
-- It brings each role's profile in line with the current config version: the persona and skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script. Tool-progress messages are off too, a reply to a message sent mid-turn does not name the running tool, and a long turn's heartbeat says only that it is working, so the chat does not show the factory's tool names. A per-platform `display.platforms` override in a profile's `config.yaml` would still win.
+- It brings each role's profile in line with the current config version: the role's instructions (the shipped ones, then the owner's persona; see [Configuration](configuration.md)) and its skills arrive as a profile distribution, and the Hephaestus MCP entry and the role's cron jobs are set through the CLI. The `terminal`, `code_execution`, and `cronjob` toolsets are off, because a cron job can run a script. Tool-progress messages are off too, a reply to a message sent mid-turn does not name the running tool, and a long turn's heartbeat says only that it is working, so the chat does not show the factory's tool names. A per-platform `display.platforms` override in a profile's `config.yaml` would still win.
 - It installs and enables the `hephaestus` Hermes plugin in the factory root, which the planning model page uses (see below).
 - It installs and starts `hephaestus-hermes-gateway.service`, the factory's own gateway, which serves only the factory profiles and the factory board.
 
@@ -41,7 +41,7 @@ It files an issue only when you ask for work or agree when it offers. It also ch
 
 For stats, the factory's card list gives each card's stage, PR, review rounds, and recorded merge time. The agent counts merges by that merge time, never by a card's last update, which moves for other reasons. It lists at most 100 cards, so when a count reaches the end of the list it says the count is at least that many, and it says so when a card has no recorded merge time.
 
-The persona that gives it this behavior is `templates/roles/planner.md`. A fresh install starts from that template. An install made before this behavior existed keeps the old persona in its config versions, so when the service starts it checks whether the persona is still exactly the old stock text. If so, it creates a new version from the current one, authored `upgrade`, that replaces only that persona, approves it, and deploys it to the workers and the factory Hermes root. A persona the owner edited is never touched. Each upgrade runs once, and a deploy that fails, or that leaves the factory Hermes root behind, is tried again at the next start. To change the persona yourself, edit the role's persona in the dashboard's config editor.
+The agent's own instructions ship with Hephaestus in `templates/roles/planner.md`, so an update brings them to an existing install, as [Configuration](configuration.md) describes. What you add to the role's persona on the Agents page comes after them.
 
 ### Requests and their threads
 

@@ -56,6 +56,12 @@ export interface Card {
   reverting: boolean;
   /** The policy the card last ran under, kept so a merge in flight can finish if its project is removed. */
   policy: PolicySettings | null;
+  /**
+   * When the card's thread stopped on a provider's usage limit: when the pipeline looks at it
+   * again, and the T3 run that stopped, so a run T3 resumed on its own is told from it.
+   */
+  limitUntil: string | null;
+  limitRun: string | null;
   /** Counts every change, so a form from an earlier state of the card is refused. */
   version: number;
   createdAt: string;
@@ -127,6 +133,8 @@ interface Row {
   foreign_merge: number;
   reverting: number;
   policy: string | null;
+  limit_until: string | null;
+  limit_run: string | null;
   version: number;
   created_at: string;
   updated_at: string;
@@ -164,6 +172,8 @@ const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt" | "versi
   foreignMerge: "foreign_merge",
   reverting: "reverting",
   policy: "policy",
+  limitUntil: "limit_until",
+  limitRun: "limit_run",
 };
 
 function toCard(row: Row): Card {
@@ -202,6 +212,8 @@ function toCard(row: Row): Card {
     foreignMerge: row.foreign_merge === 1,
     reverting: row.reverting === 1,
     policy: row.policy === null ? null : (JSON.parse(row.policy) as PolicySettings),
+    limitUntil: row.limit_until,
+    limitRun: row.limit_run,
     version: row.version,
     createdAt: row.created_at,
     updatedAt: row.updated_at,

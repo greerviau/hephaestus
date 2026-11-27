@@ -98,6 +98,8 @@ export interface Shell {
   projects: readonly string[];
   /** The project the picker is set to. Undefined means all projects. */
   project: string | undefined;
+  /** The commit the service runs, how far origin/main is ahead of it, and the command that updates it. */
+  version?: { commit: string; behind?: number; command: string };
   /**
    * The page's own address without a result notice: where the picker and the
    * pause control return to, and what a reloading page reloads. Undefined on
@@ -167,6 +169,16 @@ function runningLine(count: number | undefined): string {
     : `The ${String(count)} running threads finish.`;
 }
 
+/** The commit the service runs, and how to update it when origin/main is ahead. */
+function versionLines(version: NonNullable<Shell["version"]>): string {
+  const behind = version.behind ?? 0;
+  const ahead =
+    behind === 0
+      ? ""
+      : `<p class="hint">${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main. To update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.</p>`;
+  return `<div class="row-line"><span class="muted">Version <code>${escapeHtml(version.commit.slice(0, 7))}</code></span></div>${ahead}`;
+}
+
 /** The running state with its Pause or Resume control, and the dialog Pause opens. */
 function pauseControl(shell: Shell, back: string): { line: string; dialog: string } {
   if (shell.paused === undefined) {
@@ -234,7 +246,7 @@ ${shell === undefined ? "" : projectPicker(shell, back)}
 <nav class="side-nav" aria-label="Pages">
 ${groups}
 </nav>
-<div class="side-foot">${pause === undefined ? "" : `<div class="row-line">${pause.line}</div>`}<div class="row-line"><form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form></div></div>
+<div class="side-foot">${pause === undefined ? "" : `<div class="row-line">${pause.line}</div>`}${shell?.version === undefined ? "" : versionLines(shell.version)}<div class="row-line"><form method="post" action="/logout"><button type="submit" class="link">Sign out</button></form></div></div>
 </aside>
 <main id="main" tabindex="-1"><div class="page">
 ${crumbs}${body}

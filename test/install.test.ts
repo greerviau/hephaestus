@@ -21,7 +21,6 @@ import {
 import { resolvePaths, type Paths } from "../src/paths.js";
 import { UnitExistsError, type ServiceManager } from "../src/service.js";
 import { ConfigStore } from "../src/config/store.js";
-import { getMeta } from "../src/meta.js";
 import { openStore } from "../src/store.js";
 
 class FakeService implements ServiceManager {
@@ -115,17 +114,7 @@ describe("install", () => {
     expect(versions).toHaveLength(1);
     expect(versions[0]).toMatchObject({ id: 1, state: "approved", author: "install" });
     expect(versions[0]?.document.skills.review).toEqual({ "SKILL.md": "# Review\n" });
-    expect(versions[0]?.document.roles.lead.persona).toContain("start_work");
-  });
-
-  it("marks the persona upgrades as applied, since a fresh install starts from the current templates", async () => {
-    await install(options());
-
-    const db = openStore(paths.state);
-    const applied = getMeta(db, "template_upgrades_applied");
-    db.close();
-
-    expect(applied).toBe("1");
+    expect(versions[0]?.document.roles.lead.persona).toBe("");
   });
 
   it("records the t3 CLI and T3 data directory it was given, for the service", async () => {

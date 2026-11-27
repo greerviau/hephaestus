@@ -54,6 +54,12 @@ export interface ThreadPage {
   hasMore: boolean;
 }
 
+export interface ThreadState {
+  status: string;
+  latestRunId: string | null;
+  snoozedUntil: string | null;
+}
+
 export interface RunWait {
   status: string;
   timedOut: boolean;
@@ -186,6 +192,27 @@ export class T3Adapter {
       items,
       nextPosition: result.nextPosition,
       hasMore: result.hasMore,
+    };
+  }
+
+  /**
+   * The thread's status as T3 reports it now, its latest run, and when T3 wakes it from a
+   * snooze: T3 snoozes a thread that hit a usage limit until the limit resets, when its
+   * settings ask for that.
+   */
+  async threadState(environmentId: string, threadId: string): Promise<ThreadState> {
+    const result = (await this.connection.call("t3_thread_read", {
+      environmentId,
+      threadId,
+      view: "messages",
+      limit: 1,
+    })) as {
+      thread: { status: string; latestRunId?: string | null; snoozedUntil?: string | null };
+    };
+    return {
+      status: result.thread.status,
+      latestRunId: result.thread.latestRunId ?? null,
+      snoozedUntil: result.thread.snoozedUntil ?? null,
     };
   }
 

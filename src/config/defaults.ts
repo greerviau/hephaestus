@@ -1,8 +1,8 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { basename, join, relative } from "node:path";
-import { fileURLToPath } from "node:url";
 import { TextDecoder } from "node:util";
 import { defineOwn } from "./diff.js";
+import { starterSkills, withStarterSkill } from "./starter-skills.js";
 import {
   DEFAULT_FACTORY,
   isSafeRelativePath,
@@ -11,8 +11,6 @@ import {
   type RoleName,
 } from "./document.js";
 
-/** `templates/` in the repo; the same relative path works from `src/` and `dist/`. */
-const TEMPLATES = fileURLToPath(new URL("../../templates/", import.meta.url));
 /** The most text one skill file holds, in UTF-8 bytes, imported from a folder or typed on the Agents tab. */
 export const MAX_SKILL_FILE_BYTES = 256 * 1024;
 
@@ -21,26 +19,18 @@ export interface ImportedSkill {
   files: Record<string, string>;
 }
 
-function template(path: string): string {
-  return readFileSync(join(TEMPLATES, path), "utf8");
-}
-
-/** The role's persona as the shipped template has it. */
-export function shippedPersona(name: RoleName): string {
-  return template(`roles/${name}.md`);
-}
-
-/** The first config version: the shipped role templates and instructions, plus imported skills. */
+/**
+ * The first config version: the starter skills, loaded by their jobs, the imported skills, and
+ * empty owner instructions. The roles' and coding threads' own instructions ship with
+ * Hephaestus (see shipped.ts). An imported skill with a starter skill's name replaces it.
+ */
 export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
-  const role = (name: RoleName): RoleConfig => ({
-    persona: shippedPersona(name),
-    skills: [],
-  });
+  const role = (): RoleConfig => ({ persona: "", skills: [] });
   const roles: Record<RoleName, RoleConfig> = {
-    planner: role("planner"),
-    lead: role("lead"),
+    planner: role(),
+    lead: role(),
     improver: {
-      ...role("improver"),
+      ...role(),
       cron: [
         {
           name: "nightly",
@@ -57,13 +47,17 @@ export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
       throw new Error(`There are two skills named ${skill.name}; rename one folder.`);
     names.add(skill.name);
   }
-  return {
+  let config: FactoryConfig = {
     factory: structuredClone(DEFAULT_FACTORY),
     projects: {},
     roles,
-    instructions: { factory: template("instructions/factory.md") },
-    skills: Object.fromEntries(skills.map((skill) => [skill.name, skill.files])),
+    // The coding threads' own rules ship in the messages that start them.
+    instructions: { factory: "" },
+    skills: {},
   };
+  for (const starter of starterSkills()) config = withStarterSkill(config, starter);
+  for (const skill of skills) config.skills[skill.name] = skill.files;
+  return config;
 }
 
 /** Reads a skill folder (one with a SKILL.md) as text files keyed by relative path. */
