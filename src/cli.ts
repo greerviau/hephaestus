@@ -656,6 +656,16 @@ async function main(argv: string[]): Promise<number> {
                 ...workerAlerts(workers.views()),
               ],
             });
+      try {
+        // A Discord bot saved with a request channel answered there without a mention.
+        if (messaging?.upgrade() === true) {
+          messaging.restart().catch((error: unknown) => {
+            console.error("Restarting the gateway after the chat upgrade failed", error);
+          });
+        }
+      } catch (error) {
+        console.error("Upgrading the chat settings failed", error);
+      }
       const factoryModel =
         messaging === undefined || config.hermesPath === undefined
           ? undefined

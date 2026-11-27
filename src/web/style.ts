@@ -186,6 +186,9 @@ legend { padding: 0; font-weight: 700; margin-bottom: 12px; }
 .setting label { font-weight: 500; }
 .setting .hint { display: block; }
 .choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.choices.two { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.access { display: grid; gap: 12px; }
+.access:has(input[name=read_all][value="1"]:checked) .access-list { display: none; }
 label.choice { display: grid; grid-template-columns: 16px 1fr; gap: 4px 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); cursor: pointer; align-content: start; }
 label.choice:has(input:checked) { border-color: var(--accent); background: var(--wash); }
 label.choice input { margin: 3px 0 0; accent-color: var(--accent); }
@@ -379,7 +382,7 @@ ol.setup .subline { display: block; color: var(--muted); font-size: 13px; }
   .page { padding: 24px 16px 64px; }
   .login { margin-top: 48px; }
   .cols, .minis { grid-template-columns: minmax(0, 1fr); }
-  .choices { grid-template-columns: minmax(0, 1fr); }
+  .choices, .choices.two { grid-template-columns: minmax(0, 1fr); }
   button, .btn, .nav-group a, select, input[type=text], input[type=number], input[type=password], input[type=url], input[type=search], input[type=email], input[type=file], details.menu > summary, details.menu .pop a, details.menu .pop button { min-height: 44px; }
   .icon-btn, details.menu > summary { min-width: 44px; }
   .link, .seg a, .tabs a { min-height: 44px; }

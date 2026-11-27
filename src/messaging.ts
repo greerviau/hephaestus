@@ -46,10 +46,24 @@ interface Platform {
    * Mode, kept and removed with the bot token.
    */
   appToken?: { key: string; shape: RegExp; text: string };
-  /** Whether the platform needs a channel; Telegram can use the owner's direct chat instead. */
-  needsChannel: boolean;
-  /** Further `.env` settings for the channel, such as making it a request channel. */
-  channelSettings: (channel: string | undefined) => Record<string, string | undefined>;
+  /**
+   * Whether the platform has a request channel, where the bot answers without
+   * an @mention: Slack needs one, Telegram can use the owner's direct chat
+   * instead, and Discord has none, so every request there is a mention.
+   */
+  request: "required" | "optional" | "none";
+  /** What the platform calls the place a bot reads. */
+  noun: "channel" | "chat";
+  /**
+   * The key that keeps the bot out of every channel, for a platform whose
+   * empty read list would mean every channel.
+   */
+  ignoreKey?: string;
+  /** Further `.env` settings, such as making a channel a request channel; all removed when disconnected. */
+  channelSettings: (
+    request: string | undefined,
+    connected: boolean,
+  ) => Record<string, string | undefined>;
 }
 
 export const PLATFORMS: Record<PlatformName, Platform> = {
@@ -68,7 +82,8 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     userIdText: "numeric Telegram user ID",
     channelIdText: "numeric Telegram ID",
     channelIdsText: "numeric IDs",
-    needsChannel: false,
+    request: "optional",
+    noun: "chat",
     channelSettings: () => ({}),
   },
   discord: {
@@ -86,12 +101,16 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     userIdText: "numeric Discord user ID",
     channelIdText: "numeric Discord ID",
     channelIdsText: "numeric IDs",
-    needsChannel: true,
-    // In the request channel the bot answers without an @mention, in a new thread per message.
-    channelSettings: (channel) => ({
-      DISCORD_FREE_RESPONSE_CHANNELS: channel,
-      DISCORD_AUTO_THREAD: channel === undefined ? undefined : "true",
-      DISCORD_FREE_RESPONSE_AUTO_THREAD: channel === undefined ? undefined : "true",
+    request: "none",
+    noun: "channel",
+    ignoreKey: "DISCORD_IGNORED_CHANNELS",
+    // The bot answers in a channel only when mentioned, in a new thread per mention. The
+    // free-response keys are removed, since a bot saved with a request channel had them.
+    channelSettings: (_request, connected) => ({
+      DISCORD_REQUIRE_MENTION: connected ? "true" : undefined,
+      DISCORD_AUTO_THREAD: connected ? "true" : undefined,
+      DISCORD_FREE_RESPONSE_CHANNELS: undefined,
+      DISCORD_FREE_RESPONSE_AUTO_THREAD: undefined,
     }),
   },
   slack: {
@@ -119,10 +138,11 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     userIdText: "Slack member ID, such as U0123ABCD",
     channelIdText: "Slack channel ID, such as C0123ABCD",
     channelIdsText: "IDs such as C0123ABCD",
-    needsChannel: true,
+    request: "required",
+    noun: "channel",
     // In the request channel the bot answers without an @mention; Hermes replies in a thread
     // under each message by default.
-    channelSettings: (channel) => ({ SLACK_FREE_RESPONSE_CHANNELS: channel }),
+    channelSettings: (request) => ({ SLACK_FREE_RESPONSE_CHANNELS: request }),
   },
 };
 
@@ -133,7 +153,10 @@ export interface PlatformState {
   /** The token's last four characters, so the owner can tell which bot is connected. */
   tokenEnd: string | undefined;
   users: string[];
-  /** The request channel, where the bot answers without an @mention; undefined is the direct chat. */
+  /**
+   * The request channel, where the bot answers without an @mention; undefined
+   * is the direct chat, or no request channel on Discord.
+   */
   request: string | undefined;
   /** Whether the bot reads every channel it can see. */
   readAll: boolean;
@@ -152,11 +175,22 @@ export interface PlatformState {
  * IDs separated by commas, spaces, or lines.
  */
 export interface ChannelInput {
-  home: string;
+  /** The request channel; Discord has none and ignores it. */
+  home?: string;
   reads?: string;
   readAll?: boolean;
   status?: string;
   alerts?: string;
+}
+
+/** A connected bot's token and the channels it reads and posts to. */
+export interface BotCredentials {
+  token: string;
+  request: string | undefined;
+  status: string | undefined;
+  /** Channels the bot reads besides the request channel, when it does not read them all. */
+  reads: string[];
+  readAll: boolean;
 }
 
 /** What kind of post a message is, which picks its channel. */
@@ -299,14 +333,26 @@ export class Messaging {
       const token = env.get(platform.token);
       const users = idList(env.get(platform.users) ?? "");
       // A bot saved before the request channel had a key of its own used Hermes's home channel.
-      const request = env.has(platform.requestKey)
+      const saved = env.has(platform.requestKey)
         ? setting(env, platform.requestKey)
         : setting(env, platform.home);
-      const status = setting(env, platform.statusKey);
+      const request = platform.request === "none" ? undefined : saved;
+      // On Discord, Hermes's home channel is where a bot saved with a request channel posted.
+      const status =
+        setting(env, platform.statusKey) ??
+        (platform.request === "none" ? setting(env, platform.home) : undefined);
       const alerts = setting(env, platform.alertsKey);
       const gate = env.get(platform.readGate);
-      const readAll = gate === undefined || gate.trim() === "" || idList(gate).includes("*");
-      const own = new Set([request, ...(name === "telegram" ? users : [])]);
+      const ignored =
+        platform.ignoreKey === undefined ? [] : idList(env.get(platform.ignoreKey) ?? "");
+      const readAll =
+        !ignored.includes("*") &&
+        (gate === undefined || gate.trim() === "" || idList(gate).includes("*"));
+      // A Discord request channel saved before is not read on its own.
+      const own = new Set([
+        platform.request === "none" ? setting(env, platform.requestKey) : request,
+        ...(name === "telegram" ? users : []),
+      ]);
       return {
         platform: name,
         label: platform.label,
@@ -315,7 +361,7 @@ export class Messaging {
         users,
         request,
         readAll,
-        reads: readAll ? [] : idList(gate).filter((id) => !own.has(id)),
+        reads: readAll ? [] : idList(gate ?? "").filter((id) => !own.has(id)),
         status,
         alerts,
         home: alerts ?? status ?? request ?? (name === "telegram" ? users[0] : undefined),
@@ -385,8 +431,8 @@ export class Messaging {
     users: string[],
   ): Record<string, string | undefined> {
     const platform = PLATFORMS[name];
-    const home = input.home.trim();
-    if (home === "" && platform.needsChannel) {
+    const home = platform.request === "none" ? "" : (input.home?.trim() ?? "");
+    if (home === "" && platform.request === "required") {
       throw new MessagingError(
         `Give the ID of the ${platform.label} channel for requests and alerts.`,
       );
@@ -404,6 +450,11 @@ export class Messaging {
       return id;
     };
     const status = single(input.status, "status channel");
+    if (status === undefined && platform.request === "none") {
+      throw new MessagingError(
+        `Give the ID of the ${platform.label} channel for status posts and alerts.`,
+      );
+    }
     const alerts = single(input.alerts, "alerts channel");
     const readAll = input.readAll === true;
     const listed = readAll ? [] : idList(input.reads ?? "");
@@ -419,18 +470,74 @@ export class Messaging {
         `List at most ${String(MAX_READS)} channels, or let the bot read every channel.`,
       );
     }
+    return this.channelEnv(name, { request, status, alerts, reads, readAll }, users);
+  }
+
+  /** The .env settings for channels already checked. Hermes enforces the read list itself. */
+  private channelEnv(
+    name: PlatformName,
+    channels: {
+      request: string | undefined;
+      status: string | undefined;
+      alerts: string | undefined;
+      reads: string[];
+      readAll: boolean;
+    },
+    users: string[],
+  ): Record<string, string | undefined> {
+    const platform = PLATFORMS[name];
+    const { request, status, alerts, reads, readAll } = channels;
     // Direct chats are never filtered, so the owner's own chat stands in when the
     // list would be empty and would otherwise mean every group.
-    const gate = [...(request === undefined ? users.slice(0, 1) : [request]), ...reads];
+    const gate =
+      platform.request === "none"
+        ? reads
+        : [...(request === undefined ? users.slice(0, 1) : [request]), ...reads];
+    // Hermes reads an empty list as every channel, so no channel at all is said by ignoring each one.
+    const nowhere = !readAll && gate.length === 0;
     return {
       // Written even when empty, so an empty request channel is not read as one saved before it had a key.
-      [platform.requestKey]: request ?? "",
+      [platform.requestKey]: platform.request === "none" ? undefined : (request ?? ""),
       [platform.statusKey]: status,
       [platform.alertsKey]: alerts,
       [platform.home]: status ?? request,
-      [platform.readGate]: readAll ? undefined : gate.join(","),
-      ...platform.channelSettings(request),
+      [platform.readGate]: readAll || nowhere ? undefined : gate.join(","),
+      ...(platform.ignoreKey === undefined
+        ? {}
+        : { [platform.ignoreKey]: nowhere ? "*" : undefined }),
+      ...platform.channelSettings(request, true),
     };
+  }
+
+  /**
+   * Rewrites the channel settings of a Discord bot saved with a request
+   * channel, so no channel answers without a mention and the request channel
+   * is no longer read on its own. The read list, or reading every channel,
+   * stays as it was, and posts still go where they went. True when the .env
+   * changed; the gateway must restart for it to take effect.
+   */
+  upgrade(): boolean {
+    const env = this.readEnv();
+    const platform = PLATFORMS.discord;
+    const legacy = [platform.requestKey, "DISCORD_FREE_RESPONSE_CHANNELS"].some((key) =>
+      env.has(key),
+    );
+    const state = this.states().find((entry) => entry.platform === "discord");
+    if (!legacy || state?.connected !== true) return false;
+    this.writeEnv(
+      this.channelEnv(
+        "discord",
+        {
+          request: undefined,
+          status: state.status,
+          alerts: state.alerts,
+          reads: state.reads,
+          readAll: state.readAll,
+        },
+        state.users,
+      ),
+    );
+    return true;
   }
 
   async disconnect(name: PlatformName): Promise<void> {
@@ -444,7 +551,8 @@ export class Messaging {
       [platform.requestKey]: undefined,
       [platform.statusKey]: undefined,
       [platform.alertsKey]: undefined,
-      ...platform.channelSettings(undefined),
+      ...(platform.ignoreKey === undefined ? {} : { [platform.ignoreKey]: undefined }),
+      ...platform.channelSettings(undefined, false),
     });
     await this.restart();
   }
@@ -490,11 +598,18 @@ export class Messaging {
     }
   }
 
-  /** The connected bot's token and request channel, for reads Hephaestus makes as the bot itself. */
-  credentials(name: PlatformName): { token: string; request: string | undefined } | undefined {
+  /** The connected bot's token and channels, for reads Hephaestus makes as the bot itself. */
+  credentials(name: PlatformName): BotCredentials | undefined {
     const token = this.readEnv().get(PLATFORMS[name].token);
-    if (token === undefined || token === "") return undefined;
-    return { token, request: this.states().find((state) => state.platform === name)?.request };
+    const state = this.states().find((entry) => entry.platform === name);
+    if (token === undefined || token === "" || state === undefined) return undefined;
+    return {
+      token,
+      request: state.request,
+      status: state.status,
+      reads: state.reads,
+      readAll: state.readAll,
+    };
   }
 
   alertsOn(): boolean {

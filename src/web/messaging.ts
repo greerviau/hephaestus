@@ -41,7 +41,7 @@ const STEPS: Record<PlatformName, string[]> = {
   discord: [
     `On ${externalLink("https://discord.com/developers/applications", "the Discord developer portal")}, create an application, open Bot, and reset and copy the token. Turn on Message Content Intent.`,
     "Under OAuth2, URL Generator, tick bot, and the permissions View Channels, Send Messages, Create Public Threads, Send Messages in Threads, Read Message History, and Attach Files. Open the URL to invite the bot to your server.",
-    "In Discord, turn on Developer Mode, then right-click your name for your user ID and the channel you will use for its ID.",
+    "In Discord, turn on Developer Mode, then right-click your name for your user ID and each channel you will use for its ID.",
   ],
   telegram: [
     "In Telegram, message @BotFather, send /newbot, and copy the token it gives you.",
@@ -277,7 +277,13 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
         await messaging.disconnect(platform);
         redirect(response, "/chat?notice=disconnected");
       } else {
-        await messaging.send(platform, "Hephaestus is connected. Ask for work here.");
+        await messaging.send(
+          platform,
+          // Discord's status channel takes no request without a mention.
+          PLATFORMS[platform].request === "none"
+            ? "Hephaestus is connected. Mention the bot to ask for work."
+            : "Hephaestus is connected. Ask for work here.",
+        );
         redirect(response, "/chat?notice=tested");
       }
     } catch (error) {
@@ -426,30 +432,33 @@ ${channelFields(name, typed)}
 
 /** The channel fields that the connect and channels forms share. */
 function channelFields(name: PlatformName, typed: Typed | undefined): string {
+  if (PLATFORMS[name].request === "none") return mentionFields(name, typed);
   const platform = PLATFORMS[name];
   const where = noun(name);
   const inputmode = numeric(name);
-  const request = platform.needsChannel
-    ? input("channel", "Request channel ID", {
-        value: typed?.channel,
-        inputmode,
-        hint: "Ask for work here without mentioning the bot; each request gets its own thread.",
-      })
-    : input("channel", "Request chat ID (optional)", {
-        value: typed?.channel,
-        inputmode,
-        required: false,
-        hint: "Ask for work here. Empty uses your direct chat with the bot.",
-      });
+  const request =
+    platform.request === "required"
+      ? input("channel", "Request channel ID", {
+          value: typed?.channel,
+          inputmode,
+          hint: "Ask for work here without mentioning the bot; each request gets its own thread.",
+        })
+      : input("channel", "Request chat ID (optional)", {
+          value: typed?.channel,
+          inputmode,
+          required: false,
+          hint: "Ask for work here. Empty uses your direct chat with the bot.",
+        });
   return [
     request,
     textarea("reads", `Other ${where}s the bot reads (optional)`, {
       value: typed?.reads,
       rows: 2,
       required: false,
-      hint: platform.needsChannel
-        ? "Channel IDs, separated by commas. The bot answers there when you mention it. Empty keeps it to the request channel."
-        : "Group chat IDs, separated by commas. Empty keeps it to the request chat and your direct chat.",
+      hint:
+        platform.request === "required"
+          ? "Channel IDs, separated by commas. The bot answers there when you mention it. Empty keeps it to the request channel."
+          : "Group chat IDs, separated by commas. Empty keeps it to the request chat and your direct chat.",
     }),
     checkbox("read_all", `Let the bot read every ${where} it can see`, {
       checked: typed?.readAll === true,
@@ -469,9 +478,48 @@ function channelFields(name: PlatformName, typed: Typed | undefined): string {
   ].join("\n");
 }
 
+/**
+ * The channel fields of a platform with no request channel, where the bot
+ * answers only when mentioned: one choice of where it reads, and where
+ * Hephaestus posts. The list hides while every channel is chosen.
+ */
+function mentionFields(name: PlatformName, typed: Typed | undefined): string {
+  const inputmode = numeric(name);
+  const all = typed?.readAll === true;
+  const choice = (value: string, checked: boolean, title: string, hint: string): string =>
+    `<label class="choice"><input type="radio" name="read_all" value="${value}"${checked ? " checked" : ""}><strong>${escapeHtml(title)}</strong><span class="hint">${escapeHtml(hint)}</span></label>`;
+  const access = `<fieldset class="access"><legend>Channels the bot reads</legend><div class="choices two">${choice(
+    "0",
+    !all,
+    "Only the channels I list",
+    "Empty, the bot reads no channel.",
+  )}${choice("1", all, "Every channel it can see", "Any channel the bot was invited to.")}</div>
+<div class="access-list">${textarea("reads", "Channel IDs", {
+    value: typed?.reads,
+    rows: 2,
+    required: false,
+    hint: "Separated by commas.",
+  })}</div>
+<p class="hint">Either way, the bot answers only when you mention it, in a thread of its own.</p></fieldset>`;
+  return [
+    access,
+    input("status", "Status channel ID", {
+      value: typed?.status,
+      inputmode,
+      hint: "Where the factory's own notices go, such as scheduled job results, restarts, and the test message. The bot reads it only when it is listed above.",
+    }),
+    input("alerts", "Alerts channel ID (optional)", {
+      value: typed?.alerts,
+      inputmode,
+      required: false,
+      hint: "Where anything that needs you goes. Empty uses the status channel.",
+    }),
+  ].join("\n");
+}
+
 /** What the platform calls the place a bot reads: a channel, or a chat on Telegram. */
 function noun(name: PlatformName): string {
-  return PLATFORMS[name].needsChannel ? "channel" : "chat";
+  return PLATFORMS[name].noun;
 }
 
 /** The number pad for platforms whose IDs are numbers. */
@@ -502,12 +550,19 @@ function platformRow(state: PlatformState): Row {
   const at = (id: string | undefined, direct: string): string =>
     id === undefined ? direct : `${where} ${escapeHtml(id)}`;
   const direct = "your direct chat";
-  const reads = state.readAll
-    ? `reads every ${where} it can see`
-    : `reads ${[
-        state.request === undefined ? direct : `${where} ${escapeHtml(state.request)}`,
-        ...state.reads.map(escapeHtml),
-      ].join(", ")}`;
+  const mention = PLATFORMS[state.platform].request === "none";
+  const reads = mention
+    ? state.readAll
+      ? `reads every ${where} it can see when mentioned`
+      : state.reads.length === 0
+        ? `reads no ${where}`
+        : `reads ${where}${state.reads.length === 1 ? "" : "s"} ${state.reads.map(escapeHtml).join(", ")} when mentioned`
+    : state.readAll
+      ? `reads every ${where} it can see`
+      : `reads ${[
+          state.request === undefined ? direct : `${where} ${escapeHtml(state.request)}`,
+          ...state.reads.map(escapeHtml),
+        ].join(", ")}`;
   const status = statusTarget(state);
   return {
     title: state.label,
