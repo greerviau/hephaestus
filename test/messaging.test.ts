@@ -11,6 +11,8 @@ import { workerAlerts, type WorkerAlertView } from "../src/workers/alerts.js";
 const DISCORD_TOKEN = `${"M".repeat(24)}.${"G".repeat(6)}.${"x".repeat(27)}`;
 const USER = "284102345871466496";
 const CHANNEL = "1234567890123456789";
+const OTHER = "2234567890123456789";
+const THIRD = "3234567890123456789";
 
 let root: string;
 let db: Database;
@@ -74,6 +76,182 @@ describe("Messaging", () => {
       tokenEnd: DISCORD_TOKEN.slice(-4),
       users: [USER],
       home: CHANNEL,
+    });
+  });
+
+  it("lets the bot read only the request channel by default, and posts everything there", async () => {
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${CHANNEL}\n`);
+    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${CHANNEL}\n`);
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      request: CHANNEL,
+      readAll: false,
+      reads: [],
+      status: undefined,
+      alerts: undefined,
+      home: CHANNEL,
+    });
+    await messaging.send("discord", "status line");
+    await messaging.send("discord", "alert line", "alerts");
+    expect(calls.map((call) => call.args.at(-1))).toEqual([
+      `discord:${CHANNEL}`,
+      `discord:${CHANNEL}`,
+    ]);
+  });
+
+  it("lets the bot read the channels it is given besides the request channel", async () => {
+    await messaging.connect("discord", {
+      token: DISCORD_TOKEN,
+      users: USER,
+      home: CHANNEL,
+      reads: `${OTHER}, ${THIRD}\n${OTHER} ${CHANNEL}`,
+    });
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${CHANNEL},${OTHER},${THIRD}\n`);
+    // Only the request channel answers without an @mention.
+    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`);
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      readAll: false,
+      reads: [OTHER, THIRD],
+    });
+  });
+
+  it("lets the bot read every channel only when that is turned on", async () => {
+    await messaging.connect("discord", {
+      token: DISCORD_TOKEN,
+      users: USER,
+      home: CHANNEL,
+      reads: OTHER,
+      readAll: true,
+    });
+    expect(env()).not.toContain("DISCORD_ALLOWED_CHANNELS");
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      readAll: true,
+      reads: [],
+    });
+  });
+
+  it("posts status to the status channel and alerts to the alerts channel, and gives Hermes the status channel", async () => {
+    await messaging.connect("discord", {
+      token: DISCORD_TOKEN,
+      users: USER,
+      home: CHANNEL,
+      status: OTHER,
+      alerts: THIRD,
+    });
+    // Hermes posts its own notices, such as cron results and restarts, to its home channel.
+    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${OTHER}\n`);
+    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`);
+    // Posting somewhere does not let the bot read there.
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${CHANNEL}\n`);
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      request: CHANNEL,
+      status: OTHER,
+      alerts: THIRD,
+      home: THIRD,
+    });
+    expect(messaging.credentials("discord")?.request).toBe(CHANNEL);
+
+    messaging.setAlerts(true);
+    tasks.notify("Task 3 needs you", null, "escalation");
+    await messaging.sendAlerts();
+    await messaging.send("discord", "Hephaestus is connected.");
+    expect(calls.map((call) => call.args.at(-1))).toEqual([`discord:${THIRD}`, `discord:${OTHER}`]);
+  });
+
+  it("sends alerts to the status channel when no alerts channel is set", async () => {
+    await messaging.connect("discord", {
+      token: DISCORD_TOKEN,
+      users: USER,
+      home: CHANNEL,
+      status: OTHER,
+    });
+    expect(messaging.states().find((state) => state.platform === "discord")?.home).toBe(OTHER);
+    await messaging.send("discord", "alert", "alerts");
+    expect(calls.at(-1)?.args.at(-1)).toBe(`discord:${OTHER}`);
+  });
+
+  it("refuses channel IDs that are not IDs, and changes nothing", async () => {
+    for (const input of [
+      { reads: "general" },
+      { reads: `${OTHER},#random` },
+      {
+        reads: Array.from({ length: 51 }, (_, i) => `1234567890123456${String(100 + i)}`).join(","),
+      },
+      { status: "status-room" },
+      { alerts: "12" },
+    ]) {
+      await expect(
+        messaging.connect("discord", {
+          token: DISCORD_TOKEN,
+          users: USER,
+          home: CHANNEL,
+          ...input,
+        }),
+      ).rejects.toThrow(MessagingError);
+    }
+    expect(env()).toBe("HEPHAESTUS_MCP_TOKEN=keep-me\n");
+    expect(restarts).toBe(0);
+  });
+
+  it("changes a connected bot's channels without its token, and refuses an unconnected one", async () => {
+    await expect(messaging.setChannels("discord", { home: CHANNEL })).rejects.toThrow(
+      /not connected/,
+    );
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, home: CHANNEL });
+    await messaging.setChannels("discord", { home: OTHER, reads: THIRD, alerts: CHANNEL });
+    expect(env()).toContain(`DISCORD_BOT_TOKEN=${DISCORD_TOKEN}`);
+    expect(env()).toContain(`DISCORD_ALLOWED_USERS=${USER}`);
+    expect(env()).toContain(`DISCORD_FREE_RESPONSE_CHANNELS=${OTHER}\n`);
+    expect(env()).toContain(`DISCORD_ALLOWED_CHANNELS=${OTHER},${THIRD}\n`);
+    expect(env()).toContain(`DISCORD_HOME_CHANNEL=${OTHER}\n`);
+    expect(restarts).toBe(2);
+    await expect(messaging.setChannels("discord", { home: "" })).rejects.toThrow(MessagingError);
+    await expect(messaging.setChannels("discord", { home: OTHER, reads: "x" })).rejects.toThrow(
+      MessagingError,
+    );
+    expect(restarts).toBe(2);
+  });
+
+  it("reads a bot connected before channel settings existed as it was saved", () => {
+    writeFileSync(
+      join(root, "profiles", "communicator", ".env"),
+      `DISCORD_BOT_TOKEN=${DISCORD_TOKEN}\nDISCORD_ALLOWED_USERS=${USER}\nDISCORD_HOME_CHANNEL=${CHANNEL}\nDISCORD_FREE_RESPONSE_CHANNELS=${CHANNEL}\n`,
+    );
+    expect(messaging.states().find((state) => state.platform === "discord")).toMatchObject({
+      connected: true,
+      request: CHANNEL,
+      // Hermes reads every channel when it has no list.
+      readAll: true,
+      status: undefined,
+      alerts: undefined,
+      home: CHANNEL,
+    });
+    expect(messaging.credentials("discord")?.request).toBe(CHANNEL);
+  });
+
+  it("keeps Telegram groups to the chats it is given, and leaves the direct chat open", async () => {
+    await messaging.connect("telegram", {
+      token: `123456789:${"A".repeat(35)}`,
+      users: "987654321",
+      home: "",
+    });
+    // Hermes never filters direct chats; a list of only the owner's chat keeps every group out.
+    expect(env()).toContain("TELEGRAM_ALLOWED_CHATS=987654321\n");
+    expect(messaging.states().find((state) => state.platform === "telegram")).toMatchObject({
+      readAll: false,
+      reads: [],
+    });
+    await messaging.setChannels("telegram", { home: "", status: "-1009999" });
+    expect(messaging.states().find((state) => state.platform === "telegram")).toMatchObject({
+      request: undefined,
+      status: "-1009999",
+    });
+    expect(env()).toContain("TELEGRAM_HOME_CHANNEL=-1009999\n");
+    await messaging.setChannels("telegram", { home: "-1001234", reads: "-1005678" });
+    expect(env()).toContain("TELEGRAM_ALLOWED_CHATS=-1001234,-1005678\n");
+    expect(messaging.states().find((state) => state.platform === "telegram")).toMatchObject({
+      request: "-1001234",
+      reads: ["-1005678"],
     });
   });
 

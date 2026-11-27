@@ -17,7 +17,17 @@ interface Platform {
   /** The `.env` keys Hermes reads for the platform's bot. */
   token: string;
   users: string;
+  /** Where Hermes posts its own notices, such as cron results and restarts. */
   home: string;
+  /**
+   * The list of channels Hermes answers in; with no list, it answers in every
+   * channel the bot can see. Direct chats are never filtered.
+   */
+  readGate: string;
+  /** Hephaestus's own keys, beside Hermes's, for the channels only Hephaestus uses. */
+  requestKey: string;
+  statusKey: string;
+  alertsKey: string;
   /** What a bot token looks like, so a pasted typo is caught before the gateway restarts. */
   tokenShape: RegExp;
   /** What a user or channel ID looks like. */
@@ -34,6 +44,10 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     token: "TELEGRAM_BOT_TOKEN",
     users: "TELEGRAM_ALLOWED_USERS",
     home: "TELEGRAM_HOME_CHANNEL",
+    readGate: "TELEGRAM_ALLOWED_CHATS",
+    requestKey: "HEPHAESTUS_TELEGRAM_REQUEST_CHANNEL",
+    statusKey: "HEPHAESTUS_TELEGRAM_STATUS_CHANNEL",
+    alertsKey: "HEPHAESTUS_TELEGRAM_ALERTS_CHANNEL",
     tokenShape: /^\d{5,}:[A-Za-z0-9_-]{30,}$/,
     idShape: /^-?\d{3,}$/,
     needsChannel: false,
@@ -44,6 +58,10 @@ export const PLATFORMS: Record<PlatformName, Platform> = {
     token: "DISCORD_BOT_TOKEN",
     users: "DISCORD_ALLOWED_USERS",
     home: "DISCORD_HOME_CHANNEL",
+    readGate: "DISCORD_ALLOWED_CHANNELS",
+    requestKey: "HEPHAESTUS_DISCORD_REQUEST_CHANNEL",
+    statusKey: "HEPHAESTUS_DISCORD_STATUS_CHANNEL",
+    alertsKey: "HEPHAESTUS_DISCORD_ALERTS_CHANNEL",
     tokenShape: /^[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}$/,
     idShape: /^\d{15,22}$/,
     needsChannel: true,
@@ -63,9 +81,37 @@ export interface PlatformState {
   /** The token's last four characters, so the owner can tell which bot is connected. */
   tokenEnd: string | undefined;
   users: string[];
-  /** Where alerts go: the home channel, or the first allowed user's direct chat. */
+  /** The request channel, where the bot answers without an @mention; undefined is the direct chat. */
+  request: string | undefined;
+  /** Whether the bot reads every channel it can see. */
+  readAll: boolean;
+  /** Channels the bot reads besides the request channel, when it does not read them all. */
+  reads: string[];
+  /** The channel for status posts, when one is set apart. */
+  status: string | undefined;
+  /** The channel for alerts, when one is set apart. */
+  alerts: string | undefined;
+  /** Where alerts go: the alerts channel, the status channel, the request channel, or the first allowed user's direct chat. */
   home: string | undefined;
 }
+
+/**
+ * Which channels the bot reads and where Hephaestus posts. Read lists are
+ * IDs separated by commas, spaces, or lines.
+ */
+export interface ChannelInput {
+  home: string;
+  reads?: string;
+  readAll?: boolean;
+  status?: string;
+  alerts?: string;
+}
+
+/** What kind of post a message is, which picks its channel. */
+export type PostKind = "status" | "alerts";
+
+/** Channels the bot reads besides the request channel, at most. */
+const MAX_READS = 50;
 
 export class MessagingError extends Error {}
 
@@ -199,17 +245,28 @@ export class Messaging {
     return PLATFORM_NAMES.map((name) => {
       const platform = PLATFORMS[name];
       const token = env.get(platform.token);
-      const users = (env.get(platform.users) ?? "")
-        .split(",")
-        .map((user) => user.trim())
-        .filter((user) => user !== "");
+      const users = idList(env.get(platform.users) ?? "");
+      // A bot saved before the request channel had a key of its own used Hermes's home channel.
+      const request = env.has(platform.requestKey)
+        ? setting(env, platform.requestKey)
+        : setting(env, platform.home);
+      const status = setting(env, platform.statusKey);
+      const alerts = setting(env, platform.alertsKey);
+      const gate = env.get(platform.readGate);
+      const readAll = gate === undefined || gate.trim() === "" || idList(gate).includes("*");
+      const own = new Set([request, ...(name === "telegram" ? users : [])]);
       return {
         platform: name,
         label: platform.label,
         connected: token !== undefined && token !== "",
         tokenEnd: token === undefined || token === "" ? undefined : token.slice(-4),
         users,
-        home: env.get(platform.home) ?? (name === "telegram" ? users[0] : undefined),
+        request,
+        readAll,
+        reads: readAll ? [] : idList(gate).filter((id) => !own.has(id)),
+        status,
+        alerts,
+        home: alerts ?? status ?? request ?? (name === "telegram" ? users[0] : undefined),
       };
     });
   }
@@ -217,7 +274,7 @@ export class Messaging {
   /** Saves the bot's credentials and restarts the gateway, so the bot starts answering. */
   async connect(
     name: PlatformName,
-    input: { token: string; users: string; home: string },
+    input: { token: string; users: string } & ChannelInput,
   ): Promise<void> {
     if (!this.ready()) {
       throw new MessagingError("Deploy a config version first; it sets up the factory's Hermes.");
@@ -238,6 +295,36 @@ export class Messaging {
         `Give your numeric ${platform.label} user ID; separate several with commas. Only these users can use the bot.`,
       );
     }
+    const channels = this.channelSettings(name, input, users);
+    this.writeEnv({
+      [platform.token]: token,
+      [platform.users]: users.join(","),
+      ...channels,
+    });
+    await this.restart();
+  }
+
+  /** Changes a connected bot's channels, keeping its token and users, and restarts the gateway. */
+  async setChannels(name: PlatformName, input: ChannelInput): Promise<void> {
+    const state = this.states().find((entry) => entry.platform === name);
+    if (state?.connected !== true) {
+      throw new MessagingError(`${PLATFORMS[name].label} is not connected.`);
+    }
+    this.writeEnv(this.channelSettings(name, input, state.users));
+    await this.restart();
+  }
+
+  /**
+   * The .env settings for the bot's channels, checked before anything is
+   * written. Hermes enforces the read list itself: the bot never sees a
+   * message from a channel outside it, whatever its instructions say.
+   */
+  private channelSettings(
+    name: PlatformName,
+    input: ChannelInput,
+    users: string[],
+  ): Record<string, string | undefined> {
+    const platform = PLATFORMS[name];
     const home = input.home.trim();
     if (home === "" && platform.needsChannel) {
       throw new MessagingError(
@@ -247,13 +334,43 @@ export class Messaging {
     if (home !== "" && !platform.idShape.test(home)) {
       throw new MessagingError(`The channel must be a numeric ${platform.label} ID.`);
     }
-    this.writeEnv({
-      [platform.token]: token,
-      [platform.users]: users.join(","),
-      [platform.home]: home === "" ? undefined : home,
-      ...platform.channelSettings(home === "" ? undefined : home),
-    });
-    await this.restart();
+    const request = home === "" ? undefined : home;
+    const single = (value: string | undefined, what: string): string | undefined => {
+      const id = value?.trim() ?? "";
+      if (id === "") return undefined;
+      if (!platform.idShape.test(id)) {
+        throw new MessagingError(`The ${what} must be a numeric ${platform.label} ID.`);
+      }
+      return id;
+    };
+    const status = single(input.status, "status channel");
+    const alerts = single(input.alerts, "alerts channel");
+    const readAll = input.readAll === true;
+    const listed = readAll ? [] : idList(input.reads ?? "");
+    const wrong = listed.find((id) => !platform.idShape.test(id));
+    if (wrong !== undefined) {
+      throw new MessagingError(
+        `${wrong} is not a ${platform.label} channel ID. Give numeric IDs, separated by commas.`,
+      );
+    }
+    const reads = [...new Set(listed)].filter((id) => id !== request);
+    if (reads.length > MAX_READS) {
+      throw new MessagingError(
+        `List at most ${String(MAX_READS)} channels, or let the bot read every channel.`,
+      );
+    }
+    // Direct chats are never filtered, so the owner's own chat stands in when the
+    // list would be empty and would otherwise mean every group.
+    const gate = [...(request === undefined ? users.slice(0, 1) : [request]), ...reads];
+    return {
+      // Written even when empty, so an empty request channel is not read as one saved before it had a key.
+      [platform.requestKey]: request ?? "",
+      [platform.statusKey]: status,
+      [platform.alertsKey]: alerts,
+      [platform.home]: status ?? request,
+      [platform.readGate]: readAll ? undefined : gate.join(","),
+      ...platform.channelSettings(request),
+    };
   }
 
   async disconnect(name: PlatformName): Promise<void> {
@@ -262,23 +379,32 @@ export class Messaging {
       [platform.token]: undefined,
       [platform.users]: undefined,
       [platform.home]: undefined,
+      [platform.readGate]: undefined,
+      [platform.requestKey]: undefined,
+      [platform.statusKey]: undefined,
+      [platform.alertsKey]: undefined,
       ...platform.channelSettings(undefined),
     });
     await this.restart();
   }
 
-  /** Sends a message to the platform's home chat, which proves the token and the chat work. */
-  async send(name: PlatformName, text: string): Promise<void> {
+  /**
+   * Sends a message to the platform's channel for its kind: alerts to the
+   * alerts channel, status to the status channel, each falling back the way
+   * `statusTarget` and `home` say.
+   */
+  async send(name: PlatformName, text: string, kind: PostKind = "status"): Promise<void> {
     const state = this.states().find((entry) => entry.platform === name);
     if (state?.connected !== true) {
       throw new MessagingError(`${PLATFORMS[name].label} is not connected.`);
     }
-    if (state.home === undefined) {
+    const chat = kind === "alerts" ? state.home : statusTarget(state);
+    if (chat === undefined) {
       throw new MessagingError(
         `Name a ${PLATFORMS[name].label} channel for alerts, so Hephaestus knows where to post.`,
       );
     }
-    await this.sendTo(name, state.home, text);
+    await this.sendTo(name, chat, text);
   }
 
   /**
@@ -301,11 +427,11 @@ export class Messaging {
     }
   }
 
-  /** The connected bot's token and home chat, for reads Hephaestus makes as the bot itself. */
-  credentials(name: PlatformName): { token: string; home: string | undefined } | undefined {
+  /** The connected bot's token and request channel, for reads Hephaestus makes as the bot itself. */
+  credentials(name: PlatformName): { token: string; request: string | undefined } | undefined {
     const token = this.readEnv().get(PLATFORMS[name].token);
     if (token === undefined || token === "") return undefined;
-    return { token, home: this.states().find((state) => state.platform === name)?.home };
+    return { token, request: this.states().find((state) => state.platform === name)?.request };
   }
 
   alertsOn(): boolean {
@@ -393,7 +519,11 @@ export class Messaging {
       // A retry goes only to the platforms that did not take the alert yet.
       if (record.done.has(target.platform)) continue;
       try {
-        await this.send(target.platform, `Hephaestus: ${text}\n${this.options.dashboardUrl()}`);
+        await this.send(
+          target.platform,
+          `Hephaestus: ${text}\n${this.options.dashboardUrl()}`,
+          "alerts",
+        );
         record.done.add(target.platform);
       } catch (error) {
         failed = true;
@@ -448,6 +578,27 @@ export class Messaging {
     }
     return clean.slice(0, 300);
   }
+}
+
+/** Where status posts go: the status channel, the request channel, or the first allowed user's direct chat. */
+export function statusTarget(state: PlatformState): string | undefined {
+  return (
+    state.status ?? state.request ?? (state.platform === "telegram" ? state.users[0] : undefined)
+  );
+}
+
+/** IDs separated by commas, spaces, or lines. */
+function idList(text: string): string[] {
+  return text
+    .split(/[\s,]+/)
+    .map((id) => id.trim())
+    .filter((id) => id !== "");
+}
+
+/** A .env value, or undefined when it is missing or empty. */
+function setting(env: Map<string, string>, key: string): string | undefined {
+  const value = env.get(key)?.trim();
+  return value === undefined || value === "" ? undefined : value;
 }
 
 /** A .env line's key, without an `export` in front. */

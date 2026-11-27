@@ -26,7 +26,21 @@ The Chat page connects Hephaestus to Discord or Telegram. Make a bot for the fac
 
 On Discord, the channel you give is a request channel: the bot answers there without an @mention and opens a thread for each request. On Telegram, requests and replies use your direct chat with the bot, or a group you name.
 
-With alerts on, Hephaestus posts each new notification, the items that appear under Needs you, to the chat with a link to the dashboard. Alerts start from the moment you turn them on, so earlier notifications are not sent.
+### Channels
+
+Each platform has these channel settings, on its connect form and, once it is connected, under Change channels in its menu on the Chat page. Each takes numeric IDs, and the page refuses anything else without changing the saved settings.
+
+- Request channel: where you ask for work. It is the only one the bot answers in without an @mention.
+- Other channels the bot reads: up to 50 IDs, separated by commas. On Discord the bot answers there when you mention it. Empty, the default, keeps the bot to the request channel.
+- Let the bot read every channel it can see: off by default. When it is on, the list above is not used.
+- Status channel: where the factory's own notices go, such as scheduled job results, gateway restarts, and the test message. Empty uses the request channel.
+- Alerts channel: where alerts go (see below). Empty uses the status channel, or the request channel when that is empty too.
+
+Hermes enforces the read list, not the bot's instructions: Hephaestus writes the request channel and the listed channels to `DISCORD_ALLOWED_CHANNELS` or `TELEGRAM_ALLOWED_CHATS` in the profile's `.env`, and the gateway drops every message from a channel outside them, and from threads outside their channels, before the bot sees it. With every channel turned on, Hephaestus removes the list, so Hermes reads every channel the bot can see. Direct chats with an allowed user are never filtered; on Telegram with no request group, the list holds only your direct chat, which keeps every group out. Posting somewhere does not let the bot read there: list the status or alerts channel among the read channels to answer there too. The factory's chat profile has no tool that posts on its own, so it replies only where it was asked, and Hephaestus posts only to the status, alerts, and request channels and to the request threads it follows.
+
+The status channel becomes Hermes's home channel (`DISCORD_HOME_CHANNEL` or `TELEGRAM_HOME_CHANNEL`), which Hermes uses for its own notices. Hephaestus keeps the request, status, and alerts channels under `HEPHAESTUS_<PLATFORM>_REQUEST_CHANNEL`, `_STATUS_CHANNEL`, and `_ALERTS_CHANNEL` in the same `.env`. A bot connected before these settings existed keeps working as it was saved: its home channel is its request channel, its status and alerts go there, and, since its `.env` has no read list, Hermes reads every channel it can see. The Chat page says so, and saving its channels applies the read list.
+
+With alerts on, Hephaestus posts each new notification, the items that appear under Needs you, to the alerts channel with a link to the dashboard. Proposals that wait for approval and workers that need a sign-in are alerts too. Alerts start from the moment you turn them on, so earlier notifications are not sent.
 
 ### What you can ask
 

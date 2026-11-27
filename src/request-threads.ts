@@ -77,18 +77,18 @@ export class RequestThreads {
   /** Finds threads in the request channel whose tracking line names an issue not yet followed. */
   async link(): Promise<void> {
     const credentials = this.options.messaging.credentials("discord");
-    if (credentials?.home === undefined) return;
+    if (credentials?.request === undefined) return;
     const api = new DiscordApi(credentials.token, this.options.fetcher);
     if (this.bot?.token !== credentials.token) {
       this.bot = {
         token: credentials.token,
         id: await api.botId(),
-        guild: await api.guildOf(credentials.home),
+        guild: await api.guildOf(credentials.request),
       };
     }
     const { id: botId, guild } = this.bot;
     const threads = (await api.activeThreads(guild)).filter(
-      (thread) => thread.parent_id === credentials.home,
+      (thread) => thread.parent_id === credentials.request,
     );
     for (const thread of threads) {
       // Each thread is read from the last message seen, so a request that files a second
