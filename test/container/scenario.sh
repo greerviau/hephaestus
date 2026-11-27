@@ -258,7 +258,7 @@ for _ in $(seq 1 300); do
   grep -q "Update finished with exit code" "$HOME/.hephaestus/update.log" 2>/dev/null && break
   sleep 1
 done
-cat "$HOME/.hephaestus/update.log"
+cat "$HOME/.hephaestus/update.log" || true
 grep -q "Update finished with exit code 0" "$HOME/.hephaestus/update.log" \
   || fail "the dashboard's update did not finish"
 test -f "$co/dist/mark2.js" || fail "the dashboard's update did not build the new commit"

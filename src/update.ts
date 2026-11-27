@@ -1,3 +1,4 @@
+import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 
 export interface UpdateResult {
@@ -147,6 +148,40 @@ export async function update(options: UpdateOptions): Promise<number> {
     return 1;
   }
   return 0;
+}
+
+/**
+ * Takes the update lock at `path`, so a dashboard update and one run from a
+ * shell never act on the checkout at once. A lock whose process is gone, such
+ * as after a reboot, is taken over. Returns the function that releases it.
+ */
+export function lockUpdate(path: string): () => void {
+  for (;;) {
+    try {
+      writeFileSync(path, `${String(process.pid)}\n`, { flag: "wx", mode: 0o600 });
+      return () => {
+        rmSync(path, { force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    const holder = Number(readFileSync(path, "utf8").trim());
+    if (Number.isInteger(holder) && holder > 0 && alive(holder)) {
+      throw new Error(
+        `Another update is running (process ${String(holder)}). If none is, delete ${path}.`,
+      );
+    }
+    rmSync(path, { force: true });
+  }
+}
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
 }
 
 /** Undoes the quoting `quoteArgument` in service.ts applies to an ExecStart argument. */

@@ -7,8 +7,14 @@ export const UPDATE_UNIT = "hephaestus-update.service";
 const FINISHED = /Update finished with exit code (\d+)\.\s*$/;
 /** systemctl is-active answers for a unit that still runs or is being stopped. */
 const RUNNING_STATES = new Set(["active", "activating", "deactivating", "reloading"]);
-/** The most of the log the page shows: npm's output can be long. */
-const MAX_LOG_BYTES = 64 * 1024;
+/** The most of the log the page shows, in characters: npm's output can be long. */
+const MAX_LOG_CHARS = 64 * 1024;
+
+export class UpdateRunningError extends Error {
+  constructor() {
+    super("An update is already running.");
+  }
+}
 
 export interface SelfUpdateStatus {
   running: boolean;
@@ -41,9 +47,9 @@ export class SelfUpdate {
     return RUNNING_STATES.has(state.stdout.trim());
   }
 
-  /** Starts an update; throws with the reason when one runs already or systemd refuses. */
+  /** Starts an update; throws {@link UpdateRunningError} when one runs, and an Error when systemd refuses. */
   start(): void {
-    if (this.running()) throw new Error("An update is already running.");
+    if (this.running()) throw new UpdateRunningError();
     const { node, cli, logPath, path } = this.options;
     const started = this.options.run("systemd-run", [
       "--user",
@@ -73,7 +79,10 @@ export class SelfUpdate {
     } catch {
       return { running };
     }
-    if (log.length > MAX_LOG_BYTES) log = log.slice(-MAX_LOG_BYTES);
+    if (log.length > MAX_LOG_CHARS) {
+      const tail = log.slice(-MAX_LOG_CHARS);
+      log = tail.slice(tail.indexOf("\n") + 1);
+    }
     const finished = FINISHED.exec(log);
     return finished === null || running
       ? { running, log }

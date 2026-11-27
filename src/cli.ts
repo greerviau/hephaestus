@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { SelfUpdate } from "./self-update.js";
 import { spawnSync } from "node:child_process";
-import { checkoutOf, serviceProgram, shellCommand, update } from "./update.js";
+import { checkoutOf, lockUpdate, serviceProgram, shellCommand, update } from "./update.js";
 import { VersionCheck, gitIn } from "./version-check.js";
 import { offerStarterSkills } from "./config/starter-skills.js";
 import { accessSync, constants, existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
@@ -486,45 +486,56 @@ async function main(argv: string[]): Promise<number> {
       const root = checkoutOf(program.cli);
       const git = config.gitPath ?? "git";
       const env = pathWith(program.node);
-      return update({
-        root,
-        git,
-        npm: npmFor(program.node),
-        node: program.node,
-        cli: program.cli,
-        hermes: config.hermesPath !== undefined && existsSync(join(paths.hermes, "profiles")),
-        run: (command, args) => {
-          // git's answers are read; npm's and the sync's output goes to the terminal as it runs.
-          const quiet = command === git;
-          const result = spawnSync(command, quiet ? ["-C", root, ...args] : args, {
-            cwd: root,
-            env,
-            encoding: "utf8",
-            stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
-          });
-          // A command that cannot start fails like one that ran and failed, so update can roll back.
-          if (result.error) return { status: 127, stdout: "", stderr: result.error.message };
-          // With inherited output there is nothing to read back.
-          return {
-            status: result.status ?? 1,
-            stdout: typeof result.stdout === "string" ? result.stdout : "",
-            stderr: typeof result.stderr === "string" ? result.stderr : "",
-          };
-        },
-        restart: async () => {
-          try {
-            new SystemdUserService(unitPath).restart();
-            await waitForDashboard(config, { timeoutMs: 30_000 });
-            return true;
-          } catch (error) {
-            console.log(`The service did not come back: ${String(error)}`);
-            return false;
-          }
-        },
-        log: (line) => {
-          console.log(line);
-        },
-      });
+      let release: () => void;
+      try {
+        release = lockUpdate(join(paths.root, "update.lock"));
+      } catch (error) {
+        console.log(`Not updated: ${error instanceof Error ? error.message : String(error)}`);
+        return 1;
+      }
+      try {
+        return await update({
+          root,
+          git,
+          npm: npmFor(program.node),
+          node: program.node,
+          cli: program.cli,
+          hermes: config.hermesPath !== undefined && existsSync(join(paths.hermes, "profiles")),
+          run: (command, args) => {
+            // git's answers are read; npm's and the sync's output goes to the terminal as it runs.
+            const quiet = command === git;
+            const result = spawnSync(command, quiet ? ["-C", root, ...args] : args, {
+              cwd: root,
+              env,
+              encoding: "utf8",
+              stdio: quiet ? ["ignore", "pipe", "pipe"] : "inherit",
+            });
+            // A command that cannot start fails like one that ran and failed, so update can roll back.
+            if (result.error) return { status: 127, stdout: "", stderr: result.error.message };
+            // With inherited output there is nothing to read back.
+            return {
+              status: result.status ?? 1,
+              stdout: typeof result.stdout === "string" ? result.stdout : "",
+              stderr: typeof result.stderr === "string" ? result.stderr : "",
+            };
+          },
+          restart: async () => {
+            try {
+              new SystemdUserService(unitPath).restart();
+              await waitForDashboard(config, { timeoutMs: 30_000 });
+              return true;
+            } catch (error) {
+              console.log(`The service did not come back: ${String(error)}`);
+              return false;
+            }
+          },
+          log: (line) => {
+            console.log(line);
+          },
+        });
+      } finally {
+        release();
+      }
     }
     case "serve": {
       parseArgs({ args: rest, options: {} });

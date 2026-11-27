@@ -1,3 +1,4 @@
+import { UpdateRunningError } from "../self-update.js";
 import { escapeHtml, callout, layout, pageHead, postButton, section, empty } from "./html.js";
 import type { FactoryPages } from "./factory.js";
 import { sendHtml, redirect, type Route, type RouteContext } from "./http.js";
@@ -41,15 +42,17 @@ export function updateRoutes(factory: FactoryPages): Route[] {
           "Updating",
           "The service restarts near the end, so this page may fail to load for a few seconds. Reload it then.",
         )
-      : run.exitCode === undefined
+      : run.log === undefined
         ? ""
-        : run.exitCode === 0
-          ? callout("info", "The last update finished", "Its log is below.")
-          : callout(
+        : run.exitCode === undefined
+          ? callout(
               "err",
-              "The last update did not finish",
-              "Its log below says why. A build that failed was rolled back, and the service runs the build it had.",
-            );
+              "The last update stopped before it finished",
+              "It was stopped, or the host restarted, partway through, so the checkout may be half updated. Run the command below on the Hermes host to finish it or roll it back.",
+            )
+          : run.exitCode === 0
+            ? callout("info", "The last update finished", "Its log is below.")
+            : callout("err", "The last update did not finish", "Its log below says why.");
     const refusal = refused === undefined ? "" : callout("err", "Not started", escapeHtml(refused));
     const button = run.running ? "" : postButton(PATH, "Update now", { variant: "primary" });
     const fallback =
@@ -97,7 +100,12 @@ export function updateRoutes(factory: FactoryPages): Route[] {
         try {
           updater.start();
         } catch (error) {
-          show(context, 409, error instanceof Error ? error.message : String(error));
+          // Another update running is a conflict; systemd refusing is the server's failure.
+          show(
+            context,
+            error instanceof UpdateRunningError ? 409 : 503,
+            error instanceof Error ? error.message : String(error),
+          );
           return;
         }
         redirect(context.response, PATH);

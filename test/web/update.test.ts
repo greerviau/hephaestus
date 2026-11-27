@@ -77,6 +77,17 @@ describe("Update", () => {
     expect(failed.html).toMatch(/did not finish|failed/i);
   });
 
+  it("says when the last update stopped before it finished", async () => {
+    dashboard = await startDashboard({
+      updater: fakeUpdater({ running: false, log: "Fast-forwarded a to b\nnpm ci\n" }).updater,
+      version,
+    });
+
+    const page = await dashboard.get("/update");
+    expect(page.html).toContain("The last update stopped before it finished");
+    expect(page.html).toContain("node /srv/hephaestus/dist/cli.js update");
+  });
+
   it("says why an update did not start", async () => {
     dashboard = await startDashboard({
       updater: fakeUpdater({ running: false, refuse: "An update is already running." }).updater,
@@ -84,7 +95,7 @@ describe("Update", () => {
     });
 
     const response = await dashboard.post("/update");
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(503);
     expect(await response.text()).toContain("An update is already running.");
   });
 

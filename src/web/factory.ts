@@ -31,7 +31,7 @@ import type { Deploy } from "./settings.js";
 export interface FactoryPages {
   /** The commit the service runs and the command that updates it, when the checkout can be read. */
   version?: () => { commit: string; behind?: number; command: string } | undefined;
-  /** Runs `update` for the update page; absent when the service cannot update itself. */
+  /** Runs `update` for the update page; absent in tests that leave the page out. */
   updater?: Pick<SelfUpdate, "start" | "status">;
   cards: CardStore;
   intake: Pick<Intake, "issues" | "approve" | "reject" | "fileIssue">;
