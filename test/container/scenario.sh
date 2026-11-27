@@ -178,4 +178,84 @@ test "$(systemctl --user is-active hephaestus.service)" = active || fail "servic
 run node "$HOME/Factory Tools/dist/cli.js" uninstall
 test "$code" = 0 || fail "uninstall from a path with spaces exited $code"
 
+echo "== update: a checkout with an origin, installed from"
+co="$HOME/checkout"
+origin="$HOME/origin.git"
+work="$HOME/work"
+mkdir -p "$co"
+for part in package.json package-lock.json tsconfig.json tsconfig.build.json src templates assets; do
+  cp -r "/opt/hephaestus/$part" "$co/"
+done
+printf 'node_modules/\ndist/\n' > "$co/.gitignore"
+commit() {
+  git -C "$1" add -A
+  git -C "$1" -c user.name=test -c user.email=test@example.com commit --quiet --allow-empty -m "$2"
+}
+git -C "$co" init --quiet --initial-branch=main
+commit "$co" "first"
+git clone --quiet --bare "$co" "$origin"
+git -C "$co" remote add origin "$origin"
+git -C "$co" fetch --quiet origin
+(cd "$co" && npm ci --silent && npm run build --silent)
+git clone --quiet "$origin" "$work"
+# Pushes a commit to origin from another clone, as a merged PR would arrive.
+push() {
+  sh -c "$2" "$work"
+  commit "$work" "$1"
+  git -C "$work" push --quiet origin main
+}
+main_pid() {
+  systemctl --user show -P MainPID hephaestus.service
+}
+update() {
+  set +e
+  out=$(node "$co/dist/cli.js" update 2>&1)
+  code=$?
+  set -e
+  echo "$out"
+}
+printf '%s\n' "$password" | node "$co/dist/cli.js" install --port "$port"
+wait_for_dashboard
+first=$(git -C "$co" rev-parse HEAD)
+push "add a marker" 'echo "export const MARK = 1;" > "$0/src/mark.ts"'
+
+echo "== update refuses uncommitted changes and changes nothing"
+pid=$(main_pid)
+echo "// edited" >> "$co/src/update.ts"
+update
+test "$code" != 0 || fail "update ran with uncommitted changes"
+echo "$out" | grep -q "uncommitted changes" || fail "update did not name the uncommitted changes"
+test "$(git -C "$co" rev-parse HEAD)" = "$first" || fail "update moved a dirty checkout"
+test "$(main_pid)" = "$pid" || fail "update restarted the service after refusing"
+git -C "$co" checkout -- src/update.ts
+
+echo "== update refuses a checkout that cannot fast-forward"
+commit "$co" "a local commit"
+update
+test "$code" != 0 || fail "update ran on a diverged checkout"
+echo "$out" | grep -q "cannot fast-forward" || fail "update did not say it cannot fast-forward"
+test "$(main_pid)" = "$pid" || fail "update restarted the service after refusing"
+git -C "$co" reset --quiet --hard "$first"
+
+echo "== update fast-forwards, installs, builds, and restarts the service"
+update
+test "$code" = 0 || fail "update exited $code"
+test "$(git -C "$co" rev-parse HEAD)" = "$(git -C "$origin" rev-parse main)" \
+  || fail "the checkout is not at origin/main"
+test -f "$co/dist/mark.js" || fail "the new commit was not built"
+test "$(main_pid)" != "$pid" || fail "the service was not restarted"
+test "$(systemctl --user is-active hephaestus.service)" = active || fail "service not active"
+wait_for_dashboard
+
+echo "== a build that fails leaves the old build running"
+pid=$(main_pid)
+push "break the build" 'echo "export const BROKEN: number = \"text\";" > "$0/src/broken.ts"'
+update
+test "$code" != 0 || fail "update succeeded on a broken build"
+echo "$out" | grep -q "did not restart" || fail "update did not say it left the service running"
+test "$(main_pid)" = "$pid" || fail "update restarted the service on a broken build"
+test "$(systemctl --user is-active hephaestus.service)" = active || fail "service not active"
+run node "$co/dist/cli.js" uninstall
+test ! -e "$HOME/.hephaestus" || fail "~/.hephaestus still exists"
+
 echo "PASS"
