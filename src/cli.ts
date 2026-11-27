@@ -252,6 +252,8 @@ function factoryEngine(
     events,
     tokens: () =>
       Object.fromEntries(ROLE_NAMES.map((role) => [role, secrets.get(mcpTokenSecret(role))])),
+    // Hermes caches the files a chat sends under the profile's home.
+    attachmentRoot: (role) => join(paths.hermes, "profiles", role, "cache"),
   });
   return { intake, pipeline, cards, mcp, github };
 }

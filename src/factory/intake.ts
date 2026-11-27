@@ -146,7 +146,7 @@ export class Intake {
 
   /**
    * Files an issue for a factory role and admits it when the project's cap allows.
-   * Attachments are local file paths: every one is checked before anything is
+   * Attachments are paths of files in the role's chat cache: every one is checked before anything is
    * written, then committed to the repo's attachments branch, and the issue
    * body links them. A failure leaves no issue.
    */
@@ -156,13 +156,15 @@ export class Intake {
     title: string,
     body: string,
     attachments: readonly string[] = [],
+    /** The only folder attachments may come from: the calling role's chat cache. */
+    attachmentRoot?: string,
   ): Promise<TrackedIssue> {
     return this.serial(async () => {
       // The config's spelling, so the same repo under another casing shares its cap and record.
       repo = projectKey(this.options.config()?.projects, repo) ?? repo;
       this.policy(repo);
       if (attachments.length > 0) {
-        const files = await readAttachments(attachments);
+        const files = await readAttachments(attachments, attachmentRoot);
         const commits = await this.options.github.storeAttachments(repo, files);
         const stored: StoredAttachment[] = files.map((attachment, index) => ({
           attachment,

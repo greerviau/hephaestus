@@ -1,7 +1,8 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   ATTACHMENT_BRANCH,
@@ -10,14 +11,23 @@ import {
   attachmentInstructions,
   attachmentRefs,
   readAttachments,
+  type Attachment,
 } from "../../src/factory/attachments.js";
 import { NotAFactoryProjectError } from "../../src/factory/intake.js";
-import { harness } from "./harness.js";
+import { harness, type Harness } from "./harness.js";
 
 let dir: string;
+/** Where the chat gateway caches the files a requester sends: the only place attachments may come from. */
+let cache: string;
+/** A folder on the same host that is not the cache. */
+let elsewhere: string;
 
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), "attachments-"));
+  cache = join(dir, "cache");
+  elsewhere = join(dir, "elsewhere");
+  await mkdir(cache);
+  await mkdir(elsewhere);
 });
 
 afterEach(async () => {
@@ -27,19 +37,21 @@ afterEach(async () => {
 /** Bytes that are not valid text, so a lossy round trip would show. */
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0xfe, 0x80]);
 
-async function file(name: string, data: Buffer = PNG): Promise<string> {
-  const path = join(dir, name);
+async function file(name: string, data: Buffer = PNG, folder = cache): Promise<string> {
+  const path = join(folder, name);
   await writeFile(path, data);
   return path;
+}
+
+function fileIssue(h: Harness, files: string[], title = "t", body = "b") {
+  return h.intake.fileIssue("planner", "octo/app", title, body, files, cache);
 }
 
 describe("file_issue attachments", () => {
   it("stores the file, links it in the issue, and keeps its bytes after the source is deleted", async () => {
     const h = harness();
     const source = await file("banner.png");
-    const issue = await h.intake.fileIssue("planner", "octo/app", "Use the banner", "Body", [
-      source,
-    ]);
+    const issue = await fileIssue(h, [source], "Use the banner", "Body");
     await rm(source);
 
     const sha = createHash("sha256").update(PNG).digest("hex");
@@ -60,8 +72,7 @@ describe("file_issue attachments", () => {
 
   it("links a file that is not an image without embedding it", async () => {
     const h = harness();
-    const source = await file("notes.pdf", Buffer.from("%PDF"));
-    const issue = await h.intake.fileIssue("planner", "octo/app", "t", "", [source]);
+    const issue = await fileIssue(h, [await file("notes.pdf", Buffer.from("%PDF"))], "t", "");
     const body = h.github.issues.get(issue.number)?.body ?? "";
     expect(body.startsWith("## Attachments")).toBe(true);
     expect(body).toContain("[notes.pdf](");
@@ -71,8 +82,8 @@ describe("file_issue attachments", () => {
   it("files the same file twice onto the same path and commit", async () => {
     const h = harness();
     const source = await file("banner.png");
-    await h.intake.fileIssue("planner", "octo/app", "a", "", [source]);
-    await h.intake.fileIssue("planner", "octo/app", "b", "", [source]);
+    await fileIssue(h, [source], "a");
+    await fileIssue(h, [source], "b");
     expect(h.github.stored.size).toBe(1);
     const [first, second] = [...h.github.issues.values()].map((issue) => issue.body);
     expect(first).toBe(second);
@@ -81,7 +92,7 @@ describe("file_issue attachments", () => {
   it("changes nothing for a call without attachments", async () => {
     const h = harness();
     const issue = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body");
-    const empty = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body", []);
+    const empty = await h.intake.fileIssue("planner", "octo/app", "t", "Plain body", [], cache);
     expect(h.github.issues.get(issue.number)?.body).toBe("Plain body");
     expect(h.github.issues.get(empty.number)?.body).toBe("Plain body");
     expect(h.github.writes).toEqual(["issue", "issue"]);
@@ -91,40 +102,34 @@ describe("file_issue attachments", () => {
   it("refuses a missing file by name and files nothing", async () => {
     const h = harness();
     const good = await file("good.png");
-    const missing = join(dir, "missing.png");
-    await expect(
-      h.intake.fileIssue("planner", "octo/app", "t", "b", [good, missing]),
-    ).rejects.toThrow(`Attachment ${missing} does not exist`);
+    const missing = join(cache, "missing.png");
+    await expect(fileIssue(h, [good, missing])).rejects.toThrow(
+      `Attachment ${missing} does not exist`,
+    );
     expect(h.github.writes).toEqual([]);
     expect(h.github.issues.size).toBe(0);
     expect(h.cards.list()).toHaveLength(0);
   });
 
   it("refuses a file that cannot be read", async () => {
+    // Root reads anything, so this case only holds for an ordinary user.
+    if (process.getuid?.() === 0) return;
     const h = harness();
     const locked = await file("locked.png");
     await chmod(locked, 0o000);
-    // Root reads anything, so this case only holds for an ordinary user.
-    if (process.getuid?.() === 0) return;
-    await expect(h.intake.fileIssue("planner", "octo/app", "t", "b", [locked])).rejects.toThrow(
-      `Attachment ${locked} cannot be read`,
-    );
+    await expect(fileIssue(h, [locked])).rejects.toThrow(`Attachment ${locked} cannot be read`);
     expect(h.github.writes).toEqual([]);
   });
 
   it("refuses a directory, a relative path, and a URL", async () => {
     const h = harness();
-    await mkdir(join(dir, "sub"));
-    await symlink(join(dir, "sub"), join(dir, "link"));
+    await mkdir(join(cache, "sub"));
     for (const [path, why] of [
-      [join(dir, "sub"), "is not a regular file"],
-      [join(dir, "link"), "is not a regular file"],
+      [join(cache, "sub"), "is not a regular file"],
       ["banner.png", "is not an absolute path"],
       ["https://example.com/banner.png", "is a URL"],
     ] as const) {
-      await expect(h.intake.fileIssue("planner", "octo/app", "t", "b", [path])).rejects.toThrow(
-        `Attachment ${path} ${why}`,
-      );
+      await expect(fileIssue(h, [path])).rejects.toThrow(`Attachment ${path} ${why}`);
     }
     expect(h.github.writes).toEqual([]);
   });
@@ -132,12 +137,12 @@ describe("file_issue attachments", () => {
   it("refuses a file over the size limit, and accepts one at it", async () => {
     const h = harness();
     const big = await file("big.bin", Buffer.alloc(MAX_ATTACHMENT_BYTES + 1));
-    await expect(h.intake.fileIssue("planner", "octo/app", "t", "b", [big])).rejects.toThrow(
+    await expect(fileIssue(h, [big])).rejects.toThrow(
       `Attachment ${big} is ${String(MAX_ATTACHMENT_BYTES + 1)} bytes, over the limit of ${String(MAX_ATTACHMENT_BYTES)} bytes`,
     );
     expect(h.github.writes).toEqual([]);
     const exact = await file("exact.bin", Buffer.alloc(MAX_ATTACHMENT_BYTES));
-    await h.intake.fileIssue("planner", "octo/app", "t", "b", [exact]);
+    await fileIssue(h, [exact]);
     expect(h.github.writes).toEqual(["store", "issue"]);
   });
 
@@ -145,50 +150,194 @@ describe("file_issue attachments", () => {
     const paths = await Promise.all(
       Array.from({ length: MAX_ATTACHMENTS + 1 }, (_, i) => file(`f${String(i)}.txt`)),
     );
-    await expect(readAttachments(paths)).rejects.toThrow("Too many attachments");
-    expect(await readAttachments(paths.slice(0, MAX_ATTACHMENTS))).toHaveLength(MAX_ATTACHMENTS);
+    await expect(readAttachments(paths, cache)).rejects.toThrow("Too many attachments");
+    expect(await readAttachments(paths.slice(0, MAX_ATTACHMENTS), cache)).toHaveLength(
+      MAX_ATTACHMENTS,
+    );
   });
 
   it("files no issue when the upload fails, and files nothing for a non-factory repo", async () => {
     const h = harness();
     const source = await file("banner.png");
     h.github.storeFailures = 1;
-    await expect(h.intake.fileIssue("planner", "octo/app", "t", "b", [source])).rejects.toThrow(
-      `could not write to ${ATTACHMENT_BRANCH}`,
-    );
+    await expect(fileIssue(h, [source])).rejects.toThrow(`could not write to ${ATTACHMENT_BRANCH}`);
     expect(h.github.issues.size).toBe(0);
-    await expect(h.intake.fileIssue("planner", "octo/other", "t", "b", [source])).rejects.toThrow(
-      NotAFactoryProjectError,
-    );
+    await expect(
+      h.intake.fileIssue("planner", "octo/other", "t", "b", [source], cache),
+    ).rejects.toThrow(NotAFactoryProjectError);
     expect(h.github.writes).toEqual([]);
   });
 
   it("names a file safely for the URL", async () => {
-    const [stored] = await readAttachments([await file("my banner (1).png")]);
+    const [stored] = await readAttachments([await file("my banner (1).png")], cache);
     expect(stored?.name).toBe("my_banner__1_.png");
-    const [dots] = await readAttachments([await file("...")]);
+    const [dots] = await readAttachments([await file("...")], cache);
     expect(dots?.name).toBe("attachment");
   });
 });
 
-describe("attachment instructions for the worker", () => {
-  it("tells the engineer where each file is, and the bytes match the original", async () => {
+describe("which files can be attached", () => {
+  const secret = Buffer.from("-----BEGIN PRIVATE KEY-----");
+
+  it("refuses a readable file outside the chat cache, with no GitHub write", async () => {
+    const h = harness();
+    const outside = await file("id_rsa", secret, elsewhere);
+    await expect(fileIssue(h, [outside])).rejects.toThrow(
+      `Attachment ${outside} is not in the chat attachment cache`,
+    );
+    // Not even a file that does not exist says whether it does.
+    const absent = join(elsewhere, "absent");
+    await expect(fileIssue(h, [absent])).rejects.toThrow("is not in the chat attachment cache");
+    // A path that climbs out of the cache by name.
+    const climbing = join(cache, "..", "elsewhere", "id_rsa");
+    await expect(fileIssue(h, [climbing])).rejects.toThrow("is not in the chat attachment cache");
+    expect(h.github.writes).toEqual([]);
+    expect(h.github.stored.size).toBe(0);
+    expect(h.github.issues.size).toBe(0);
+  });
+
+  it("refuses a link in the cache to a file outside it", async () => {
+    const h = harness();
+    const outside = await file("id_rsa", secret, elsewhere);
+    const link = join(cache, "banner.png");
+    await symlink(outside, link);
+    await expect(fileIssue(h, [link])).rejects.toThrow(`Attachment ${link} is not in the chat`);
+    expect(h.github.writes).toEqual([]);
+  });
+
+  it("refuses a link in the cache to a file inside it", async () => {
+    const h = harness();
+    const target = await file("real.png");
+    const link = join(cache, "link.png");
+    await symlink(target, link);
+    await expect(fileIssue(h, [link])).rejects.toThrow(`Attachment ${link} is a symbolic link`);
+    expect(h.github.writes).toEqual([]);
+  });
+
+  it("refuses a file reached through a linked folder that leaves the cache", async () => {
+    const h = harness();
+    await file("id_rsa", secret, elsewhere);
+    await symlink(elsewhere, join(cache, "folder"));
+    const through = join(cache, "folder", "id_rsa");
+    await expect(fileIssue(h, [through])).rejects.toThrow("is not in the chat attachment cache");
+    expect(h.github.writes).toEqual([]);
+  });
+
+  it("accepts a file in a folder inside the cache, and a cache reached through a link", async () => {
+    const h = harness();
+    await mkdir(join(cache, "images"));
+    const nested = await file("a.png", PNG, join(cache, "images"));
+    await fileIssue(h, [nested]);
+    const viaLink = join(dir, "cache-link");
+    await symlink(cache, viaLink);
+    const linked = await h.intake.fileIssue("planner", "octo/app", "t", "b", [nested], viaLink);
+    expect(linked.state).toBe("admitted");
+  });
+
+  it("refuses every attachment when the role has no cache", async () => {
     const h = harness();
     const source = await file("banner.png");
-    const issue = await h.intake.fileIssue("planner", "octo/app", "Use the banner", "Add it", [
-      source,
-    ]);
+    await expect(
+      h.intake.fileIssue("planner", "octo/app", "t", "b", [source], undefined),
+    ).rejects.toThrow("is not in the chat attachment cache");
+    await expect(
+      h.intake.fileIssue("planner", "octo/app", "t", "b", [source], join(dir, "no-such-cache")),
+    ).rejects.toThrow("is not in the chat attachment cache");
+    expect(h.github.writes).toEqual([]);
+  });
+});
+
+function git(cwd: string, ...args: string[]): Buffer {
+  return execFileSync(
+    "git",
+    [
+      "-c",
+      "user.name=test",
+      "-c",
+      "user.email=test@example.com",
+      "-c",
+      "commit.gpgsign=false",
+      ...args,
+    ],
+    {
+      cwd,
+      env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" },
+    },
+  );
+}
+
+describe("attachment instructions for the worker", () => {
+  it("lets a worker in a separate checkout fetch the file and commit its exact bytes", async () => {
+    const h = harness();
+    // The repo on GitHub, and the clone the API's commits are made in.
+    const origin = join(dir, "origin.git");
+    const api = join(dir, "api");
+    git(dir, "init", "--bare", "-b", "main", origin);
+    git(dir, "clone", origin, api);
+    await writeFile(join(api, "README.md"), "# app\n");
+    git(api, "add", ".");
+    git(api, "commit", "-m", "init");
+    git(api, "push", "origin", "HEAD:main");
+    // The worker's clone, made before the file was attached, so it has nothing of it.
+    const worker = join(dir, "worker");
+    git(dir, "clone", origin, worker);
+    // What the contents API does: a commit on the attachments branch, made from the default branch.
+    h.github.storeAttachments = async (_repo: string, files: readonly Attachment[]) => {
+      git(api, "fetch", "origin");
+      git(api, "checkout", "-B", ATTACHMENT_BRANCH, "origin/main");
+      const commits: string[] = [];
+      for (const attachment of files) {
+        await mkdir(dirname(join(api, attachment.path)), { recursive: true });
+        await writeFile(join(api, attachment.path), attachment.data);
+        git(api, "add", attachment.path);
+        git(api, "commit", "-m", `Attach ${attachment.name}`);
+        commits.push(git(api, "rev-parse", "HEAD").toString().trim());
+      }
+      git(api, "push", "origin", ATTACHMENT_BRANCH);
+      return commits;
+    };
+
+    const source = await file("banner.png");
+    const issue = await fileIssue(h, [source], "Use the banner", "Add it to the README");
+    // The planner's cache is pruned.
     await rm(source);
+    await rm(cache, { recursive: true });
     await h.pipeline.startWork(issue.cardId ?? 0, "Put the banner on the README.");
 
+    // The worker has only its own clone and the first message of its thread.
     const message = h.t3.launches[0]?.message ?? "";
     const [ref] = attachmentRefs("octo/app", h.github.issues.get(issue.number)?.body ?? "");
     expect(ref).toBeDefined();
     expect(message).toContain(`${ref?.path ?? ""} at commit ${ref?.commit ?? ""}`);
-    expect(message).toContain(`git fetch origin ${ATTACHMENT_BRANCH}`);
-    expect(message).toContain("git show <commit>:<path>");
-    // What the engineer would fetch is what the planner had.
-    expect(h.github.stored.get(ref?.path ?? "")?.data.equals(PNG)).toBe(true);
+    expect(() => git(worker, "cat-file", "-e", `${ref?.commit ?? ""}^{commit}`)).toThrow();
+
+    // The commands the message gives, with its placeholders filled in.
+    const fetch = /`(git fetch origin [^`]+)`/.exec(message)?.[1];
+    const show = /`(git show <commit>:<path> > <destination>)`/.exec(message)?.[1];
+    expect(fetch).toBe(`git fetch origin ${ATTACHMENT_BRANCH}`);
+    expect(show).toBeDefined();
+    const sh = (command: string): void => {
+      execFileSync("sh", ["-c", command], { cwd: worker });
+    };
+    sh(fetch ?? "false");
+    sh(
+      (show ?? "false")
+        .replace("<commit>", ref?.commit ?? "")
+        .replace("<path>", ref?.path ?? "")
+        .replace("<destination>", "assets/banner.png")
+        .replace(/^/, "mkdir -p assets && "),
+    );
+    git(worker, "checkout", "-b", "factory/card");
+    git(worker, "add", "assets/banner.png");
+    git(worker, "commit", "-m", "Add the banner");
+
+    // The bytes in the worker's own commit are the original's, and the file matches the issue's sha256.
+    const committed = git(worker, "show", "HEAD:assets/banner.png");
+    expect(committed.equals(PNG)).toBe(true);
+    expect((await readFile(join(worker, "assets", "banner.png"))).equals(PNG)).toBe(true);
+    expect(h.github.issues.get(issue.number)?.body).toContain(
+      createHash("sha256").update(committed).digest("hex"),
+    );
   });
 
   it("adds nothing to an issue without attachments", () => {

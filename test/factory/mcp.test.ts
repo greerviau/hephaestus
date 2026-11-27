@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,8 @@ import { harness, type Harness } from "./harness.js";
 const TOKENS = { planner: "planner-token", lead: "lead-token", improver: "improver-token" };
 
 let server: Server | undefined;
+/** The folder holding each role's chat cache, set by a test that attaches files. */
+let caches: string | undefined;
 
 afterEach(async () => {
   const running = server;
@@ -35,6 +37,7 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
     store,
     events: h.events,
     tokens: () => TOKENS,
+    attachmentRoot: (role) => join(caches ?? tmpdir(), role),
   });
   server = mcp.listen(0);
   await new Promise<void>((resolve) => server?.once("listening", resolve));
@@ -142,10 +145,14 @@ describe("FactoryMcp", () => {
   it("files an issue with an attachment, and reports a bad attachment as an error with no issue", async () => {
     const { h, url } = await start();
     const dir = await mkdtemp(join(tmpdir(), "mcp-attach-"));
+    caches = dir;
     try {
       const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
-      const path = join(dir, "banner.png");
+      await mkdir(join(dir, "planner"));
+      const path = join(dir, "planner", "banner.png");
       await writeFile(path, bytes);
+      const outside = join(dir, "secret.txt");
+      await writeFile(outside, "secret");
       const c = await client(url, TOKENS.planner);
       const tool = (await c.listTools()).tools.find((candidate) => candidate.name === "file_issue");
       expect(tool?.description).toMatch(/10 files, 10 MB each/);
@@ -153,11 +160,25 @@ describe("FactoryMcp", () => {
 
       const missing = await c.callTool({
         name: "file_issue",
-        arguments: { repo: "octo/app", title: "x", body: "", attachments: [join(dir, "nope.png")] },
+        arguments: {
+          repo: "octo/app",
+          title: "x",
+          body: "",
+          attachments: [join(dir, "planner", "nope.png")],
+        },
       });
       expect(missing.isError).toBe(true);
       expect(JSON.stringify(missing)).toContain("nope.png");
       expect(h.github.issues.size).toBe(0);
+
+      const refused = await c.callTool({
+        name: "file_issue",
+        arguments: { repo: "octo/app", title: "x", body: "", attachments: [outside] },
+      });
+      expect(refused.isError).toBe(true);
+      expect(JSON.stringify(refused)).toContain("not in the chat attachment cache");
+      expect(h.github.issues.size).toBe(0);
+      expect(h.github.stored.size).toBe(0);
 
       const filed = json(
         await c.callTool({
@@ -171,6 +192,7 @@ describe("FactoryMcp", () => {
       expect([...h.github.stored.values()][0]?.data.equals(bytes)).toBe(true);
       await c.close();
     } finally {
+      caches = undefined;
       await rm(dir, { recursive: true, force: true });
     }
   });

@@ -22,6 +22,8 @@ export interface FactoryMcpOptions {
   events: ThreadEvents;
   /** The bearer token of each factory profile. */
   tokens: () => Partial<Record<RoleName, string>>;
+  /** Where a role's chat gateway caches the files a requester sends; the only place attachments may come from. */
+  attachmentRoot?: (role: RoleName) => string;
   now?: () => Date;
 }
 
@@ -46,7 +48,7 @@ const TOOL_SHAPES = {
       .array(z.string())
       .optional()
       .describe(
-        "absolute paths of local files to attach, such as an image from the request; at most 10 files of 10 MB each",
+        "absolute paths of files the requester sent in the chat, as the chat gave them to you; at most 10 files of 10 MB each",
       ),
   },
   start_work: { card_id: z.number().int(), brief: z.string().min(1) },
@@ -305,9 +307,16 @@ export class FactoryMcp {
 
     register(
       "file_issue",
-      "File a GitHub issue on a factory project. Hephaestus admits it and creates a card unless the project's cap on open factory issues is reached; then it waits for the owner. To hand files from the request to the engineer, such as an attached image, pass their absolute local paths in attachments: at most 10 files, 10 MB each, any type, local files only (no URLs). Hephaestus stores each file in the project's repo and links it in the issue, and the engineer can commit it. If any file is missing, unreadable, or too large, no issue is filed and the error names the file.",
+      "File a GitHub issue on a factory project. Hephaestus admits it and creates a card unless the project's cap on open factory issues is reached; then it waits for the owner. To hand files from the request to the engineer, such as an attached image, pass their absolute paths, as the chat gave them to you, in attachments: at most 10 files, 10 MB each, any type. Only files the requester sent in the chat can be attached, not other files on the host or URLs. Hephaestus stores each file in the project's repo and links it in the issue, and the engineer can commit it. If any file is missing, unreadable, or too large, no issue is filed and the error names the file.",
       async ({ repo, title, body, attachments }) => {
-        const issue = await intake.fileIssue(role, repo, title, body, attachments);
+        const issue = await intake.fileIssue(
+          role,
+          repo,
+          title,
+          body,
+          attachments,
+          this.options.attachmentRoot?.(role),
+        );
         return {
           issue: issue.number,
           url: `https://github.com/${issue.repo}/issues/${String(issue.number)}`,
