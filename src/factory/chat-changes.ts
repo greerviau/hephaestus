@@ -33,6 +33,7 @@ const SETTINGS: Record<string, string[]> = {
   threadSkills: ["factory", "threadSkills"],
   "models.claude": ["factory", "models", "claude"],
   "models.codex": ["factory", "models", "codex"],
+  "limits.tasksPerWorker": ["factory", "limits", "tasksPerWorker"],
   "limits.threadsPerWorker": ["factory", "limits", "threadsPerWorker"],
   "limits.threads": ["factory", "limits", "threads"],
   "limits.startsPerDay": ["factory", "limits", "startsPerDay"],

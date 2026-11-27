@@ -10,6 +10,12 @@ function valueFrom(submitted: URLSearchParams | undefined): Value {
 
 const NUMBERS = [
   {
+    key: "tasksPerWorker",
+    label: "Tasks per worker",
+    full: "Tasks in progress per worker",
+    hint: "Tasks one machine works on at once, from implementing until verified, and tasks with the lead. A task waiting on you does not count.",
+  },
+  {
     key: "threadsPerWorker",
     label: "Threads per worker",
     // The refusal names the limit in full, as it did before the row had a short label.

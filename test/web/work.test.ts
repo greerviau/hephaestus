@@ -178,7 +178,7 @@ describe("Work", () => {
     const { html } = await dashboard.get("/work");
 
     expect(html).toContain("1 of 4 threads running");
-    expect(html).toContain("limit 2 per worker, 40 starts per day");
+    expect(html).toContain("limit 2 tasks and 2 threads per worker, 40 starts per day");
     expect(html).not.toContain("No thread starts now");
   });
 

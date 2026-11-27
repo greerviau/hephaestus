@@ -460,4 +460,51 @@ describe("second review fixes", () => {
 
     expect(Object.hasOwn(version.document.skills.triage ?? {}, "__proto__")).toBe(true);
   });
+
+  it("fills in a limit added since a stored version or a backup was saved, and keeps an explicit 0", () => {
+    const first = deployed();
+    const stored = JSON.parse(
+      (
+        db.prepare("SELECT document FROM config_versions WHERE id = ?").get(first.id) as {
+          document: string;
+        }
+      ).document,
+    ) as { factory: { limits: Record<string, number> } };
+    delete stored.factory.limits.tasksPerWorker;
+    db.prepare("UPDATE config_versions SET document = ? WHERE id = ?").run(
+      JSON.stringify(stored),
+      first.id,
+    );
+
+    expect(store.get(first.id).document.factory.limits.tasksPerWorker).toBe(2);
+
+    const old = store.get(first.id);
+    const zero = structuredClone(old);
+    zero.document.factory.limits.tasksPerWorker = 0;
+    const backup = structuredClone(old);
+    delete (backup.document.factory.limits as Partial<typeof backup.document.factory.limits>)
+      .tasksPerWorker;
+    for (const [version, expected] of [
+      [backup, 2],
+      [zero, 0],
+    ] as const) {
+      const restored = new ConfigStore(openStore(":memory:"));
+      restored.importVersions([version]);
+      expect(restored.get(version.id).document.factory.limits.tasksPerWorker).toBe(expected);
+    }
+  });
+
+  it("refuses a backup whose limits are not an object, instead of filling in defaults", () => {
+    const version = deployed();
+    const broken = structuredClone(version) as unknown as {
+      id: number;
+      document: { factory: { limits: unknown } };
+    };
+    broken.document.factory.limits = null;
+
+    const restored = new ConfigStore(openStore(":memory:"));
+    expect(() => {
+      restored.importVersions([broken as unknown as typeof version]);
+    }).toThrow(/factory\.limits must be an object/);
+  });
 });

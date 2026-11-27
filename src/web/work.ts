@@ -889,7 +889,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
           }
           if (limits.ok && limits.value !== undefined) {
             capacity.push(
-              `limit ${String(limits.value.threadsPerWorker)} per worker, ${String(limits.value.startsPerDay)} starts per day`,
+              `limit ${String(limits.value.tasksPerWorker)} ${limits.value.tasksPerWorker === 1 ? "task" : "tasks"} and ${String(limits.value.threadsPerWorker)} ${limits.value.threadsPerWorker === 1 ? "thread" : "threads"} per worker, ${String(limits.value.startsPerDay)} starts per day`,
             );
           }
           const why =

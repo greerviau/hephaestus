@@ -173,7 +173,7 @@ export class ThreadEvents {
   }
 
   /**
-   * Sets the status only if it is still `expected`, and reports whether it did. A run id
+   * Sets the status only if it is still the expected one, and reports whether it did. A run id
    * T3 reported with the status is kept with it.
    */
   setStatusIf(

@@ -11,7 +11,9 @@ import { openStore, renameCardWords } from "../src/store.js";
  * so this is their last form: the same tables, columns, and index under their old names.
  */
 function backToCardSchema(db: Database): void {
-  db.exec(`ALTER TABLE tasks RENAME TO cards;
+  // queued_at came after the rename.
+  db.exec(`ALTER TABLE tasks DROP COLUMN queued_at;
+    ALTER TABLE tasks RENAME TO cards;
     ALTER TABLE task_events RENAME TO card_events;
     ALTER TABLE cards RENAME COLUMN hermes_task_id TO hermes_card_id;
     ALTER TABLE card_events RENAME COLUMN task_id TO card_id;
@@ -62,17 +64,25 @@ describe("store migrations", () => {
       INSERT INTO cards (id, repo, title, stage, created_at, updated_at)
       VALUES (1, 'octo/app', 'mid-revert', 'Escalated', 'x', 'x'),
              (2, 'octo/app', 'reverted, then retried', 'Escalated', 'x', 'x');
+      INSERT INTO cards (id, repo, title, stage, brief, created_at, updated_at)
+      VALUES (3, 'octo/app', 'started while paused', 'Admitted', 'brief', 'x', 'asked'),
+             (4, 'octo/app', 'not started yet', 'Admitted', NULL, 'x', 'never');
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 14)}`);
+    db.pragma(`user_version = ${String(latest - 15)}`);
     db.close();
 
     db = openStore(path);
     expect(db.prepare("SELECT kind FROM notifications").get()).toEqual({ kind: "escalation" });
-    expect(db.prepare("SELECT id, reverting FROM tasks ORDER BY id").all()).toEqual([
+    expect(db.prepare("SELECT id, reverting FROM tasks WHERE id <= 2 ORDER BY id").all()).toEqual([
       { id: 1, reverting: 1 },
       { id: 2, reverting: 0 },
+    ]);
+    // A start asked for while paused, before queues existed, keeps its place in the queue.
+    expect(db.prepare("SELECT id, queued_at FROM tasks WHERE id > 2 ORDER BY id").all()).toEqual([
+      { id: 3, queued_at: "asked" },
+      { id: 4, queued_at: null },
     ]);
     expect(db.pragma("user_version", { simple: true })).toBe(latest);
     db.close();
@@ -102,7 +112,7 @@ describe("store migrations", () => {
       INSERT INTO mcp_calls (role, tool, arguments, ok, result, at)
         VALUES ('lead', 'start_work', '{"card_id":8,"brief":"b"}', 1, '{"card_id":8,"stage":"Implementing"}', 'x'),
                ('lead', 'list_cards', '{}', 1, '[{"card_id":8,"title":"Rename the card"}]', 'x');`);
-    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.pragma(`user_version = ${String(latest - 2)}`);
     db.close();
 
     db = openStore(path);

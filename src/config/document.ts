@@ -41,6 +41,11 @@ export interface FactorySettings {
   /** The owner's own provider instance and model that run deploy and sign-in threads on a worker. */
   setup: ModelChoice & { instanceId: string };
   limits: {
+    /**
+     * Tasks in progress per worker, from Implementing through Validating, or with the lead.
+     * A task waiting on the owner does not count.
+     */
+    tasksPerWorker: number;
     /** Running factory threads per worker. */
     threadsPerWorker: number;
     /** Running factory threads across all workers. */
@@ -55,7 +60,7 @@ export const DEFAULT_FACTORY: FactorySettings = {
   autoStartMinutes: 10,
   models: { claude: { model: "claude-sonnet-5-5" }, codex: { model: "gpt-6.2-sol" } },
   setup: { instanceId: "claudeAgent", model: "claude-sonnet-5-5" },
-  limits: { threadsPerWorker: 2, threads: 4, startsPerDay: 40 },
+  limits: { tasksPerWorker: 2, threadsPerWorker: 2, threads: 4, startsPerDay: 40 },
 };
 
 /** The whole factory config. A config version is one snapshot of it. */
@@ -149,8 +154,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export function normalizeConfig(value: unknown): unknown {
   if (!isRecord(value)) return value;
-  const factory = isRecord(value.factory) ? value.factory : {};
-  const limits = isRecord(factory.limits) ? factory.limits : {};
+  // Only what is missing gets its default; a value of the wrong type stays for validation to refuse.
+  if (value.factory !== undefined && !isRecord(value.factory)) return value;
+  const factory = value.factory ?? {};
+  if (factory.limits !== undefined && !isRecord(factory.limits)) return value;
+  const limits = factory.limits ?? {};
   value = {
     ...value,
     factory: {
@@ -229,7 +237,7 @@ export function validateConfig(value: unknown): FactoryConfig {
       problems.push("factory.autoStartMinutes must be a whole number of 0 or more");
     }
     const limits = object("factory.limits", factory.limits) ?? {};
-    for (const name of ["threadsPerWorker", "threads", "startsPerDay"]) {
+    for (const name of ["tasksPerWorker", "threadsPerWorker", "threads", "startsPerDay"]) {
       if (!Number.isInteger(limits[name]) || (limits[name] as number) < 0) {
         problems.push(`factory.limits.${name} must be a whole number of 0 or more`);
       }
