@@ -1,7 +1,5 @@
 <p align="center"><img src="docs/images/banner.jpg" alt="Hephaestus" width="800"></p>
 
-# Hephaestus
-
 Hephaestus turns your repos into a software factory. Requests become GitHub issues, AI agents implement them in [T3 Code](https://github.com/pingdotgg/t3code) threads on your machines, a second agent from another provider reviews each PR, and Hephaestus merges it only when your policy allows. A failing merge is reverted, everything is recorded, and every night the factory proposes improvements to its own instructions for you to approve.
 
 It runs as a service on one Linux host and serves a dashboard on your LAN.
