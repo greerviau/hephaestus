@@ -1,115 +1,115 @@
 import { ROLE_NAMES, type FactoryConfig, type ModelChoice } from "../config/document.js";
-import { escapeHtml } from "./html.js";
+import { escapeHtml, fold, section, setting } from "./html.js";
+
+/** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
+type Value = (name: string, saved: string) => string;
+
+function valueFrom(submitted: URLSearchParams | undefined): Value {
+  return (name, saved) => submitted?.get(name) ?? saved;
+}
 
 const NUMBERS = [
   {
     key: "threadsPerWorker",
-    label: "Running factory threads per worker",
-    help: "Counts implement and review threads on one machine.",
+    label: "Threads per worker",
+    // The refusal names the limit in full, as it did before the row had a short label.
+    full: "Running factory threads per worker",
+    hint: "Implement and review threads running on one machine.",
   },
-  { key: "threads", label: "Running factory threads in all", help: "Across every worker." },
+  {
+    key: "threads",
+    label: "Threads in all",
+    full: "Running factory threads in all",
+    hint: "Across every worker.",
+  },
   {
     key: "startsPerDay",
-    label: "Factory threads started per day",
-    help: "Per UTC day, across every worker. A cap on spend.",
+    label: "Thread starts per day",
+    full: "Factory threads started per day",
+    hint: "Per UTC day, across every worker. A cap on spend.",
   },
 ] as const;
 
-/** The form fields for the factory's limits, models, and schedules, filled from `config`. */
-export function factorySettingsForm(
+function numberSetting(
+  id: string,
+  name: string,
+  label: string,
+  hint: string,
+  value: string,
+): string {
+  return setting(
+    id,
+    label,
+    hint,
+    `<input type="number" id="${id}" name="${name}" min="0" step="1" value="${escapeHtml(value)}" required>`,
+  );
+}
+
+/** The Factory tab's fields: the thread limits, the auto-start wait, and each scheduled job. */
+export function limitsAndSchedulesFields(
   config: FactoryConfig,
-  parentId: number | undefined,
   submitted?: URLSearchParams,
 ): string {
   const { factory } = config;
-  // A refused form comes back with what the owner typed, not the saved values.
-  const value = (name: string, saved: string): string => submitted?.get(name) ?? saved;
-  const numbers = NUMBERS.map(
-    ({ key, label, help }) =>
-      `<div class="field"><label for="f-${key}">${escapeHtml(label)}</label><input type="number" id="f-${key}" name="limits.${key}" min="0" step="1" value="${escapeHtml(value(`limits.${key}`, String(factory.limits[key])))}" required><span class="meta">${escapeHtml(help)}</span></div>`,
-  ).join("");
-  const autoStart = `<div class="field"><label for="f-autostart">Start a card the lead has not started after (minutes)</label><input type="number" id="f-autostart" name="autoStartMinutes" min="0" step="1" value="${escapeHtml(value("autoStartMinutes", String(factory.autoStartMinutes)))}" required><span class="meta">0 waits for the lead.</span></div>`;
-  const models = [
-    modelFields(
-      "claude",
-      "Factory Claude model",
-      "Implements cards.",
-      factory.models.claude,
-      value,
+  const value = valueFrom(submitted);
+  const limits = [
+    ...NUMBERS.map(({ key, label, hint }) =>
+      numberSetting(
+        `f-${key}`,
+        `limits.${key}`,
+        label,
+        hint,
+        value(`limits.${key}`, String(factory.limits[key])),
+      ),
     ),
-    modelFields("codex", "Factory Codex model", "Reviews PRs.", factory.models.codex, value),
-    modelFields(
-      "setup",
-      "Setup model",
-      "Runs deploy, sign-in, and check threads, on the provider instance named below.",
-      factory.setup,
-      value,
+    numberSetting(
+      "f-autostart",
+      "autoStartMinutes",
+      "Auto-start after (minutes)",
+      "Starts a task the lead has not started. 0 waits for the lead.",
+      value("autoStartMinutes", String(factory.autoStartMinutes)),
     ),
-    `<div class="field"><label for="f-setup-instance">Setup provider instance</label><input type="text" id="f-setup-instance" name="setup.instanceId" value="${escapeHtml(value("setup.instanceId", factory.setup.instanceId))}" required><span class="meta">One of your own T3 provider instances on each worker, such as claudeAgent.</span></div>`,
   ].join("");
   const jobs = ROLE_NAMES.flatMap((role) =>
-    (config.roles[role].cron ?? []).map(
-      (job) =>
-        `<div class="field"><label for="f-cron-${escapeHtml(role)}-${escapeHtml(job.name)}">${escapeHtml(`${role}: ${job.name}`)}</label><input type="text" id="f-cron-${escapeHtml(role)}-${escapeHtml(job.name)}" name="cron.${escapeHtml(role)}.${escapeHtml(job.name)}" value="${escapeHtml(value(`cron.${role}.${job.name}`, job.schedule))}" required><span class="meta">A cron expression, or a Hermes form such as every 2h.</span></div>`,
-    ),
+    (config.roles[role].cron ?? []).map((job) => {
+      const id = escapeHtml(`f-cron-${role}-${job.name}`);
+      const name = escapeHtml(`cron.${role}.${job.name}`);
+      return setting(
+        `f-cron-${role}-${job.name}`,
+        `${role}: ${job.name}`,
+        "A cron expression, or a form such as every 2h.",
+        `<input type="text" class="w-220" id="${id}" name="${name}" value="${escapeHtml(value(`cron.${role}.${job.name}`, job.schedule))}" required>`,
+      );
+    }),
   ).join("");
-  return `<form method="post" action="/settings/factory" class="form-grid">
-<input type="hidden" name="parentId" value="${escapeHtml(String(parentId ?? ""))}">
-<fieldset><legend>Limits</legend>${numbers}${autoStart}</fieldset>
-<fieldset><legend>Models</legend>${models}</fieldset>
-${jobs === "" ? "" : `<fieldset><legend>Schedules</legend>${jobs}</fieldset>`}
-<label class="check"><input type="checkbox" name="deploy"${submitted !== undefined && submitted.get("deploy") !== "on" ? "" : " checked"}> Approve and deploy now</label>
-<div class="btn-row"><button type="submit" class="btn-primary">Save the factory settings</button></div>
-</form>`;
+  return `<fieldset class="sec"><legend>Limits</legend>${limits}</fieldset>${
+    jobs === "" ? "" : `<fieldset class="sec"><legend>Schedules</legend>${jobs}</fieldset>`
+  }`;
 }
 
-function modelFields(
-  key: string,
-  label: string,
-  help: string,
-  choice: ModelChoice,
-  value: (name: string, saved: string) => string,
-): string {
-  const options = value(
-    `${key}.options`,
-    Object.entries(choice.options ?? {})
-      .map(([id, option]) => `${id}=${optionText(option)}`)
-      .join("\n"),
-  );
-  return `<div class="field"><label for="f-${key}-model">${escapeHtml(label)}</label><input type="text" id="f-${key}-model" name="${key}.model" value="${escapeHtml(value(`${key}.model`, choice.model))}" required><span class="meta">${escapeHtml(help)}</span></div><div class="field"><label for="f-${key}-options">${escapeHtml(label)} options</label><textarea id="f-${key}-options" name="${key}.options" rows="2" placeholder="effort=high">${escapeHtml(options)}</textarea><span class="meta">Provider options by T3 option id, one id=value per line. true and false are switches.</span></div>`;
-}
-
-/** Applies the form to a copy of `config`. Values the config itself rejects surface when the version is created. */
-export function applyFactorySettings(
+/** Applies the Factory tab's form to a copy of `config`. Values the config itself rejects surface when the version is created. */
+export function applyLimitsAndSchedules(
   config: FactoryConfig,
   form: URLSearchParams,
 ): { config: FactoryConfig; errors: string[] } {
   const next = structuredClone(config);
   const errors: string[] = [];
-  const whole = (name: string, label: string, min: number): number | undefined => {
-    const value = Number((form.get(name) ?? "").trim());
-    if (!Number.isInteger(value) || value < min) {
-      errors.push(`${label}: give a whole number of ${String(min)} or more.`);
+  const whole = (name: string, label: string): number | undefined => {
+    const text = (form.get(name) ?? "").trim();
+    const value = Number(text);
+    // Number("") is 0, and a limit of 0 stops every thread, so an empty field is refused.
+    if (text === "" || !Number.isInteger(value) || value < 0) {
+      errors.push(`${label}: give a whole number of 0 or more.`);
       return undefined;
     }
     return value;
   };
-  for (const { key, label } of NUMBERS) {
-    const value = whole(`limits.${key}`, label, 0);
+  for (const { key, full } of NUMBERS) {
+    const value = whole(`limits.${key}`, full);
     if (value !== undefined) next.factory.limits[key] = value;
   }
-  const autoStart = whole("autoStartMinutes", "Auto-start minutes", 0);
+  const autoStart = whole("autoStartMinutes", "Auto-start minutes");
   if (autoStart !== undefined) next.factory.autoStartMinutes = autoStart;
-  for (const key of ["claude", "codex"] as const) {
-    next.factory.models[key] = model(form, key, errors, next.factory.models[key]);
-  }
-  const setup = model(form, "setup", errors, next.factory.setup);
-  const instanceId = (form.get("setup.instanceId") ?? "").trim();
-  if (instanceId === "") errors.push("Setup provider instance: name one.");
-  next.factory.setup = {
-    ...setup,
-    instanceId: instanceId === "" ? next.factory.setup.instanceId : instanceId,
-  };
   for (const role of ROLE_NAMES) {
     for (const job of next.roles[role].cron ?? []) {
       const schedule = (form.get(`cron.${role}.${job.name}`) ?? "").trim();
@@ -120,15 +120,100 @@ export function applyFactorySettings(
   return { config: next, errors };
 }
 
+/** The coding jobs, each a model setting that exists today. The provider of the first two is fixed. */
+const JOBS = [
+  {
+    key: "claude",
+    job: "Implement",
+    does: "Writes the change, runs the tests, and opens the PR.",
+    provider: "Factory Claude",
+  },
+  {
+    key: "codex",
+    job: "Review",
+    does: "Reads the PR, runs the tests, and approves or asks for changes.",
+    provider: "Factory Codex",
+  },
+  {
+    key: "setup",
+    job: "Housekeeping",
+    does: "Deploys config to workers, signs them in, and checks them.",
+    provider: undefined,
+  },
+] as const;
+
+type JobKey = (typeof JOBS)[number]["key"];
+
+function choiceOf(config: FactoryConfig, key: JobKey): ModelChoice {
+  return key === "setup" ? config.factory.setup : config.factory.models[key];
+}
+
+/** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */
+export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchParams): string {
+  const value = valueFrom(submitted);
+  const rows = JOBS.map(({ key, job, does, provider }) => {
+    const where =
+      provider === undefined
+        ? `<input type="text" class="w-144" name="setup.instanceId" value="${escapeHtml(value("setup.instanceId", config.factory.setup.instanceId))}" aria-label="Housekeeping provider instance" placeholder="claudeAgent" required>`
+        : `<span class="muted">${provider}</span>`;
+    return `<li class="row job"><div class="main"><span class="title">${job}</span><span class="subline">${does}</span></div><div class="aside">${where}<input type="text" name="${key}.model" value="${escapeHtml(value(`${key}.model`, choiceOf(config, key).model))}" aria-label="${job} model" required></div></li>`;
+  }).join("");
+  const options = JOBS.map(({ key, job }) => {
+    const saved = Object.entries(choiceOf(config, key).options ?? {})
+      .map(([id, option]) => `${id}=${optionText(option)}`)
+      .join("\n");
+    return setting(
+      `f-${key}-options`,
+      `${job} options`,
+      "Provider options by T3 option id, one id=value per line. true and false are switches.",
+      `<textarea class="w-220" id="f-${key}-options" name="${key}.options" rows="2" placeholder="effort=high">${escapeHtml(value(`${key}.options`, saved))}</textarea>`,
+    );
+  }).join("");
+  return section({
+    title: "Coding",
+    right: '<span class="muted">run on workers</span>',
+    body: `<ul class="rows">${rows}</ul><p class="hint note">The provider of Implement and Review is fixed. Housekeeping runs on one of your own T3 provider instances, such as claudeAgent.</p>${fold(
+      "Provider options",
+      options,
+      // A refused form opens the fold, or what was typed there would be hidden.
+      submitted !== undefined,
+    )}`,
+  });
+}
+
+/** Applies the Models tab's form to a copy of `config`. */
+export function applyCodingModels(
+  config: FactoryConfig,
+  form: URLSearchParams,
+): { config: FactoryConfig; errors: string[] } {
+  const next = structuredClone(config);
+  const errors: string[] = [];
+  for (const { key, job } of JOBS) {
+    const choice = model(form, key, job, errors, choiceOf(next, key));
+    if (key !== "setup") {
+      next.factory.models[key] = choice;
+      continue;
+    }
+    const instanceId = (form.get("setup.instanceId") ?? "").trim();
+    if (instanceId === "") errors.push("Housekeeping provider instance: name one.");
+    next.factory.setup = {
+      ...choice,
+      instanceId: instanceId === "" ? next.factory.setup.instanceId : instanceId,
+    };
+  }
+  return { config: next, errors };
+}
+
 function model(
   form: URLSearchParams,
-  key: string,
+  key: JobKey,
+  job: string,
   errors: string[],
   current: ModelChoice,
 ): ModelChoice {
   const name = (form.get(`${key}.model`) ?? "").trim();
   if (name === "") {
-    errors.push(`${key} model: name one.`);
+    errors.push(`${job} model: name one.`);
     return current;
   }
   const options: Record<string, string | boolean> = {};
@@ -137,7 +222,7 @@ function model(
     if (text === "") continue;
     const at = text.indexOf("=");
     if (at <= 0) {
-      errors.push(`${key} model options: write each as id=value, not ${text}.`);
+      errors.push(`${job} model options: write each as id=value, not ${text}.`);
       continue;
     }
     const value = text.slice(at + 1).trim();

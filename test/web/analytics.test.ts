@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { PROJECT_COOKIE } from "../../src/web/shell.js";
 import type { Harness } from "../factory/harness.js";
 import { NOW, startDashboard, type Dashboard } from "./dashboard.js";
 
@@ -23,65 +24,134 @@ function shipped(h: Harness, repo: string, issue: number): void {
   h.cards.transition(id, "Done", "checks passed");
 }
 
+/** The page's main region, so the sidebar's own links and forms do not match. */
+function main(html: string): string {
+  return html.slice(html.indexOf('<main id="main"'));
+}
+
 describe("Analytics", () => {
-  it("charts PRs, merges, reverts, cycle time, and escalations for all projects", async () => {
+  it("shows totals and charts PRs, finished tasks, escalations, and cycle time for all projects", async () => {
     dashboard = await startDashboard();
     shipped(dashboard.h, "octo/app", 1);
     shipped(dashboard.h, "octo/lib", 2);
 
     const { status, html } = await dashboard.get("/analytics");
+    const page = main(html);
 
     expect(status).toBe(200);
-    expect(html).toContain('<svg class="plot"');
-    expect(html).toContain('role="img"');
-    expect(html).toContain('<option value="octo/lib"');
-    expect(html).toMatch(/<span class="num">2<\/span><span class="meta">PRs<\/span>/);
-    expect(html).toMatch(/<span class="num">2<\/span><span class="meta">Merges<\/span>/);
-    expect(html).toContain("4.0 h");
-    expect(html).toContain('<details class="as-table">');
-    expect(html).toContain("Nov 23");
+    expect(page).toContain('<ul class="totals">');
+    expect(page).toContain("<li><b>2</b><span>PRs</span></li>");
+    expect(page).toContain("<li><b>2</b><span>Merged</span></li>");
+    expect(page).toContain(
+      "<li><b>4.0 h</b><span>Median cycle time</span><span>p90 4.0 h, 2 tasks</span></li>",
+    );
+    expect(page).toContain("<h2>Finished tasks per day</h2>");
+    expect(page).toContain("Merged 2</li>");
+    expect(page).toContain("Reverted 0</li>");
+    expect(page).toContain(
+      'role="img" aria-label="Merged, reverted, and abandoned tasks per day: 2 merged, 0 reverted, 0 abandoned."',
+    );
+    expect(page).toContain("<h3>PRs at the merge gate</h3>");
+    expect(page).toContain("<h3>Escalations</h3>");
+    expect(page).toContain("<h3>Median cycle time, hours</h3>");
+    expect(page.match(/role="img"/g)).toHaveLength(4);
+    expect(page).toContain("Nov 23");
   });
 
-  it("charts one project", async () => {
+  it("draws without hover tooltips and hatches the reverted series", async () => {
+    dashboard = await startDashboard();
+    shipped(dashboard.h, "octo/app", 1);
+
+    const page = main((await dashboard.get("/analytics")).html);
+
+    expect(page).not.toContain("<title>");
+    expect(page).toContain('<pattern id="hatch-finished"');
+    expect(page).toContain(
+      '<div class="chart-scroll" tabindex="0" role="region" aria-label="Finished tasks per day chart">',
+    );
+  });
+
+  it("folds one table of every day's numbers into a focusable scroll region, newest day first", async () => {
+    dashboard = await startDashboard();
+    shipped(dashboard.h, "octo/app", 1);
+
+    const page = main((await dashboard.get("/analytics?days=7")).html);
+
+    expect(page).toContain('<details class="fold"><summary>Show as a table</summary>');
+    expect(page).toContain(
+      '<div class="table-region" tabindex="0" role="region" aria-label="Daily numbers">',
+    );
+    expect(page).toContain(
+      '<tr><th scope="col">Day</th><th scope="col" class="r">Merged</th><th scope="col" class="r">Reverted</th><th scope="col" class="r">Abandoned</th><th scope="col" class="r">PRs</th><th scope="col" class="r">Escalations</th><th scope="col" class="r">Cycle</th></tr>',
+    );
+    expect(page).toContain(
+      '<tr><th scope="row">Nov 23</th><td class="r">1</td><td class="r">0</td><td class="r">0</td><td class="r">1</td><td class="r">0</td><td class="r">4.0 h</td></tr>',
+    );
+    expect(page).toContain('<th scope="row">Nov 25</th><td class="r">0</td>');
+    expect(page.match(/<th scope="row">/g)).toHaveLength(7);
+    expect(page.indexOf("Nov 25</th>")).toBeLessThan(page.indexOf("Nov 23</th>"));
+    expect(page).toMatch(
+      /<th scope="row">Nov 25<\/th>(<td class="r">0<\/td>){5}<td class="r">No reading<\/td>/,
+    );
+  });
+
+  it("offers the period as a segmented control", async () => {
+    dashboard = await startDashboard();
+
+    const page = main((await dashboard.get("/analytics?days=7")).html);
+
+    expect(page).toContain('<div class="seg" role="group" aria-label="Period">');
+    expect(page).toContain('<a href="/analytics">30 days</a>');
+    expect(page).toContain('<a href="/analytics?days=7" aria-current="true">7 days</a>');
+    expect(page).toContain('<a href="/analytics?days=90">90 days</a>');
+    expect(page).toContain("Days are UTC");
+    expect(page).not.toContain("<select");
+  });
+
+  it("charts the project the sidebar picker is set to", async () => {
     dashboard = await startDashboard();
     shipped(dashboard.h, "octo/app", 1);
     shipped(dashboard.h, "octo/lib", 2);
+    shipped(dashboard.h, "octo/lib", 3);
 
-    const { html } = await dashboard.get("/analytics?project=octo%2Flib&days=7");
+    const response = await fetch(`${dashboard.base}/analytics?project=octo%2Flib`, {
+      headers: { cookie: `${dashboard.cookie}; ${PROJECT_COOKIE}=octo%2Fapp` },
+    });
+    const page = main(await response.text());
 
-    expect(html).toContain('<option value="octo/lib" selected>');
-    expect(html).toMatch(/<span class="num">1<\/span><span class="meta">PRs<\/span>/);
-    expect(html).toContain("Last 7 days");
+    expect(page).toContain("<li><b>1</b><span>PRs</span></li>");
+  });
+
+  it("does not reload itself", async () => {
+    dashboard = await startDashboard();
+
+    expect((await dashboard.get("/analytics")).html).not.toContain('http-equiv="refresh"');
   });
 
   it("says when there is nothing to chart", async () => {
     dashboard = await startDashboard();
 
-    const { html } = await dashboard.get("/analytics");
+    const page = main((await dashboard.get("/analytics")).html);
 
-    expect(html).toContain("Nothing to chart yet.");
-    expect(html).not.toContain('<svg class="plot"');
+    expect(page).toContain(
+      '<p class="empty">Nothing to chart yet. Charts fill in as tasks open PRs, merge, and finish.</p>',
+    );
+    expect(page).toContain('aria-label="Period"');
+    expect(page).not.toContain('role="img"');
+    expect(page).not.toContain('class="totals"');
   });
 
   it("shows the store error banner when the store cannot be read", async () => {
     dashboard = await startDashboard();
     dashboard.h.db.close();
 
-    const { status, html } = await dashboard.get("/analytics");
+    const { status, html } = await dashboard.get("/analytics?days=7");
+    const page = main(html);
 
     expect(status).toBe(200);
-    expect(html).toContain("Hephaestus could not read its store");
-    expect(html).not.toContain('<svg class="plot"');
-  });
-
-  it("disables the filters on a store error and keeps them in Try again", async () => {
-    dashboard = await startDashboard();
-    dashboard.h.db.close();
-
-    const { html } = await dashboard.get("/analytics?project=octo%2Fapp&days=7");
-
-    expect(html).toContain('<select id="project" name="project" disabled>');
-    expect(html).toContain('<select id="days" name="days" disabled>');
-    expect(html).toContain('href="/analytics?project=octo%2Fapp&amp;days=7">Try again</a>');
+    expect(page).toContain("Hephaestus could not read its store");
+    expect(page).toContain("The numbers could not be read.");
+    expect(page).toContain('<a href="/analytics?days=7" aria-current="true">7 days</a>');
+    expect(page).not.toContain('role="img"');
   });
 });

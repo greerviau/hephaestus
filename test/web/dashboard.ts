@@ -10,8 +10,9 @@ import { createDashboardServer } from "../../src/server.js";
 import { openStore } from "../../src/store.js";
 import type { Environments } from "../../src/t3/adapter.js";
 import type { WorkerView } from "../../src/workers/manager.js";
-import type { EnvironmentSource } from "../../src/web/environments.js";
+import { workersRoutes, type EnvironmentSource } from "../../src/web/workers.js";
 import { dashboardRoutes } from "../../src/web/dashboard.js";
+import { shellSource } from "../../src/web/shell.js";
 import type { Deploy } from "../../src/web/settings.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { SHA, harness, pr, type Harness } from "../factory/harness.js";
@@ -80,28 +81,38 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   const sessions = openStore(":memory:");
   writePasswordHash(sessions, hashPassword(PASSWORD));
   const workers = options.workers;
+  let configRepo = options.configRepo;
+  const factory: FactoryPages = {
+    cards: h.cards,
+    intake: h.intake,
+    pipeline: h.pipeline,
+    events: h.events,
+    mcp,
+    store,
+    analytics: (query) => analytics(h.db, { ...query, now: new Date(NOW) }),
+    ...(workers === undefined ? {} : { workers: { views: () => workers } }),
+    environments: options.environments ?? { environments: () => Promise.resolve(linked()) },
+    ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
+    ...(options.github === undefined ? {} : { github: options.github }),
+    configRepo: () => configRepo,
+    setConfigRepo: (slug) => {
+      configRepo = slug;
+    },
+    ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
+    ...(options.model === undefined ? {} : { model: options.model }),
+    hermesModel: () => options.hermesModel,
+    now: () => NOW,
+    t3WaitMs: options.t3WaitMs ?? 1000,
+  };
   const server: Server = createDashboardServer({
     db: sessions,
     instanceId: "test",
-    routes: dashboardRoutes({
-      cards: h.cards,
-      intake: h.intake,
-      pipeline: h.pipeline,
-      events: h.events,
-      mcp,
-      store,
-      analytics: (query) => analytics(h.db, { ...query, now: new Date(NOW) }),
-      ...(workers === undefined ? {} : { workers: { views: () => workers } }),
-      environments: options.environments ?? { environments: () => Promise.resolve(linked()) },
-      ...(options.deploy === undefined ? {} : { deploy: options.deploy }),
-      ...(options.github === undefined ? {} : { github: options.github }),
-      configRepo: () => options.configRepo,
-      ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
-      ...(options.model === undefined ? {} : { model: options.model }),
-      hermesModel: () => options.hermesModel,
-      now: () => NOW,
-      t3WaitMs: options.t3WaitMs ?? 1000,
-    }),
+    shell: shellSource(factory),
+    routes: [
+      ...dashboardRoutes(factory),
+      // Without worker setup, which needs a real manager; the Workers tests cover that.
+      ...workersRoutes(factory.environments, () => NOW, undefined, options.t3WaitMs ?? 1000),
+    ],
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const base = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`;

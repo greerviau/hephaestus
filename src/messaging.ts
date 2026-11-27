@@ -100,6 +100,18 @@ export interface ExtraAlert {
   quiet?: boolean;
 }
 
+/** A chat alert for each proposal that waits for the owner, naming the page that approves it. */
+export function proposalAlerts(
+  versions: readonly { id: number; author: string; state: string }[],
+): ExtraAlert[] {
+  return versions
+    .filter((version) => version.author === "improver" && version.state === "draft")
+    .map((version) => ({
+      key: `proposal-${String(version.id)}`,
+      text: `Config version ${String(version.id)} is proposed and waits for your approval on Proposals.`,
+    }));
+}
+
 export interface MessagingOptions {
   /** The factory Hermes root, whose profiles hold the chat's credentials. */
   root: string;

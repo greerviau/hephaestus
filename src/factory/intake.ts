@@ -283,7 +283,7 @@ export class Intake {
     }
   }
 
-  /** The owner's approval on the Work items page: the issue is admitted whatever the cap. */
+  /** The owner's approval on Work: the issue is admitted whatever the cap. */
   approve(repo: string, number: number): Promise<Card> {
     return this.serial(async () => {
       const issue = this.issue(repo, number);

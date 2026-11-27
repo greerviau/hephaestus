@@ -82,7 +82,7 @@ export class FactoryProfiles {
    * A profile has its own config.yaml, and a role without a model cannot run.
    * A profile that names no model gets the root's model and provider, for a
    * root the owner set with `hermes model` on the host; one already configured,
-   * for example from the Model page, is left alone.
+   * for example from the planning model page, is left alone.
    */
   private async inheritModel(role: RoleName, profileDir: string): Promise<void> {
     const read = (path: string): string => (existsSync(path) ? readFileSync(path, "utf8") : "");

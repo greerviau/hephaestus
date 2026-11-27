@@ -17,6 +17,31 @@ function problems(value: unknown): string[] {
   return [];
 }
 
+describe("skill files", () => {
+  it("refuses a file whose path needs another file to be a folder", () => {
+    const config = sampleConfig();
+    config.skills.triage = { "SKILL.md": "x", "SKILL.md/notes.md": "y", "a/b/c.md": "z", a: "w" };
+
+    expect(problems(config)).toEqual([
+      'skills.triage."SKILL.md/notes.md" is inside "SKILL.md", which is a file, not a folder',
+      'skills.triage."a/b/c.md" is inside "a", which is a file, not a folder',
+    ]);
+  });
+
+  it("accepts files side by side in a folder, and names that only start alike", () => {
+    const config = sampleConfig();
+    config.skills.triage = {
+      "SKILL.md": "x",
+      "examples/good.md": "y",
+      "examples/bad.md": "z",
+      "examples-old/a.md": "w",
+      example: "v",
+    };
+
+    expect(problems(config)).toEqual([]);
+  });
+});
+
 describe("factory settings", () => {
   it("fills in the defaults for a config without them", () => {
     const rest: Partial<ReturnType<typeof sampleConfig>> = sampleConfig();

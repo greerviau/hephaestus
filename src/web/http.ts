@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import type { Shell } from "./html.js";
 
 export const HTML = "text/html; charset=utf-8";
 
@@ -47,13 +48,33 @@ export async function readBody(
   return Buffer.concat(chunks).toString("utf8");
 }
 
+/** The value of the request cookie `name`, still encoded, or undefined when it was not sent. */
+export function cookie(
+  request: Pick<IncomingMessage, "headers">,
+  name: string,
+): string | undefined {
+  for (const part of (request.headers.cookie ?? "").split(";")) {
+    const [key, ...value] = part.trim().split("=");
+    if (key === name) return value.join("=");
+  }
+  return undefined;
+}
+
 export interface RouteContext {
   request: IncomingMessage;
   response: ServerResponse;
   /** Capture groups from the route's path pattern. */
   params: string[];
   url: URL;
+  /**
+   * What the sidebar shows; pass it to `layout`. It is read from the store
+   * when first asked for. Undefined when the server was given no source.
+   */
+  readonly shell: Shell | undefined;
 }
+
+/** Reads what the sidebar shows for one request. */
+export type ShellSource = (request: IncomingMessage, url: URL) => Shell;
 
 /** A dashboard route. Every route sits behind the session check. */
 export interface Route {

@@ -103,6 +103,20 @@ export type GateDecision =
   | { action: "wait"; reason: string }
   | { action: "escalate"; to: "lead" | "owner"; reason: string };
 
+/**
+ * How each reason the gate gives for an escalation that follows the checks
+ * starts. The gate reaches these only once the head commit's checks passed,
+ * or none ran in a project whose policy allows that, so a page can tell from
+ * a stored reason that the checks no longer hold the merge back.
+ */
+export const PAST_CHECKS = {
+  noReview: "no approving review from a different provider for the head commit",
+  filesIncomplete: "the PR changes more files than GitHub lists",
+  escalationPath: "the PR touches an escalation path",
+  ownerApproves: "the policy has the owner approve every merge",
+  noAutoMerge: "the policy does not allow auto-merge",
+} as const;
+
 /** Decides, in code, whether Hephaestus may merge a PR now. */
 export function decideMerge(input: GateInput): GateDecision {
   const { policy } = input;
@@ -129,7 +143,7 @@ export function decideMerge(input: GateInput): GateDecision {
     return {
       action: "escalate",
       to: "lead",
-      reason: "no approving review from a different provider for the head commit",
+      reason: PAST_CHECKS.noReview,
     };
   }
   if (input.ownerApprovedAtHead) return { action: "merge" };
@@ -137,8 +151,7 @@ export function decideMerge(input: GateInput): GateDecision {
     return {
       action: "escalate",
       to: "owner",
-      reason:
-        "the PR changes more files than GitHub lists, so its escalation paths cannot be checked",
+      reason: `${PAST_CHECKS.filesIncomplete}, so its escalation paths cannot be checked`,
     };
   }
   const touched = input.files.filter((file) =>
@@ -148,18 +161,18 @@ export function decideMerge(input: GateInput): GateDecision {
     return {
       action: "escalate",
       to: "owner",
-      reason: `the PR touches an escalation path: ${touched.join(", ")}`,
+      reason: `${PAST_CHECKS.escalationPath}: ${touched.join(", ")}`,
     };
   }
   if (policy.ownerApprovesEveryMerge) {
     return {
       action: "escalate",
       to: "owner",
-      reason: "the policy has the owner approve every merge",
+      reason: PAST_CHECKS.ownerApproves,
     };
   }
   if (!policy.autoMerge) {
-    return { action: "escalate", to: "owner", reason: "the policy does not allow auto-merge" };
+    return { action: "escalate", to: "owner", reason: PAST_CHECKS.noAutoMerge };
   }
   return { action: "merge" };
 }
