@@ -496,6 +496,94 @@ describe("Issue actions", () => {
   });
 });
 
+describe("A slow admission", () => {
+  /** Holds GitHub's issue read until the test opens it, so the admission stays in flight. */
+  function holdIssueRead(h: Harness): { open: () => void; fail: () => void } {
+    const read = h.github.issue.bind(h.github);
+    let open: () => void = () => undefined;
+    let fail: () => void = () => undefined;
+    const held = new Promise<void>((resolve, reject) => {
+      open = resolve;
+      fail = () => {
+        reject(new Error("HTTP 502 token=ghp_secret"));
+      };
+    });
+    h.github.issue = (repo, number) => held.then(() => read(repo, number));
+    return { open, fail };
+  }
+
+  it("answers at once and shows the issue as admitting, with no buttons to press again", async () => {
+    dashboard = await startDashboard({ admitWaitMs: 0 });
+    await externalIssue(dashboard.h);
+    const github = holdIssueRead(dashboard.h);
+
+    const response = await dashboard.post("/work/issues/admit", {
+      repo: "octo/app",
+      number: "42",
+      back: "/",
+    });
+
+    expect(response.headers.get("location")).toBe("/?notice=admitting");
+    const { html } = await dashboard.get("/?notice=admitting");
+    expect(html).toContain("Admitting the issue");
+    expect(html).toContain("Admitting #42");
+    expect(html).not.toContain('action="/work/issues/admit"');
+    expect(html).not.toContain('action="/work/issues/reject"');
+    expect(dashboard.h.intake.issue("octo/app", 42)?.state).toBe("awaiting-owner");
+
+    github.open();
+    await dashboard.admissionsSettled();
+    expect(dashboard.h.intake.issue("octo/app", 42)?.state).toBe("admitted");
+    expect((await dashboard.get("/")).html).not.toContain("Admitting #42");
+  });
+
+  it("makes one task when Admit is sent twice while it runs", async () => {
+    dashboard = await startDashboard({ admitWaitMs: 0 });
+    await externalIssue(dashboard.h);
+    const github = holdIssueRead(dashboard.h);
+    const fields = { repo: "octo/app", number: "42", back: "/work?tab=needs" };
+
+    await dashboard.post("/work/issues/admit", fields);
+    const again = await dashboard.post("/work/issues/admit", fields);
+    github.open();
+    await dashboard.admissionsSettled();
+
+    expect(again.headers.get("location")).toBe("/work?tab=needs&notice=admitting");
+    expect(dashboard.h.tasks.list().filter((task) => task.issueNumber === 42)).toHaveLength(1);
+  });
+
+  it("shows a failure on the issue and offers Admit again, without GitHub's error text", async () => {
+    dashboard = await startDashboard({ admitWaitMs: 0 });
+    await externalIssue(dashboard.h);
+    const github = holdIssueRead(dashboard.h);
+
+    await dashboard.post("/work/issues/admit", { repo: "octo/app", number: "42", back: "/" });
+    github.fail();
+    await dashboard.admissionsSettled();
+    const { html } = await dashboard.get("/work?tab=needs");
+
+    expect(html).toContain("Admitting #42 failed");
+    expect(html).toContain('action="/work/issues/admit"');
+    expect(html).not.toMatch(/<button type="submit"[^>]*disabled[^>]*>Admit</);
+    expect(html).not.toContain("ghp_secret");
+  });
+
+  it("refuses at once an issue that no longer waits for the owner", async () => {
+    dashboard = await startDashboard({ admitWaitMs: 0 });
+    await externalIssue(dashboard.h);
+    await dashboard.post("/work/issues/reject", { repo: "octo/app", number: "42" });
+
+    const response = await dashboard.post("/work/issues/admit", {
+      repo: "octo/app",
+      number: "42",
+      back: "/work",
+    });
+
+    expect(response.headers.get("location")).toBe("/work?notice=admit-failed");
+    expect(dashboard.h.intake.issue("octo/app", 42)?.state).toBe("rejected");
+  });
+});
+
 describe("Request work", () => {
   it("is a form on its own page that does not reload", async () => {
     dashboard = await startDashboard();

@@ -31,6 +31,8 @@ import {
 } from "./html.js";
 import { readBody, redirect, type Route, type RouteContext } from "./http.js";
 import type { BackgroundDeploys } from "./deploys.js";
+import { setTimeout as delay } from "node:timers/promises";
+import { ADMIT_WAIT_MS, admissionsFor, type AdmissionState } from "./admissions.js";
 
 /** What the factory pages read and act on. */
 export interface FactoryPages {
@@ -41,7 +43,7 @@ export interface FactoryPages {
   /** Whether an update holds the update lock now. Cheap enough to ask on every page. */
   updating?: () => boolean;
   tasks: TaskStore;
-  intake: Pick<Intake, "issues" | "approve" | "reject" | "fileIssue">;
+  intake: Pick<Intake, "issue" | "issues" | "approve" | "reject" | "fileIssue">;
   pipeline: Pick<
     Pipeline,
     | "paused"
@@ -91,6 +93,8 @@ export interface FactoryPages {
   now?: () => number;
   /** How long a page waits for T3 before it shows that section as loading. */
   t3WaitMs?: number;
+  /** How long Admit waits for the admission before it answers and lets it finish in the background. */
+  admitWaitMs?: number;
 }
 
 /** Stages in the order work moves through them. */
@@ -292,20 +296,32 @@ export function escalationActions(item: Task, back: string): string {
   return primary + menu(rest);
 }
 
-/** An issue that waits for the owner, as a list row: its number and title link to GitHub, with its repo and why it waits underneath. */
-export function heldIssueRow(issue: TrackedIssue, back: string): Row {
+/**
+ * An issue that waits for the owner, as a list row: its number and title link to GitHub, with its
+ * repo and why it waits underneath. `admission` is where an Admit the owner sent stands.
+ */
+export function heldIssueRow(issue: TrackedIssue, back: string, admission?: AdmissionState): Row {
   const label = `#${String(issue.number)} ${issue.title}`;
+  const failed =
+    admission === "failed"
+      ? `<br>${statusText("bad", `Admitting #${String(issue.number)} failed`)} The service log has the error.`
+      : "";
   return {
     kind: "issue",
     title: label,
     titleHtml: externalLink(issueUrl(issue.repo, issue.number), label),
-    sub: `${escapeHtml(issue.repo)} &middot; ${escapeHtml(issueWhy(issue))}`,
-    aside: issueActions(issue, back),
+    sub: `${escapeHtml(issue.repo)} &middot; ${escapeHtml(issueWhy(issue))}${failed}`,
+    aside: issueActions(issue, back, admission),
   };
 }
 
-/** The buttons that admit or reject an issue that waits for the owner. */
-export function issueActions(issue: TrackedIssue, back: string): string {
+/** The buttons that admit or reject an issue that waits for the owner; none while an admission runs. */
+export function issueActions(
+  issue: TrackedIssue,
+  back: string,
+  admission?: AdmissionState,
+): string {
+  if (admission === "admitting") return statusText("run", `Admitting #${String(issue.number)}`);
   const fields = { repo: issue.repo, number: String(issue.number), back };
   return (
     postButton("/work/issues/admit", "Admit", { fields, variant: "primary" }) +
@@ -404,6 +420,11 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     text: "Its stage no longer allows it. The page shows its current state.",
   },
   admitted: { kind: "info", title: "Issue admitted", text: "It has a task now." },
+  admitting: {
+    kind: "info",
+    title: "Admitting the issue",
+    text: "It gets a task in a moment. Until then the page shows it as admitting.",
+  },
   "admit-failed": {
     kind: "err",
     title: "The issue was not admitted",
@@ -540,6 +561,47 @@ async function act(
   redirect(context.response, withNotice(back, done));
 }
 
+function issueFields(fields: URLSearchParams): { repo: string; number: number } {
+  const repo = text(fields, "repo");
+  const number = Number(text(fields, "number"));
+  if (!Number.isInteger(number)) throw new Error("The issue number is not a number.");
+  return { repo, number };
+}
+
+/**
+ * Admits an issue for the owner. Admission reads GitHub and the Hermes board,
+ * so the request waits only a moment for it: one that ends by then says how,
+ * and a slower one goes on in the background while the pages show the issue
+ * as admitting. An issue that no longer waits for the owner is refused at once.
+ */
+async function admitIssue(context: RouteContext, factory: FactoryPages): Promise<void> {
+  const fields = await form(context);
+  if (fields === undefined) {
+    redirect(context.response, withNotice("/work", "too-large"));
+    return;
+  }
+  const back = backTo(fields.get("back"), "/work");
+  let notice: NoticeKey;
+  try {
+    const { repo, number } = issueFields(fields);
+    const issue = factory.intake.issue(repo, number);
+    if (issue === undefined || issue.state === "rejected") {
+      throw new Error(`${repo}#${String(number)} is not waiting for you.`);
+    }
+    const admissions = admissionsFor(factory.intake);
+    const ended = await Promise.race([
+      admissions.start(repo, number),
+      delay(factory.admitWaitMs ?? ADMIT_WAIT_MS),
+    ]);
+    // A failure the notice reports needs no second word on the row.
+    if (ended === false) admissions.forget(repo, number);
+    notice = ended === undefined ? "admitting" : ended ? "admitted" : "admit-failed";
+  } catch (error) {
+    notice = failureNotice(error, "admit-failed");
+  }
+  redirect(context.response, withNotice(back, notice));
+}
+
 function text(fields: URLSearchParams, name: string): string {
   const value = fields.get(name)?.trim() ?? "";
   if (value === "") throw new Error(`The ${name} is empty.`);
@@ -592,23 +654,23 @@ export function factoryActionRoutes(factory: FactoryPages): Route[] {
     },
     {
       method: "POST",
-      path: /^\/work\/issues\/(admit|reject)$/,
-      handle: (context) => {
-        const admit = context.params[0] === "admit";
-        return act(
+      path: /^\/work\/issues\/admit$/,
+      handle: (context) => admitIssue(context, factory),
+    },
+    {
+      method: "POST",
+      path: /^\/work\/issues\/reject$/,
+      handle: (context) =>
+        act(
           context,
           "/work",
           async (fields) => {
-            const repo = text(fields, "repo");
-            const number = Number(text(fields, "number"));
-            if (!Number.isInteger(number)) throw new Error("The issue number is not a number.");
-            if (admit) await intake.approve(repo, number);
-            else await intake.reject(repo, number);
+            const { repo, number } = issueFields(fields);
+            await intake.reject(repo, number);
           },
-          admit ? "admitted" : "rejected",
-          admit ? "admit-failed" : "action-failed",
-        );
-      },
+          "rejected",
+          "action-failed",
+        ),
     },
     {
       method: "POST",

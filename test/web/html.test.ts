@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { PENDING_SCRIPT_TAG } from "../../src/web/pending.js";
 import {
   buttonLink,
   callout,
@@ -209,9 +210,11 @@ describe("layout", () => {
     expect(html).toContain(
       'popovertarget="side" popovertargetaction="hide" aria-label="Close menu"',
     );
-    // The only script is the project picker's, which the menu does not need.
+    // The only scripts are the project picker's and the pending buttons', which the menu does not need.
     expect(
-      html.replace('<script src="/assets/project-filter.js" defer></script>', ""),
+      html
+        .replace('<script src="/assets/project-filter.js" defer></script>', "")
+        .replace(PENDING_SCRIPT_TAG, ""),
     ).not.toContain("<script");
   });
 

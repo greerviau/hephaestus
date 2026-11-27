@@ -1,6 +1,7 @@
 import { ICON_LINKS, LOGO_PATH } from "./brand.js";
 import type { DeployStatus } from "./deploys.js";
 import { LIVE_SCRIPT_PATH } from "./live.js";
+import { PENDING_SCRIPT_TAG } from "./pending.js";
 import { PROJECT_FILTER_SCRIPT_TAG } from "./project-filter.js";
 
 const ESCAPES: Record<string, string> = {
@@ -54,6 +55,7 @@ export function page(
 ${refreshSeconds === undefined ? "" : refreshTags(refreshSeconds, refreshUrl)}<title>${escapeHtml(title)} - Hephaestus</title>
 <link rel="stylesheet" href="${STYLESHEET_PATH}">
 ${ICON_LINKS}
+${PENDING_SCRIPT_TAG}
 </head>
 <body>
 ${body}

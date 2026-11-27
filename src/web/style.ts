@@ -106,6 +106,11 @@ button:active, .btn:active { opacity: 0.75; }
 .link { border: 0; padding: 0 2px; min-height: 24px; color: var(--accent); font-weight: 400; }
 .link:hover { text-decoration: underline; text-underline-offset: 3px; }
 button[disabled] { opacity: 0.5; cursor: not-allowed; }
+/* A pressed button whose form is on its way to the server: it stays readable and turns a ring beside its label. */
+button[aria-disabled="true"] { cursor: progress; }
+button.pending, button.pending[disabled] { opacity: 0.8; cursor: progress; }
+button.pending::after { content: ""; display: inline-block; width: 0.8em; height: 0.8em; margin-left: 8px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; vertical-align: -0.1em; animation: spin 0.8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 .icon-btn { min-width: 32px; padding: 4px; }
 form.inline { display: inline-flex; margin: 0; }
 
