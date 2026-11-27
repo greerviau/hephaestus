@@ -47,6 +47,7 @@ export const SHIPPED_PARAGRAPHS: readonly string[] = [
   "e0b4fceafa83474c5535059c9a33ee749aa60a4c7a01e49d47771af5af950491",
   "5b2aaa032866f2b8e9938df5ecfabd007a492cf1181ce46197b3d9f120ffc4ae",
   "c5a6ff372d8608f5be15e1232f59f9b6640641a1d1ae2af256ae5ec27c8f705f",
+  "3fccfcfc5567840b8f55477ca9c0edb454216c50b9264cbad60d6042294c1c57",
 ];
 
 /**

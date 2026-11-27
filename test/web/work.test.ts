@@ -1538,3 +1538,175 @@ describe("Thread transcript", () => {
     expect((await dashboard.get("/threads/w1/%E0%A4%A")).status).toBe(404);
   });
 });
+
+/** A task whose engineer had a question, handed to the owner, with PR 5 open on its branch. */
+function questionTask(h: Harness): number {
+  const id = h.tasks.create({ repo: "octo/app", issueNumber: 13, title: "Pick a format" }).id;
+  h.tasks.transition(id, "Queued", "the lead queued the work");
+  h.tasks.transition(id, "Implementing", "work started", {
+    workerEnv: "w1",
+    implementer: "claude",
+    implementThread: "t-q",
+    branch: "factory/0123abcd-task-1",
+    startedAt: new Date(Date.parse("2026-11-25T11:00:00Z")).toISOString(),
+    prNumber: 5,
+    headSha: SHA,
+  });
+  h.tasks.transition(id, "Escalated", "to the owner: Which format?", {
+    escalatedTo: "owner",
+    reason: "Which format?",
+    ownerQuestion: true,
+  });
+  h.github.prs.set(5, pr(5, SHA));
+  return id;
+}
+
+describe("Park", () => {
+  it("is offered for a task that waits on your answer, and not for a merge to approve", async () => {
+    dashboard = await startDashboard();
+    const question = questionTask(dashboard.h);
+    const merge = escalatedTask(dashboard.h);
+
+    const { html } = await dashboard.get("/work?tab=needs");
+
+    expect(html).toContain(`href="/work/${String(question)}/park?back=`);
+    expect(html).not.toContain(`href="/work/${String(merge)}/park?back=`);
+    const page = await dashboard.get(`/work/${String(question)}`);
+    expect(page.html).toContain(`href="/work/${String(question)}/park?back=`);
+  });
+
+  it("is a form on its own page, with a re-alert time that defaults to a day and an optional note", async () => {
+    dashboard = await startDashboard();
+    const task = questionTask(dashboard.h);
+    const id = String(task);
+
+    const { status, html } = await dashboard.get(`/work/${id}/park?back=%2Fwork%3Ftab%3Dneeds`);
+
+    expect(status).toBe(200);
+    expect(html).toContain('<h1 id="page-title">Park task</h1>');
+    expect(html).toContain(`action="/work/${id}/park"`);
+    expect(html).toContain(`name="version" value="${String(dashboard.h.tasks.get(task).version)}"`);
+    expect(html).toMatch(/<option value="24" selected>/);
+    expect(html).toContain('<option value="168"');
+    expect(html).toContain('id="note" name="note"');
+    expect(html).not.toContain('http-equiv="refresh"');
+  });
+
+  it("says why a task that waits for a merge approval cannot be parked", async () => {
+    dashboard = await startDashboard();
+    const task = escalatedTask(dashboard.h);
+
+    const { status, html } = await dashboard.get(`/work/${String(task)}/park`);
+
+    expect(status).toBe(200);
+    expect(html).toContain("This task cannot be parked");
+    expect(html).toContain("it waits for you to approve a merge");
+    expect(main(html)).not.toContain("<select");
+  });
+
+  it("parks the task, which then shows under Parked and not under Needs you or In progress", async () => {
+    dashboard = await startDashboard();
+    const task = questionTask(dashboard.h);
+    const id = String(task);
+
+    const response = await dashboard.post(`/work/${id}/park`, {
+      hours: "4",
+      note: "Asking the team",
+      version: String(dashboard.h.tasks.get(task).version),
+      back: "/work?tab=needs",
+    });
+
+    expect(response.headers.get("location")).toBe("/work?tab=needs&notice=parked");
+    expect(dashboard.h.tasks.get(task)).toMatchObject({
+      stage: "Parked",
+      prNumber: 5,
+      deferUntil: "2026-11-25T16:00:00.000Z",
+    });
+    const needs = await dashboard.get("/work?tab=needs&notice=parked");
+    expect(needs.html).toContain("Task parked");
+    expect(needs.html).toContain(
+      '<a href="/work?tab=needs" aria-current="page">Needs you<span class="n">0</span></a>',
+    );
+    expect(needs.html).toContain('<a href="/work?tab=parked">Parked<span class="n">1</span></a>');
+    const active = await dashboard.get("/work");
+    expect(main(active.html)).not.toContain(`href="/work/${id}"`);
+    const parked = await dashboard.get("/work?tab=parked");
+    expect(main(parked.html)).toContain(`href="/work/${id}"`);
+    expect(parked.html).toContain("Comes back to you at 2026-11-25 16:00 UTC: Which format?");
+  });
+
+  it("refuses a re-alert time it does not offer, and keeps the note", async () => {
+    dashboard = await startDashboard();
+    const task = questionTask(dashboard.h);
+
+    const response = await dashboard.post(`/work/${String(task)}/park`, {
+      hours: "9999",
+      note: "Asking the team",
+      version: String(dashboard.h.tasks.get(task).version),
+    });
+    const html = await response.text();
+
+    expect(response.status).toBe(422);
+    expect(html).toContain('id="hours-err" role="alert"');
+    expect(html).toContain("Asking the team");
+    expect(dashboard.h.tasks.get(task).stage).toBe("Escalated");
+  });
+
+  it("shows a parked task with when it comes back, Resume, and Abandon", async () => {
+    dashboard = await startDashboard();
+    const task = questionTask(dashboard.h);
+    await dashboard.h.pipeline.park(task, { hours: 24 });
+    const id = String(task);
+
+    const { html } = await dashboard.get(`/work/${id}`);
+
+    expect(html).toContain("Parked");
+    expect(html).toContain("Comes back to you at 2026-11-26 12:00 UTC: Which format?");
+    expect(html).toContain(`href="/work/${id}/unpark?back=`);
+    expect(html).toContain(`href="/work/${id}/abandon?back=`);
+    expect(html).toContain("factory/0123abcd-task-1");
+  });
+
+  it("resumes a parked task with your answer, and asks for one when it is empty", async () => {
+    dashboard = await startDashboard();
+    const task = questionTask(dashboard.h);
+    await dashboard.h.pipeline.park(task, {});
+    const id = String(task);
+    const form = await dashboard.get(`/work/${id}/unpark`);
+    expect(form.html).toContain('<h1 id="page-title">Resume task</h1>');
+    expect(form.html).toContain('<textarea id="answer" name="answer"');
+
+    const empty = await dashboard.post(`/work/${id}/unpark`, {
+      answer: " ",
+      version: String(dashboard.h.tasks.get(task).version),
+    });
+    expect(empty.status).toBe(422);
+    expect(await empty.text()).toContain('id="answer-err" role="alert"');
+
+    const response = await dashboard.post(`/work/${id}/unpark`, {
+      answer: "Use JSON.",
+      version: String(dashboard.h.tasks.get(task).version),
+      back: `/work/${id}`,
+    });
+
+    expect(response.headers.get("location")).toBe(`/work/${id}?notice=unparked`);
+    expect(dashboard.h.tasks.get(task)).toMatchObject({ stage: "Implementing", prNumber: 5 });
+    expect(dashboard.h.t3.sends.at(-1)?.message).toContain("Use JSON.");
+  });
+
+  it("abandons a parked task", async () => {
+    dashboard = await startDashboard();
+    const task = questionTask(dashboard.h);
+    await dashboard.h.pipeline.park(task, {});
+    const id = String(task);
+
+    const response = await dashboard.post(`/work/${id}/abandon`, {
+      reason: "not needed",
+      version: String(dashboard.h.tasks.get(task).version),
+      back: `/work/${id}`,
+    });
+
+    expect(response.headers.get("location")).toBe(`/work/${id}?notice=abandoned`);
+    expect(dashboard.h.tasks.get(task).stage).toBe("Abandoned");
+  });
+});

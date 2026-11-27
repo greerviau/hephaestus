@@ -381,6 +381,16 @@ const MIGRATIONS: Migration[] = [
      created_at TEXT NOT NULL,
      PRIMARY KEY (repo, title)
    );`,
+  // A parked task's re-alert time, and whether an escalation to the owner asks for their answer,
+  // which is what can be parked. An escalation from before is taken as a question when the lead
+  // handed it on, or when it came from a hold on the board.
+  `ALTER TABLE tasks ADD COLUMN defer_until TEXT;
+   ALTER TABLE tasks ADD COLUMN owner_question INTEGER NOT NULL DEFAULT 0;
+   UPDATE tasks SET owner_question = 1
+   WHERE stage = 'Escalated' AND escalated_to = 'owner' AND owner_action IS NULL AND reverting = 0
+     AND (reason LIKE 'It was put on hold on the Hermes board%'
+          OR (SELECT kind FROM task_events WHERE task_id = tasks.id
+              AND kind IN ('escalated:owner', 'stage:Escalated') ORDER BY id DESC LIMIT 1) = 'escalated:owner');`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */

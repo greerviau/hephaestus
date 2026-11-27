@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Fetch } from "../src/discord.js";
-import { TaskStore, MERGE_CONFLICT_DETAIL } from "../src/factory/tasks.js";
+import { TaskStore, MERGE_CONFLICT_DETAIL, UNPARKED_DETAIL } from "../src/factory/tasks.js";
 import { RequestThreads, milestone, trackingLine } from "../src/request-threads.js";
 import { openStore } from "../src/store.js";
 
@@ -333,6 +333,34 @@ describe("milestone", () => {
   });
 });
 
+describe("milestone, parking", () => {
+  it("says when a parked task comes back, and that work goes on after the owner's answer", () => {
+    const store = new TaskStore(openStore(":memory:"));
+    const id = store.create({ repo: "octo/app", issueNumber: 7, title: "x" }).id;
+    const task = store.get(id);
+    expect(
+      milestone(
+        {
+          id: 1,
+          taskId: id,
+          at: "",
+          kind: "stage:Parked",
+          detail: "parked until 2026-11-26 12:00 UTC: asking: the team",
+        },
+        task,
+        "",
+      ),
+    ).toBe("Set aside. It comes back to you at 2026-11-26 12:00 UTC.");
+    expect(
+      milestone(
+        { id: 2, taskId: id, at: "", kind: "stage:Implementing", detail: UNPARKED_DETAIL },
+        task,
+        "",
+      ),
+    ).toBe("Work goes on with your answer.");
+  });
+});
+
 describe("RequestThreads, linked late", () => {
   it("does not repeat in a milestone what the catch-up already said, and attaches waiting evidence", async () => {
     const id = task();
@@ -427,6 +455,17 @@ describe("RequestThreads, catch-up text", () => {
     );
     expect(texts[2]).toMatch(
       /^Following octo\/app#23: it needs you: y{300} \(cut short; the task page has it all\)\. http:\/\/host:7700\/work\/\d+ Progress/,
+    );
+
+    const parked = task(25);
+    tasks.transition(parked, "Escalated", "to the owner: x", {
+      escalatedTo: "owner",
+      reason: "Which format?",
+    });
+    tasks.transition(parked, "Parked", "parked", { deferUntil: "2026-11-26T12:00:00.000Z" });
+    await threads.follow("octo/app", 25, { platform: "discord", chat: THREAD });
+    expect(posts.at(-1)?.text).toBe(
+      "Following octo/app#25: it is set aside until 2026-11-26 12:00 UTC, when it comes back to you: Which format. Progress shows up here.",
     );
 
     const reverting = task(24);

@@ -29,8 +29,15 @@ function backToCardSchema(db: Database): void {
     CREATE INDEX card_events_by_card ON card_events (card_id, id);`);
 }
 
+/** Puts a current database back into the shape it had before tasks could be parked. */
+function backToBeforeParking(db: Database): void {
+  db.exec(`ALTER TABLE tasks DROP COLUMN defer_until;
+    ALTER TABLE tasks DROP COLUMN owner_question;`);
+}
+
 /** Puts a current database back into the shape it had before pending filings were kept. */
 function backToBeforePendingIssues(db: Database): void {
+  backToBeforeParking(db);
   db.exec("DROP TABLE pending_issues;");
 }
 
@@ -96,7 +103,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 19)}`);
+    db.pragma(`user_version = ${String(latest - 20)}`);
     db.close();
 
     db = openStore(path);
@@ -140,7 +147,7 @@ describe("store migrations", () => {
       INSERT INTO mcp_calls (role, tool, arguments, ok, result, at)
         VALUES ('lead', 'start_work', '{"card_id":8,"brief":"b"}', 1, '{"card_id":8,"stage":"Implementing"}', 'x'),
                ('lead', 'list_cards', '{}', 1, '[{"card_id":8,"title":"Rename the card"}]', 'x');`);
-    db.pragma(`user_version = ${String(latest - 6)}`);
+    db.pragma(`user_version = ${String(latest - 7)}`);
     db.close();
 
     db = openStore(path);
@@ -222,7 +229,7 @@ describe("store migrations", () => {
         INSERT INTO chat_changes (target, summary, conversation, state, after_text, proposed_at)
           VALUES ('persona:planner', 's', 'c', 'proposed', 'a', 'x'), ('instruction:factory', 's', 'c', 'proposed', 'a', 'x');`);
       backToBeforeQueue(db);
-      db.pragma(`user_version = ${String(latest - 4)}`);
+      db.pragma(`user_version = ${String(latest - 5)}`);
     };
     const expectRenamed = (): void => {
       expect(db.pragma("user_version", { simple: true })).toBe(latest);
@@ -257,7 +264,7 @@ describe("store migrations", () => {
     expectRenamed();
     // Run again over the renamed rows, as after a crash between the rename and the version bump.
     backToBeforeQueue(db);
-    db.pragma(`user_version = ${String(latest - 4)}`);
+    db.pragma(`user_version = ${String(latest - 5)}`);
     db.close();
     db = openStore(path);
     expectRenamed();
@@ -270,11 +277,47 @@ describe("store migrations", () => {
     let db = openStore(path);
     const latest = db.pragma("user_version", { simple: true }) as number;
     backToBeforePendingIssues(db);
-    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.pragma(`user_version = ${String(latest - 2)}`);
     db.close();
     db = openStore(path);
     expect(db.pragma("user_version", { simple: true })).toBe(latest);
     expect(db.prepare("SELECT COUNT(*) AS n FROM pending_issues").get()).toEqual({ n: 0 });
+    db.close();
+  });
+
+  it("takes an escalation to the owner from before parking as a question only when it was one", () => {
+    dir = mkdtempSync(join(tmpdir(), "hephaestus-store-"));
+    const path = join(dir, "state.db");
+    let db = openStore(path);
+    const latest = db.pragma("user_version", { simple: true }) as number;
+    backToBeforeParking(db);
+    db.exec(`INSERT INTO tasks (id, repo, title, stage, escalated_to, reason, owner_action, created_at, updated_at)
+      VALUES (1, 'octo/app', 'handed on', 'Escalated', 'owner', 'Which format?', NULL, 'x', 'x'),
+             (2, 'octo/app', 'held', 'Escalated', 'owner', 'It was put on hold on the Hermes board instead of being started', NULL, 'x', 'x'),
+             (3, 'octo/app', 'merge to approve', 'Escalated', 'owner', 'strict policy', 'merge', 'x', 'x'),
+             (4, 'octo/app', 'failed step', 'Escalated', 'owner', 'PR #5 comes from another repository', NULL, 'x', 'x'),
+             (5, 'octo/app', 'with the lead', 'Escalated', 'lead', 'Which format?', NULL, 'x', 'x');
+      INSERT INTO task_events (task_id, at, kind, detail)
+      VALUES (1, 'x', 'stage:Escalated', 'to the lead: the implement thread asked a question'),
+             (1, 'x', 'escalated:owner', 'Which format?'),
+             (3, 'x', 'escalated:owner', 'an earlier question'),
+             (3, 'x', 'stage:Escalated', 'to the owner: strict policy'),
+             (4, 'x', 'stage:Escalated', 'to the owner: PR #5 comes from another repository'),
+             (5, 'x', 'escalated:owner', 'Which format?');`);
+    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.close();
+
+    db = openStore(path);
+    expect(db.pragma("user_version", { simple: true })).toBe(latest);
+    expect(
+      db.prepare("SELECT id, owner_question, defer_until FROM tasks ORDER BY id").all(),
+    ).toEqual([
+      { id: 1, owner_question: 1, defer_until: null },
+      { id: 2, owner_question: 1, defer_until: null },
+      { id: 3, owner_question: 0, defer_until: null },
+      { id: 4, owner_question: 0, defer_until: null },
+      { id: 5, owner_question: 0, defer_until: null },
+    ]);
     db.close();
   });
 
@@ -297,7 +340,7 @@ describe("store migrations", () => {
       VALUES ('hephaestus-implement-3-0', 'w1', 'Task 3', 'p', 'm', 1, '3', 'pending', 'x', 'x'),
              ('hephaestus-implement-7-0', 'w1', 'Task 7', 'p', 'm', 1, '7', 'launched', 'x', 'x'),
              ('hephaestus-implement-8-0', 'w1', 'Task 8', 'p', 'm', 1, '8', 'failed', 'x', 'x');`);
-    db.pragma(`user_version = ${String(latest - 3)}`);
+    db.pragma(`user_version = ${String(latest - 4)}`);
     db.close();
 
     db = openStore(path);
@@ -369,7 +412,7 @@ describe("store migrations", () => {
     backToUntitledVersions(db);
     db.exec(`INSERT INTO config_versions (state, author, message, created_at, document)
       VALUES ('draft', 'improver', 'Tighten the review skill. It missed two failing tests.', 'x', '{}');`);
-    db.pragma(`user_version = ${String(latest - 2)}`);
+    db.pragma(`user_version = ${String(latest - 3)}`);
     db.close();
 
     db = openStore(path);

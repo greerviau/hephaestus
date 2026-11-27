@@ -14,6 +14,7 @@ import { utcMinute } from "../time.js";
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
+  UNPARKED_DETAIL,
   taskRef,
   evidenceRefFor,
   type Task,
@@ -103,6 +104,8 @@ const ACTIVE: readonly Stage[] = [
   "Merging",
   "Validating",
   "Reverting",
+  // Only for its re-alert time.
+  "Parked",
 ];
 const FACTORY_KINDS = ["implement", "review"];
 const FOREIGN_CHECK_MS = 5 * 60_000;
@@ -153,6 +156,35 @@ export const MERGE_STEP_REASONS = {
  * escalation after a merge.
  */
 export const VALIDATION_FAILED = "checks failed on the merge commit";
+
+/** How long a parked task waits to come back to the owner when they give no time. */
+export const DEFAULT_PARK_HOURS = 24;
+/** The longest a task can be parked for at once. */
+export const MAX_PARK_HOURS = 30 * 24;
+/** What a parked task is deferred for when the owner gives no note. */
+const PARKED_NOTE = "Set aside by the owner";
+
+/**
+ * Why the owner cannot park the task, or undefined when they can. Only a task escalated to the
+ * owner for their answer can wait: a merge to approve, a rollback, or a failure needs a decision.
+ * The text reaches chat, so it names no role.
+ */
+export function parkRefusal(task: Task): string | undefined {
+  const id = String(task.id);
+  if (task.stage !== "Escalated" || task.escalatedTo !== "owner") {
+    return `Task ${id} is ${task.stage === "Escalated" ? "being replanned" : task.stage}; only a task escalated to you can be parked.`;
+  }
+  if (task.ownerAction === "merge") {
+    return `Task ${id} cannot be parked: it waits for you to approve a merge. Approve it or abandon the task.`;
+  }
+  if (task.reverting || task.ownerAction === "revert-merge") {
+    return `Task ${id} cannot be parked: it is rolling back a merge whose checks failed, which cannot wait.`;
+  }
+  if (!task.ownerQuestion) {
+    return `Task ${id} cannot be parked: only a task that waits on your answer to a question can be, and this one was escalated because a step needs your decision.`;
+  }
+  return undefined;
+}
 
 /** The reason an escalation recorded, from the detail of its stage event. */
 export function escalationReason(detail: string): string {
@@ -761,9 +793,10 @@ export class Pipeline {
     });
   }
 
+  /** Hands the task to the owner for their answer, which is what lets them park it. */
   private async toOwner(task: Task, reason: string): Promise<void> {
     if (task.stage === "Escalated") {
-      this.tasks.update(task.id, { escalatedTo: "owner", reason });
+      this.tasks.update(task.id, { escalatedTo: "owner", reason, ownerQuestion: true });
       this.tasks.event(task.id, "escalated:owner", reason);
       this.tasks.notify(
         `Task ${String(task.id)} in ${task.repo} needs you: ${reason}`,
@@ -772,7 +805,7 @@ export class Pipeline {
       );
       await this.mirror(this.tasks.get(task.id), "Escalated");
     } else {
-      await this.escalate(task, "owner", reason);
+      await this.escalate(task, "owner", reason, { ownerQuestion: true });
     }
   }
 
@@ -820,6 +853,159 @@ export class Pipeline {
         if (withLead(task)) await this.escalateIfParked(task);
       });
     }
+  }
+
+  /**
+   * The owner sets aside a task that waits on their answer, until `hours` from now. It holds no
+   * task or thread slot meanwhile, and a task that never sent a launch gives up its worker. Its
+   * branch, PR, and threads stay.
+   */
+  park(
+    taskId: number,
+    options: { hours?: number | undefined; note?: string | undefined; version?: string },
+  ): Promise<Task> {
+    return this.withTask(taskId, async () => {
+      const task = this.tasks.get(taskId);
+      if (options.version !== undefined && options.version !== String(task.version)) {
+        throw new Error(`Task ${String(taskId)} changed since the page was loaded.`);
+      }
+      const refused = parkRefusal(task);
+      if (refused !== undefined) throw new Error(refused);
+      const hours = options.hours ?? DEFAULT_PARK_HOURS;
+      if (!Number.isInteger(hours) || hours < 1 || hours > MAX_PARK_HOURS) {
+        throw new Error(`Give a time to be alerted again of 1 to ${String(MAX_PARK_HOURS)} hours.`);
+      }
+      const until = new Date(this.now().getTime() + hours * 3_600_000).toISOString();
+      const note = options.note?.trim() ?? "";
+      const next = this.tasks.transition(
+        taskId,
+        "Parked",
+        `parked until ${utcMinute(Date.parse(until))}${note === "" ? "" : `: ${note}`}`,
+        {
+          deferReason: note === "" ? PARKED_NOTE : note,
+          deferUntil: until,
+          deferAfter: null,
+          deferMark: null,
+          waiting: null,
+          // A thread lives on its worker, so work goes on there; a task with none lets it go.
+          workerEnv:
+            task.implementThread !== null || task.reviewThread !== null
+              ? task.workerEnv
+              : this.keptWorker(task),
+        },
+      );
+      await this.mirror(next, "Parked");
+      return next;
+    });
+  }
+
+  /**
+   * The owner takes a parked task up again with their answer. Work already started goes on
+   * from its thread, branch, and PR; a task with none is queued again as new with its brief, or
+   * without one goes back to be planned as a newly admitted task.
+   */
+  async unpark(taskId: number, answer: string, version?: string): Promise<Task> {
+    const task = await this.withTask(taskId, () => this.unparkNow(taskId, answer, version));
+    if (task.stage === "Queued") await this.passAfterQueuing();
+    return this.tasks.get(taskId);
+  }
+
+  private async unparkNow(taskId: number, answer: string, version?: string): Promise<Task> {
+    const task = this.tasks.get(taskId);
+    if (task.stage !== "Parked") throw new Error(`Task ${String(taskId)} is not parked.`);
+    if (version !== undefined && version !== String(task.version)) {
+      throw new Error(`Task ${String(taskId)} changed since the page was loaded.`);
+    }
+    const text = answer.trim();
+    if (text === "") throw new Error("Give your answer, so the work can go on with it.");
+    const unparked = {
+      escalatedTo: null,
+      reason: null,
+      ownerAction: null,
+      ownerQuestion: false,
+      waiting: null,
+      deferReason: null,
+      deferUntil: null,
+    };
+    if (this.workStarted(task)) {
+      await this.refuseOnUnrecordedMerge(task);
+      this.tasks.transition(taskId, "Implementing", UNPARKED_DETAIL, {
+        ...unparked,
+        limitUntil: null,
+        limitRun: null,
+        // A review that was under way is dropped; the work that goes on gets a fresh one.
+        reviewThread: null,
+      });
+      if (task.implementThread !== null && task.workerEnv !== null) {
+        const message = `The owner answered:\n\n${text}\n\nContinue the work.\n\n${implementBlock()}`;
+        const next = this.tasks.update(taskId, { pendingMessage: message });
+        await this.mirror(next, "Implementing", task.implementThread);
+        await this.resume(this.tasks.get(taskId));
+        return this.tasks.get(taskId);
+      }
+      await this.mirror(this.tasks.get(taskId), "Implementing");
+      await this.advance(this.tasks.get(taskId));
+      return this.tasks.get(taskId);
+    }
+    const board = this.options.board?.();
+    if (task.brief !== null) {
+      // Off the lead's ready list first, as for any queued task.
+      if (board !== undefined && task.hermesTaskId !== null) {
+        await board.setStage(task.hermesTaskId, "Queued");
+      }
+      return this.tasks.enqueue(taskId, undefined, "the owner answered, and the work is queued", {
+        ...unparked,
+        brief: `${task.brief}\n\nThe owner's answer: ${text}`,
+        parkPending: false,
+        workerEnv: this.keptWorker(task),
+      });
+    }
+    // Planned again from the start: the board task goes back to the lead's ready list first, so
+    // a task the board did not take back stays parked instead of waiting on a lead that never runs.
+    const note = `The owner answered: ${text}`;
+    if (board !== undefined && task.hermesTaskId !== null) {
+      await board.handBack(task.hermesTaskId, note);
+    }
+    return this.tasks.transition(
+      taskId,
+      "Admitted",
+      "the owner answered; the task is planned again",
+      {
+        ...unparked,
+        triageSince: this.now().toISOString(),
+        triageAlerted: false,
+        workerEnv: this.keptWorker(task),
+      },
+    );
+  }
+
+  /** Whether any work on the task began: a launch, a thread, a branch, or a PR. */
+  private workStarted(task: Task): boolean {
+    return (
+      task.implementThread !== null ||
+      task.startedAt !== null ||
+      task.branch !== null ||
+      task.prNumber !== null ||
+      this.everLaunched(task.id)
+    );
+  }
+
+  /** Gives a parked task back to the owner once its time comes, with the reason it was escalated. */
+  private async realert(task: Task): Promise<void> {
+    if (task.deferUntil !== null && Date.parse(task.deferUntil) > this.now().getTime()) return;
+    const reason = task.reason ?? "it was parked and its time is up";
+    const next = this.tasks.transition(task.id, "Escalated", `to the owner: ${reason}`, {
+      escalatedTo: "owner",
+      deferReason: null,
+      deferUntil: null,
+      waiting: null,
+    });
+    this.tasks.notify(
+      `Task ${String(task.id)} in ${task.repo} needs you: ${reason}`,
+      task.id,
+      "escalation",
+    );
+    await this.mirror(next, "Escalated");
   }
 
   /**
@@ -908,6 +1094,9 @@ export class Pipeline {
       case "Reverting":
         this.recordPolicy(task);
         await this.revert(task);
+        return;
+      case "Parked":
+        await this.realert(task);
         return;
       default:
         return;
@@ -2131,7 +2320,11 @@ export class Pipeline {
       task.id,
     );
     const fields = { ...extra, foreignMerge: true, mergeSha, waiting: null };
-    if (task.stage === "Escalated" || TRANSITIONS_TO_DONE.has(task.stage)) {
+    if (
+      task.stage === "Escalated" ||
+      task.stage === "Parked" ||
+      TRANSITIONS_TO_DONE.has(task.stage)
+    ) {
       const next = this.tasks.transition(task.id, "Done", "merged outside Hephaestus", fields);
       await this.mirror(next, "Done");
     } else {
@@ -2313,6 +2506,7 @@ export class Pipeline {
     extra: Partial<Task> = {},
   ): Promise<void> {
     const next = this.tasks.transition(task.id, "Escalated", `to the ${to}: ${reason}`, {
+      ownerQuestion: false,
       ...extra,
       escalatedTo: to,
       reason,
