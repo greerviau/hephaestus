@@ -14,6 +14,7 @@ import { workersRoutes, type EnvironmentSource } from "../../src/web/workers.js"
 import { dashboardRoutes } from "../../src/web/dashboard.js";
 import { shellSource } from "../../src/web/shell.js";
 import { BackgroundDeploys } from "../../src/web/deploys.js";
+import { admissionsFor } from "../../src/web/admissions.js";
 import type { Deploy } from "../../src/web/settings.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { SHA, harness, pr, type Harness } from "../factory/harness.js";
@@ -50,6 +51,8 @@ export interface Dashboard {
   post(path: string, fields?: Record<string, string>): Promise<Response>;
   /** Resolves once every background deploy has ended. */
   deploysSettled(): Promise<void>;
+  /** Resolves once every background admission has ended. */
+  admissionsSettled(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -58,6 +61,7 @@ export interface DashboardOptions {
   workers?: WorkerView[];
   deploy?: Deploy;
   t3WaitMs?: number;
+  admitWaitMs?: number;
   github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
   configRepo?: string;
   hermesModel?: string;
@@ -113,6 +117,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     hermesModel: () => options.hermesModel,
     now: () => NOW,
     t3WaitMs: options.t3WaitMs ?? 1000,
+    ...(options.admitWaitMs === undefined ? {} : { admitWaitMs: options.admitWaitMs }),
   };
   const server: Server = createDashboardServer({
     db: sessions,
@@ -152,6 +157,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
         redirect: "manual",
       }),
     deploysSettled: () => deploys?.settled() ?? Promise.resolve(),
+    admissionsSettled: () => admissionsFor(h.intake).settled(),
     close: async () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));

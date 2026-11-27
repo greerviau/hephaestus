@@ -2,6 +2,7 @@ import { runInNewContext } from "node:vm";
 import { describe, expect, it } from "vitest";
 import { layout, page } from "../../src/web/html.js";
 import { LIVE_SCRIPT, LIVE_SCRIPT_PATH } from "../../src/web/live.js";
+import { PENDING_SCRIPT_TAG } from "../../src/web/pending.js";
 
 describe("pages that refresh", () => {
   it("load the live script and keep a meta refresh for browsers without scripts", () => {
@@ -20,12 +21,17 @@ describe("pages that refresh", () => {
     expect(html).toContain('content="10;url=/work?tab=needs&amp;x=1"');
   });
 
-  it("carry no script and no refresh otherwise", () => {
+  it("carry no refresh script and no refresh otherwise", () => {
     const html = layout("Home", "<p>hi</p>");
 
-    expect(html).not.toContain("<script");
+    expect(html).not.toContain(LIVE_SCRIPT_PATH);
     expect(html).not.toContain("http-equiv");
-    expect(page("Sign in", "<p>hi</p>")).not.toContain("<script");
+    expect(page("Sign in", "<p>hi</p>")).not.toContain(LIVE_SCRIPT_PATH);
+  });
+
+  it("all carry the script that shows a pressed button pending", () => {
+    expect(layout("Home", "<p>hi</p>")).toContain(PENDING_SCRIPT_TAG);
+    expect(page("Sign in", "<p>hi</p>")).toContain(PENDING_SCRIPT_TAG);
   });
 });
 
@@ -47,6 +53,8 @@ interface Options {
   typing?: boolean;
   /** A dialog is open. */
   dialog?: boolean;
+  /** A form was submitted and the page waits for the answer. */
+  sending?: boolean;
   hidden?: boolean;
 }
 
@@ -86,6 +94,7 @@ function boot(options: Options): Harness {
       activeElement: options.typing === true ? { tagName: "INPUT" } : null,
       querySelector: (selector: string) => {
         if (selector === "dialog[open]") return options.dialog === true ? {} : null;
+        if (selector === "form[data-pending]") return options.sending === true ? {} : null;
         return selector.startsWith("script") ? tag : null;
       },
       getElementById: (id: "main" | "side") => regions[id],
@@ -235,6 +244,7 @@ describe("the live script", () => {
   it.each([
     ["a field has focus", { typing: true }],
     ["a dialog is open", { dialog: true }],
+    ["a form is on its way to the server", { sending: true }],
     ["the tab is hidden", { hidden: true }],
   ])("leaves the page alone and tries again while %s", async (_, options: Partial<Options>) => {
     const harness = boot({ responses: [answer({ main: "<p>ready</p>" })], ...options });

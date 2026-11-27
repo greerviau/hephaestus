@@ -25,6 +25,8 @@ export const LIVE_SCRIPT = `(function () {
     var el = document.activeElement;
     if (el && /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return true;
     if (document.querySelector("dialog[open]")) return true;
+    // A form on its way to the server keeps its pending button until the page leaves.
+    if (document.querySelector("form[data-pending]")) return true;
     try {
       return !!document.querySelector(":popover-open");
     } catch (e) {

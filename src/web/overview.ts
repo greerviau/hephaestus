@@ -34,6 +34,7 @@ import {
   type Row,
 } from "./html.js";
 import { sendHtml, type Route } from "./http.js";
+import { ADMITTING_RELOAD_SECONDS, admissionsFor } from "./admissions.js";
 
 /** The page reloads this often, and sooner while it waits for T3 to answer. */
 const RELOAD_SECONDS = 10;
@@ -80,6 +81,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
       path: /^\/$/,
       handle: async ({ response, url, shell }) => {
         const t3 = await readEnvironments(factory.environments, factory.t3WaitMs ?? 2000);
+        const admissions = admissionsFor(factory.intake);
         const project = shell?.project;
         const inProject = (repo: string): boolean => project === undefined || repo === project;
         const tasks = read("tasks", () =>
@@ -145,7 +147,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         }
         if (issues.ok) {
           for (const issue of issues.value) {
-            needs.push(heldIssueRow(issue, "/"));
+            needs.push(heldIssueRow(issue, "/", admissions.state(issue.repo, issue.number)));
           }
         }
         if (proposals.ok) {
@@ -341,7 +343,11 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
           layout("Home", page, {
             section: "/",
             shell,
-            refreshSeconds: t3.state === "loading" ? LOADING_RELOAD_SECONDS : RELOAD_SECONDS,
+            refreshSeconds: admissions.busy()
+              ? ADMITTING_RELOAD_SECONDS
+              : t3.state === "loading"
+                ? LOADING_RELOAD_SECONDS
+                : RELOAD_SECONDS,
           }),
         );
       },

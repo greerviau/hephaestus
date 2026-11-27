@@ -45,6 +45,7 @@ import {
   type NoticeKey,
   type Read,
 } from "./factory.js";
+import { ADMITTING_RELOAD_SECONDS, admissionsFor } from "./admissions.js";
 import {
   backTo,
   buttonLink,
@@ -1056,7 +1057,10 @@ export function workRoutes(factory: FactoryPages): Route[] {
             sub: escapeHtml(item.reason ?? ""),
             aside: escalationActions(item, back),
           }));
-          const held = waiting.map((issue) => heldIssueRow(issue, back));
+          const admissions = admissionsFor(factory.intake);
+          const held = waiting.map((issue) =>
+            heldIssueRow(issue, back, admissions.state(issue.repo, issue.number)),
+          );
           const rows = [...owned, ...held];
           body =
             (rows.length === 0
@@ -1194,7 +1198,13 @@ export function workRoutes(factory: FactoryPages): Route[] {
               },
               { href: tabHref("all"), label: "All", current: tab === "all" },
             ])}${body}`,
-            { section: "/work", shell, refreshSeconds: RELOAD_SECONDS },
+            {
+              section: "/work",
+              shell,
+              refreshSeconds: admissionsFor(factory.intake).busy()
+                ? ADMITTING_RELOAD_SECONDS
+                : RELOAD_SECONDS,
+            },
           ),
         );
       },
