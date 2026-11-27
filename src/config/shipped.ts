@@ -47,14 +47,19 @@ export const SHIPPED_THREAD_TEXT: readonly string[] = [
 
 /** What every implement and review thread is told first, in the message that starts it. */
 export const THREAD_RULES =
-  "You are working in a factory thread started by Hephaestus. Nobody watches this thread while it runs, so do not stop to ask questions: if you cannot finish, say what blocked you instead of guessing.";
+  "You are working in a factory thread started by Hephaestus. Nobody watches this thread while it runs, so do not stop to ask questions: if you cannot finish, say what blocked you instead of guessing. Do only the task this message gives you, and follow the repository's own contribution rules, tests, and checks.";
 
-/** What an implement thread does when its branch is already on origin, as after a retry. */
+/**
+ * What an implement thread does when its branch is already on origin before it opened a PR, as
+ * after a retry. Its own PR's branch it may rewrite, as a rebase in a conflict round needs.
+ */
 export function branchRule(branch: string): string {
-  return `If \`${branch}\` already exists on origin and a plain push is rejected, run \`gh pr list --head ${branch} --state all\`. Only if every PR from that branch is merged or closed, overwrite it with \`git push --force-with-lease=${branch}:<the SHA you fetched>\`, and say so in your final message. If any PR from it is still open, do not push: report \`blocked\` with the reason.`;
+  return `Before this thread has opened a PR, if \`${branch}\` already exists on origin and a plain push is rejected, run \`gh pr list --head ${branch} --state all\`. Only if every PR from that branch is merged or closed, overwrite it with \`git push --force-with-lease=${branch}:<the SHA you fetched>\`, and say so in your final message. If any PR from it is still open, do not push: report \`blocked\` with the reason. Once this thread's PR is open, push its branch with \`--force-with-lease\` when a rebase needs it.`;
 }
 
 const OWNER_HEADING = "## The owner's instructions";
+/** The longest run of lines inside a paragraph that is checked for a shipped copy. */
+const MAX_RUN_LINES = 20;
 
 function isShipped(text: string, shipped: readonly string[]): boolean {
   // Markdown code marks do not make a copy the owner's own text.
@@ -70,8 +75,8 @@ export function shippedInstructions(role: RoleName): string {
 
 /**
  * The owner's instructions for a role, without the copies of shipped instructions they hold,
- * and how many copies were left out: a paragraph that matches a shipped one, or a line that
- * does, for an owner who typed straight under a copy. Everything else stays exactly as typed.
+ * and how many copies were left out: a paragraph that matches a shipped one, or a run of lines
+ * inside a paragraph that does, for an owner who typed straight under a copy. Everything else stays exactly as typed.
  */
 export function ownInstructions(
   persona: string,
@@ -91,11 +96,17 @@ export function ownInstructions(
       for (let line = start; line < end; line += 1) keep[line] = false;
       dropped += 1;
     } else {
-      for (let line = start; line < end; line += 1) {
-        if (isShipped(lines[line] ?? "", shipped)) {
-          keep[line] = false;
-          dropped += 1;
+      // Runs of lines, longest first, so a copied block that the owner typed under still goes.
+      for (let line = start; line < end;) {
+        let run = Math.min(end, line + MAX_RUN_LINES);
+        while (run > line && !isShipped(lines.slice(line, run).join("\n"), shipped)) run -= 1;
+        if (run === line) {
+          line += 1;
+          continue;
         }
+        for (let index = line; index < run; index += 1) keep[index] = false;
+        dropped += 1;
+        line = run;
       }
     }
     start = end;

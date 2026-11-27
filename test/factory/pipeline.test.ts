@@ -94,6 +94,8 @@ describe("Pipeline", () => {
     expect(implement?.message).toContain("Closes #5");
     expect(implement?.message).toContain("Nobody watches this thread");
     expect(implement?.message).toContain("--force-with-lease");
+    expect(implement?.message).toContain("Before this thread has opened a PR");
+    expect(implement?.message).toContain("only the task");
     expect(implement?.message).toContain("refs/hephaestus/evidence/0123abcd-card-1");
     expect(h.cards.get(id).stage).toBe("Implementing");
 
@@ -105,6 +107,7 @@ describe("Pipeline", () => {
     expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
     expect(review?.message).toContain(SHA);
     expect(review?.message).toContain("Nobody watches this thread");
+    expect(review?.message).toContain("contribution rules");
     expect(review?.workspace).toMatchObject({ branch: "review/0123abcd-card-1-1" });
 
     h.finish("t2", reviewResult("approve", SHA));
@@ -136,6 +139,7 @@ describe("Pipeline", () => {
     expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
     expect(h.t3.sends.at(-1)).toMatchObject({ threadId: "t1" });
     expect(h.t3.sends.at(-1)?.message).toContain("handle the empty case");
+    expect(h.t3.sends.at(-1)?.message).toContain('"status": "done"');
 
     h.github.prs.set(5, pr(5, SHA2));
     h.finish("t1", implementResult(5, SHA2));
@@ -218,6 +222,8 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     expect(h.t3.sends.map((send) => send.threadId)).toEqual(["t2"]);
     expect(h.t3.sends[0]?.message).toMatch(/usage limit/);
+    // A review thread is reminded of its own result block, which a long thread may have compacted away.
+    expect(h.t3.sends[0]?.message).toContain('"verdict"');
     expect(h.cards.get(id).waiting).toBeNull();
 
     // The limit had not reset yet: the next run fails on it too, and the card waits again.

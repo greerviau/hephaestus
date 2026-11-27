@@ -139,7 +139,7 @@ function shippedPart(name: InstructionSetName, text: string): string {
     ? `${THREAD_RULES}\n\nAn implement thread's first message also gives it the task, the lead's brief, the branch, how to open the PR, and the result block to end with:\n\n${branchRule("<branch>")}\n\nA review thread's first message gives it the PR, the head commit to review, how to judge a revert, and its result block.`
     : shippedInstructions(name);
   const order = threads
-    ? "Each thread's first message carries these. Your instructions are the thread's standing instructions on the worker."
+    ? "A summary of what Hephaestus tells every thread in its first message, with the result block again in each message after. Your instructions are the threads' standing instructions on the worker."
     : "The role gets these first, and your instructions after them.";
   return `${fold(
     "Shipped with Hephaestus",

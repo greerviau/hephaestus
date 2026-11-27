@@ -61,6 +61,11 @@ Use \`"status": "blocked"\` with a \`"reason"\` when you could not finish. A rev
     );
     expect(files["codex/AGENTS.md"]).toBe(files["claude/CLAUDE.md"]);
 
+    // The old result block is a copy even when the owner typed a rule straight under it.
+    config.instructions.factory =
+      '```hephaestus-result\n{"status": "done", "pr": 123, "headSha": "<full commit SHA>"}\n```\n- Keep PRs small.\n';
+    expect(versionFiles(3, config)["claude/CLAUDE.md"]).toBe("- Keep PRs small.\n");
+
     // A copy that lost its code marks is still a copy.
     config.instructions.factory =
       'Use "status": "blocked" with a "reason" when you could not finish. A reviewer reports "verdict": "approve" or "verdict": "changes" and the "headSha" it reviewed.\n';

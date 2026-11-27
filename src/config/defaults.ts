@@ -19,9 +19,8 @@ export interface ImportedSkill {
 }
 
 /**
- * The first config version: the factory thread instructions and imported skills. The roles'
- * own instructions ship with Hephaestus (see shipped.ts), so their personas start empty for
- * the owner's additions.
+ * The first config version: the imported skills, and empty owner instructions. The roles' and
+ * coding threads' own instructions ship with Hephaestus (see shipped.ts).
  */
 export function defaultConfig(skills: ImportedSkill[]): FactoryConfig {
   const role = (): RoleConfig => ({ persona: "", skills: [] });
