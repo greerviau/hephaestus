@@ -12,16 +12,26 @@ import type { ConfigVersion } from "../config/store.js";
 import type { Card } from "../factory/cards.js";
 import { ACTIVE_STAGES, STORE_ERROR, read, type FactoryPages } from "./factory.js";
 import {
-  banner,
-  card,
+  callout,
+  checkbox,
+  dialog,
+  dialogButton,
   empty,
   escapeHtml,
   externalLink,
+  fold,
+  input,
   layout,
+  menu,
   pageHead,
-  pill,
-  postButton,
-  table,
+  rowList,
+  saveBar,
+  section,
+  selectControl,
+  setting,
+  statusText,
+  type Crumb,
+  type Shell,
 } from "./html.js";
 import { readBody, redirect, sendHtml, type Route, type RouteContext } from "./http.js";
 import { publishVersion } from "./versions.js";
@@ -71,7 +81,7 @@ const SETTINGS: { name: SettingName; label: string; help: string }[] = [
   {
     name: "maxReviewRounds",
     label: "Review rounds before the lead steps in",
-    help: "How often review findings go back to the implementer before the card escalates.",
+    help: "How often review findings go back to the implementer before the task escalates.",
   },
   {
     name: "openIssueCap",
@@ -83,12 +93,17 @@ const SETTINGS: { name: SettingName; label: string; help: string }[] = [
 const LIST_SETTINGS = new Set<SettingName>(["escalationPaths", "requiredChecks"]);
 const NUMBER_SETTINGS = new Set<SettingName>(["maxReviewRounds", "openIssueCap"]);
 
-const PRESET_TEXT: Record<PresetName, string> = {
-  yolo: "Merges on green checks with no review. For throwaway repos.",
-  standard:
-    "Merges when checks pass and the other provider approved the head; workflow changes wait for you.",
-  strict: "Every merge waits for you, after checks and a review.",
-};
+/** The presets in the order the form offers them, each with what it does. */
+const PRESET_CHOICES: readonly (readonly [PresetName, string])[] = [
+  [
+    "standard",
+    "Merges when checks pass and the other provider approved the head. Workflow changes wait for you.",
+  ],
+  ["strict", "Every merge waits for you, after checks and a review."],
+  ["yolo", "Merges on green checks with no review. For throwaway repos."],
+];
+
+const ADD_DIALOG = "add-project";
 
 const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: string }> = {
   added: {
@@ -106,11 +121,6 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
     title: "Project removed",
     text: "The new version is deployed; no new work starts on the repo.",
   },
-  drafted: {
-    kind: "info",
-    title: "Saved as a draft",
-    text: "Nothing changes until you approve the draft on Settings.",
-  },
   "hermes-failed": {
     kind: "err",
     title: "The factory Hermes root was not updated",
@@ -119,7 +129,7 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
   "deploy-failed": {
     kind: "err",
     title: "Approved, but not deployed",
-    text: "Deploying the version failed. Check that the config repo is named on the Workers page, then deploy it from Settings. The service log has the error.",
+    text: "Deploying the version failed. Check that the config repo is named at the top of Config, then deploy the version from its Versions tab. The service log has the error.",
   },
 };
 
@@ -127,7 +137,11 @@ const NOTICES: Record<string, { kind: "info" | "err"; title: string; text: strin
 export function projectsRoutes(factory: FactoryPages): Route[] {
   return [
     { method: "GET", path: /^\/projects$/, handle: (context) => listPage(context) },
-    { method: "GET", path: /^\/projects\/edit$/, handle: (context) => editPage(context) },
+    {
+      method: "GET",
+      path: /^\/projects\/([A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+)$/,
+      handle: (context) => editPage(context),
+    },
     { method: "POST", path: /^\/projects\/save$/, handle: (context) => save(context) },
     { method: "POST", path: /^\/projects\/remove$/, handle: (context) => remove(context) },
   ];
@@ -136,10 +150,13 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     return factory.store.current();
   }
 
-  async function listPage({ response, url }: RouteContext, problem?: Problem): Promise<void> {
+  async function listPage(
+    { response, url, shell }: RouteContext,
+    problem?: Problem,
+  ): Promise<void> {
     const version = read("config", () => current());
     if (!version.ok) {
-      sendHtml(response, 200, projectsPage("Projects", STORE_ERROR));
+      sendHtml(response, 200, projectsPage(shell, "Projects", STORE_ERROR));
       return;
     }
     const config = version.value?.document;
@@ -148,51 +165,67 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       factory.cards.list().filter((card) => ACTIVE_STAGES.includes(card.stage)),
     );
     const notice = NOTICES[url.searchParams.get("notice") ?? ""];
-    const rows = projects.map(([repo, project]) => {
-      const settings = resolvePolicy(project.policy);
-      const working = active.ok
-        ? active.value.filter((card) => card.repo.toLowerCase() === repo.toLowerCase()).length
-        : 0;
-      return [
-        externalLink(`https://github.com/${repo}`, repo),
-        `${pill(project.policy.preset === "strict" ? "you" : project.policy.preset === "yolo" ? "off" : "run", project.policy.preset)}${Object.keys(project.policy.overrides).length === 0 ? "" : `<span class="sub">${String(Object.keys(project.policy.overrides).length)} changed</span>`}`,
-        escapeHtml(summary(settings)),
-        String(working),
-        `<div class="btn-row"><a class="btn btn-secondary btn-s" href="/projects/edit?repo=${encodeURIComponent(repo)}">Edit</a></div>`,
-      ];
+    const parentId = version.value?.id;
+    const dialogs: string[] = [];
+    const rows = projects.map(([repo, project], index) => {
+      const mine = active.ok
+        ? active.value.filter((card) => card.repo.toLowerCase() === repo.toLowerCase())
+        : undefined;
+      const changed = Object.keys(project.policy.overrides).length;
+      const removeId = `remove-${String(index)}`;
+      dialogs.push(removeDialog(removeId, repo, parentId, mine));
+      return {
+        title: repo,
+        href: projectPath(repo),
+        sub: `Merges on its own: ${escapeHtml(summary(resolvePolicy(project.policy)))}`,
+        aside: `${mine === undefined ? "" : `<span class="muted">${String(mine.length)} active</span>`}${statusText(
+          project.policy.preset === "strict"
+            ? "you"
+            : project.policy.preset === "yolo"
+              ? "off"
+              : "run",
+          `${project.policy.preset}${changed === 0 ? "" : ` +${String(changed)}`}`,
+        )}${externalLink(`https://github.com/${repo}`, "GitHub")}${menu(
+          [{ label: "Remove project", dialog: removeId, danger: true }],
+          `More actions for ${repo}`,
+        )}`,
+      };
     });
     const repos = await suggestions(projects.map(([repo]) => repo));
-    const body = `${notice === undefined ? "" : banner(notice.kind, notice.title, notice.text)}${pending()}<div class="grid">${card(
-      {
-        title: "Factory projects",
-        meta: `<span class="meta">${String(projects.length)} ${projects.length === 1 ? "repo" : "repos"}</span>`,
-        body:
-          rows.length === 0
-            ? empty("No project yet. Add a repo below, and the factory starts reading its issues.")
-            : table(
-                [
-                  { label: "Repo", className: "title-cell" },
-                  { label: "Policy" },
-                  { label: "What merges on its own" },
-                  { label: "Active cards", right: true },
-                  { label: "Actions" },
-                ],
-                rows,
-              ),
-      },
-    )}${card({
-      title: "Add a project",
-      body: policyForm({
-        mode: "add",
-        repo: problem?.repo ?? "",
-        policy: problem?.policy ?? { preset: "standard", overrides: {} },
-        parentId: version.value?.id,
-        repos,
-        errors: problem?.errors ?? [],
-        deploy: problem?.deploy,
-      }),
-    })}${presetCard()}</div>`;
-    sendHtml(response, problem === undefined ? 200 : 400, projectsPage("Projects", body));
+    const add = dialog({
+      id: ADD_DIALOG,
+      title: "Add project",
+      body: `${input("repo", "Repo", {
+        value: problem?.repo ?? "",
+        placeholder: "owner/name",
+        autocomplete: "off",
+        autofocus: true,
+        ...(repos.length === 0 ? {} : { list: "repos" }),
+        hint: "As owner/name. The gh account on this host must be able to read and merge in it.",
+      })}${
+        repos.length === 0
+          ? ""
+          : `<datalist id="repos">${repos.map((repo) => `<option value="${escapeHtml(repo)}"></option>`).join("")}</datalist>`
+      }${policyControls(problem?.policy ?? { preset: "standard", overrides: {} })}${deployChoice(problem?.deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
+      action: "/projects/save",
+      fields: { mode: "add", parentId: String(parentId ?? "") },
+      submit: "Add project",
+    });
+    const body = `${notice === undefined ? "" : callout(notice.kind, notice.title, escapeHtml(notice.text))}${notSaved(problem?.errors ?? [])}${pending()}${
+      rows.length === 0
+        ? empty("No project yet. Add a repo, and the factory starts reading its issues.")
+        : rowList(rows)
+    }${add}${dialogs.join("")}`;
+    sendHtml(
+      response,
+      problem === undefined ? 200 : 400,
+      projectsPage(
+        shell,
+        "Projects",
+        body,
+        dialogButton(ADD_DIALOG, "Add project", { variant: "primary" }),
+      ),
+    );
   }
 
   function editPage(context: RouteContext, problem?: Problem): Promise<void> {
@@ -200,11 +233,11 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     return Promise.resolve();
   }
 
-  function renderEdit({ response, url }: RouteContext, problem?: Problem): void {
-    const repo = problem?.repo ?? url.searchParams.get("repo") ?? "";
+  function renderEdit({ response, params, shell }: RouteContext, problem?: Problem): void {
+    const repo = problem?.repo ?? params[0] ?? "";
     const version = read("config", () => current());
     if (!version.ok) {
-      sendHtml(response, 200, projectsPage("Projects", STORE_ERROR));
+      sendHtml(response, 200, projectsPage(shell, "Projects", STORE_ERROR));
       return;
     }
     const project = version.value?.document.projects[repo];
@@ -212,7 +245,11 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       sendHtml(
         response,
         404,
-        projectsPage("Not found", empty(`${escapeHtml(repo)} is not a factory project.`)),
+        layout(
+          "No such project",
+          `${pageHead({ title: "No such project" })}${empty(`${escapeHtml(repo)} is not a factory project.`)}`,
+          { section: "/projects", shell, crumbs: [["Projects", "/projects"], ["Not found"]] },
+        ),
       );
       return;
     }
@@ -224,39 +261,26 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
             card.repo.toLowerCase() === repo.toLowerCase() && ACTIVE_STAGES.includes(card.stage),
         ),
     );
-    const working = active.ok ? active.value.length : 0;
-    const inFlight = active.ok ? active.value.filter(mergeInFlight).length : 0;
+    const parentId = version.value?.id;
+    const removeId = "remove-project";
     const body = `${pageHead({
       title: repo,
-      crumbs: `<a href="/projects">Projects</a><span aria-hidden="true">/</span><span>${escapeHtml(repo)}</span>`,
-      lede: `Saving creates a config version built from version ${String(version.value?.id ?? "none")}, and approves and deploys it unless you keep it as a draft.`,
-    })}${pending()}<div class="grid">${card({
-      title: "Merge policy",
-      body: policyForm({
-        mode: "edit",
-        repo,
-        policy: problem?.policy ?? project.policy,
-        parentId: version.value?.id,
-        repos: [],
-        errors: problem?.errors ?? [],
-        deploy: problem?.deploy,
-      }),
-    })}${card({
-      title: "Remove the project",
-      body: `<p class="lede">The factory stops reading the repo's issues and starts no new work on it.${working === 0 ? "" : ` ${String(working)} active ${working === 1 ? "card waits" : "cards wait"} until you add the repo again or abandon them.`}${inFlight === 0 ? "" : ` ${String(inFlight)} ${inFlight === 1 ? "card is" : "cards are"} merging, validating, or reverting a merge; ${inFlight === 1 ? "it finishes" : "they finish"} under the policy ${inFlight === 1 ? "it" : "they"} started with.`} The repo itself is not changed.</p>${postButton(
-        "/projects/remove",
-        "Remove and deploy",
-        {
-          fields: { repo, parentId: String(version.value?.id ?? ""), deploy: "on" },
-          variant: "danger",
-          small: false,
-        },
-      )}`,
-    })}${presetCard()}</div>`;
+      lede: `${active.ok ? `${plural(active.value.length, "active task")}<span aria-hidden="true"> &middot; </span>` : ""}${externalLink(`https://github.com/${repo}`, "Open on GitHub")}`,
+    })}${notSaved(problem?.errors ?? [])}${pending()}<form class="sec" method="post" action="/projects/save">
+<input type="hidden" name="mode" value="edit">
+<input type="hidden" name="parentId" value="${escapeHtml(String(parentId ?? ""))}">
+<input type="hidden" name="repo" value="${escapeHtml(repo)}">
+${policyControls(problem?.policy ?? project.policy)}${saveBar(
+      `<button type="submit" class="primary">Save policy</button>${deployChoice(problem?.deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
+    )}</form>${section({
+      title: "Remove project",
+      body: `<div class="row"><div class="main"><span class="subline">The factory stops reading the repo's issues and starts no new work on it. The repo itself is not changed.</span></div><div class="aside">${dialogButton(removeId, "Remove project", { variant: "danger" })}</div></div>`,
+    })}${removeDialog(removeId, repo, parentId, active.ok ? active.value : undefined)}`;
+    const crumbs: Crumb[] = [["Projects", "/projects"], [repo]];
     sendHtml(
       response,
       problem === undefined ? 200 : 400,
-      layout(repo, body, { section: "/projects" }),
+      layout(repo, body, { section: "/projects", shell, crumbs }),
     );
   }
 
@@ -386,7 +410,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
       throw error;
     }
     if (published.state === "draft") {
-      redirect(response, `/settings/versions/${String(published.id)}`);
+      redirect(response, `/config/versions/${String(published.id)}`);
     } else if (published.state === "deploy-failed") {
       redirect(response, "/projects?notice=deploy-failed");
     } else if (published.state === "deployed" && published.hermesError !== undefined) {
@@ -396,13 +420,18 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     }
   }
 
-  async function fields({ request, response }: RouteContext): Promise<URLSearchParams | undefined> {
+  async function fields(context: RouteContext): Promise<URLSearchParams | undefined> {
+    const { request, response } = context;
     const body = await readBody(request, MAX_FORM_BYTES);
     if (body === undefined) {
       sendHtml(
         response,
         413,
-        projectsPage("Too large", banner("err", "Too large", "The form is too large.")),
+        projectsPage(
+          context.shell,
+          "Too large",
+          callout("err", "Too large", "The form is too large."),
+        ),
       );
       return undefined;
     }
@@ -418,12 +447,21 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     const base = read("config", () => current());
     if (!latest.ok || !base.ok || latest.value === undefined) return "";
     if (base.value !== undefined && base.value.state !== "deployed") {
-      return `<div class="banner err" role="alert"><strong class="status s-crit">Not deployed yet</strong><p>Version ${String(base.value.id)} is ${base.value.state}, and no version is deployed, so the factory works on none of these projects yet. Name the config repo on <a href="/environments">Workers</a>, then deploy version ${String(base.value.id)} from <a href="/settings/versions/${String(base.value.id)}">Settings</a>.</p></div>`;
+      const id = String(base.value.id);
+      return callout(
+        "err",
+        "Not deployed yet",
+        `Version ${id} is ${base.value.state}, and no version is deployed, so the factory works on none of these projects yet. Name the config repo at the top of <a href="/config">Config</a>, then deploy <a href="/config/versions/${id}">version ${id}</a> from its Versions tab.`,
+      );
     }
     const { id, state } = latest.value;
     if ((state !== "draft" && state !== "approved") || id === base.value?.id) return "";
     const what = state === "draft" ? "is a draft" : "is approved but not deployed";
-    return `<div class="banner info"><strong class="status s-neutral">Version ${String(id)} ${what}</strong><p>Changes here build on version ${String(base.value?.id ?? "none")}, not on version ${String(id)}. <a href="/settings/versions/${String(id)}">Open version ${String(id)}</a>.</p></div>`;
+    return callout(
+      "info",
+      `Version ${String(id)} ${what}`,
+      `Changes here build on version ${String(base.value?.id ?? "none")}, not on version ${String(id)}. <a href="/config/versions/${String(id)}">Open version ${String(id)}</a>.`,
+    );
   }
 
   /** Repos the gh account can see, for the repo field's suggestions; none when gh cannot be read. */
@@ -455,38 +493,81 @@ interface Problem {
   deploy?: boolean;
 }
 
-function projectsPage(title: string, body: string): string {
+function projectsPage(
+  shell: Shell | undefined,
+  title: string,
+  body: string,
+  actions?: string,
+): string {
   return layout(
     title,
     `${pageHead({
       title: "Projects",
-      lede: "The repos the factory works on. Each change becomes a config version, approved and deployed in the same step unless you keep it as a draft.",
+      lede: "The repos the factory works on, each with its merge policy.",
+      ...(actions === undefined ? {} : { actions }),
     })}${body}`,
-    { section: "/projects" },
+    { section: "/projects", shell },
   );
+}
+
+/** The edit page of a project. A repo name holds only characters a path can carry as they are. */
+function projectPath(repo: string): string {
+  return `/projects/${repo}`;
+}
+
+function plural(count: number, noun: string): string {
+  return `${String(count)} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+function savingHint(parentId: number | undefined): string {
+  return `Saving creates a config version built from version ${String(parentId ?? "none")}. Unticked, it stays a draft.`;
+}
+
+function deployChoice(deploy: boolean | undefined): string {
+  return checkbox("deploy", "Deploy now", { value: "on", checked: deploy !== false });
+}
+
+/** Why the server refused a form, above the page it came from. */
+function notSaved(errors: readonly string[]): string {
+  return errors.length === 0
+    ? ""
+    : callout("err", "Not saved", errors.map((error) => escapeHtml(error)).join("<br>"));
+}
+
+/**
+ * The dialog that removes a project. It says what happens to the tasks in
+ * `active`, or leaves that out when the tasks could not be read.
+ */
+function removeDialog(
+  id: string,
+  repo: string,
+  parentId: number | undefined,
+  active: readonly Card[] | undefined,
+): string {
+  const working = active?.length ?? 0;
+  const inFlight = active?.filter(mergeInFlight).length ?? 0;
+  const tasks = `${working === 0 ? "" : ` ${String(working)} active ${working === 1 ? "task waits" : "tasks wait"} until you add the repo again or abandon ${working === 1 ? "it" : "them"}.`}${inFlight === 0 ? "" : ` ${String(inFlight)} ${inFlight === 1 ? "task is" : "tasks are"} merging, validating, or reverting a merge; ${inFlight === 1 ? "it finishes" : "they finish"} under the policy ${inFlight === 1 ? "it" : "they"} started with.`}`;
+  return dialog({
+    id,
+    title: "Remove project",
+    body: `<p>Remove <strong>${escapeHtml(repo)}</strong> from the factory?</p><p class="muted">The factory stops reading the repo's issues and starts no new work on it.${tasks} The repo itself is not changed.</p>`,
+    action: "/projects/remove",
+    fields: { repo, parentId: String(parentId ?? ""), deploy: "on" },
+    submit: "Remove and deploy",
+    danger: true,
+  });
 }
 
 /** The settings that let a PR merge without the owner, in a few words. */
 function summary(settings: PolicySettings): string {
   if (!settings.autoMerge || settings.ownerApprovesEveryMerge)
-    return "Nothing; every merge waits for you";
+    return "nothing; every merge waits for you";
   const parts = [
     settings.requireReview ? "reviewed PRs with passing checks" : "PRs with passing checks",
   ];
   if (settings.escalationPaths.length > 0)
     parts.push(`except ${settings.escalationPaths.join(", ")}`);
   return parts.join(", ");
-}
-
-function presetCard(): string {
-  const rows = PRESET_NAMES.map((name) => [
-    `<strong>${name}</strong>`,
-    escapeHtml(PRESET_TEXT[name]),
-  ]);
-  return card({
-    title: "Presets",
-    body: table([{ label: "Preset" }, { label: "What it does", className: "title-cell" }], rows),
-  });
 }
 
 function presetValue(preset: PresetName, name: SettingName): string {
@@ -498,58 +579,73 @@ function presetValue(preset: PresetName, name: SettingName): string {
 
 /** What each preset sets, since the page cannot update the hint when the preset changes. */
 function presetHint(name: SettingName): string {
-  const values = PRESET_NAMES.map((preset) => presetValue(preset, name));
+  const values = PRESET_CHOICES.map(([preset]) => presetValue(preset, name));
   return values.every((value) => value === values[0])
-    ? `Preset (${values[0] ?? ""})`
-    : `Preset (${PRESET_NAMES.map((preset, index) => `${preset}: ${values[index] ?? ""}`).join("; ")})`;
+    ? `Every preset: ${values[0] ?? ""}.`
+    : `By preset: ${PRESET_CHOICES.map(([preset], index) => `${preset}: ${values[index] ?? ""}`).join("; ")}.`;
 }
 
-function policyForm(options: {
-  mode: "add" | "edit";
-  repo: string;
-  policy: Policy;
-  parentId: number | undefined;
-  repos: string[];
-  errors: string[];
-  deploy?: boolean | undefined;
-}): string {
-  const { policy } = options;
-  const errors =
-    options.errors.length === 0
-      ? ""
-      : `<div class="banner err" role="alert"><strong class="status s-crit">Not saved</strong><ul>${options.errors.map((error) => `<li>${escapeHtml(error)}</li>`).join("")}</ul></div>`;
-  const repoField =
-    options.mode === "add"
-      ? `<div class="field"><label for="repo">Repo</label><input type="text" id="repo" name="repo" value="${escapeHtml(options.repo)}" placeholder="owner/name" required${options.repos.length === 0 ? "" : ' list="repos"'} autocomplete="off">${options.repos.length === 0 ? "" : `<datalist id="repos">${options.repos.map((repo) => `<option value="${escapeHtml(repo)}"></option>`).join("")}</datalist>`}<span class="meta">The gh account on this host must be able to read and merge in it.</span></div>`
-      : `<input type="hidden" name="repo" value="${escapeHtml(options.repo)}">`;
-  const preset = `<div class="field"><label for="preset">Preset</label><select id="preset" name="preset">${PRESET_NAMES.map((name) => `<option value="${name}"${name === policy.preset ? " selected" : ""}>${name}</option>`).join("")}</select><span class="meta">Each setting below follows the preset unless you change it.</span></div>`;
-  const settings = SETTINGS.map((setting) => settingField(setting, policy)).join("");
-  return `${errors}<form method="post" action="/projects/save" class="form-grid">
-<input type="hidden" name="mode" value="${options.mode}">
-<input type="hidden" name="parentId" value="${escapeHtml(String(options.parentId ?? ""))}">
-${repoField}${preset}
-<details class="more"${Object.keys(policy.overrides).length > 0 ? " open" : ""}><summary>Change settings from the preset</summary><div class="form-grid">${settings}</div></details>
-<label class="check"><input type="checkbox" name="deploy"${options.deploy === false ? "" : " checked"}> Approve and deploy now</label>
-<div class="btn-row"><button type="submit" class="btn-primary">${options.mode === "add" ? "Add the project" : "Save the policy"}</button></div>
-</form>`;
+/** The preset choices, and each setting that can differ from the preset behind a fold. */
+function policyControls(policy: Policy): string {
+  const choices = PRESET_CHOICES.map(
+    ([name, text]) =>
+      `<label class="choice"><input type="radio" name="preset" value="${name}"${name === policy.preset ? " checked" : ""}><strong>${name}</strong><span class="hint">${escapeHtml(text)}</span></label>`,
+  ).join("");
+  const changed = Object.keys(policy.overrides).length;
+  return `<fieldset><legend>Policy preset</legend><div class="choices">${choices}</div></fieldset>${fold(
+    `Customize the preset${changed === 0 ? "" : ` (${String(changed)} changed)`}`,
+    SETTINGS.map((entry) => settingRow(entry, policy)).join(""),
+    changed > 0,
+  )}`;
 }
 
-function settingField(setting: (typeof SETTINGS)[number], policy: Policy): string {
-  const { name } = setting;
+function settingRow(entry: (typeof SETTINGS)[number], policy: Policy): string {
+  const { name } = entry;
   const override = policy.overrides[name];
   const id = `s-${name}`;
-  const fromPreset = escapeHtml(presetHint(name));
-  const help = `<span class="meta">${escapeHtml(setting.help)}</span>`;
+  const hint = `${escapeHtml(entry.help)} ${escapeHtml(presetHint(name))}`;
   if (LIST_SETTINGS.has(name)) {
     const custom = Array.isArray(override);
     const shown = custom ? override.join("\n") : "";
-    return `<div class="field"><label for="${id}-mode">${escapeHtml(setting.label)}</label><select id="${id}-mode" name="${name}.mode"><option value="preset"${custom ? "" : " selected"}>${fromPreset}</option><option value="custom"${custom ? " selected" : ""}>The list below (empty for none)</option></select><textarea id="${id}" name="${name}" rows="3" aria-label="${escapeHtml(setting.label)}">${escapeHtml(shown)}</textarea><input type="hidden" name="${name}.shown" value="${escapeHtml(shown)}">${help}</div>`;
+    // The list sits under the hint because no script is there to show it only for a custom list.
+    return setting(
+      `${id}-mode`,
+      entry.label,
+      `${hint}<textarea id="${id}" name="${name}" rows="2" aria-label="${escapeHtml(entry.label)}: custom list, one per line">${escapeHtml(shown)}</textarea><input type="hidden" name="${name}.shown" value="${escapeHtml(shown)}">`,
+      selectControl(
+        `${name}.mode`,
+        [
+          ["preset", "Preset"],
+          ["custom", "Custom list"],
+        ],
+        custom ? "custom" : "preset",
+        { id: `${id}-mode` },
+      ),
+    );
   }
   if (NUMBER_SETTINGS.has(name)) {
-    return `<div class="field"><label for="${id}">${escapeHtml(setting.label)}</label><input type="number" id="${id}" name="${name}" min="0" step="1" value="${override === undefined ? "" : escapeHtml(String(override))}" placeholder="${fromPreset}">${help}</div>`;
+    return setting(
+      id,
+      entry.label,
+      hint,
+      `<input type="number" id="${id}" name="${name}" min="0" step="1" value="${override === undefined ? "" : escapeHtml(String(override))}" placeholder="Preset">`,
+    );
   }
-  const value = override === undefined ? "" : override === true ? "on" : "off";
-  return `<div class="field"><label for="${id}">${escapeHtml(setting.label)}</label><select id="${id}" name="${name}"><option value=""${value === "" ? " selected" : ""}>${fromPreset}</option><option value="on"${value === "on" ? " selected" : ""}>On</option><option value="off"${value === "off" ? " selected" : ""}>Off</option></select>${help}</div>`;
+  return setting(
+    id,
+    entry.label,
+    hint,
+    selectControl(
+      name,
+      [
+        ["", "Preset"],
+        ["on", "On"],
+        ["off", "Off"],
+      ],
+      override === undefined ? "" : override === true ? "on" : "off",
+      { id },
+    ),
+  );
 }
 
 /** Reads the form's preset and overrides; a setting left on its preset is not an override. */

@@ -1,6 +1,6 @@
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import type { EnvironmentSource } from "../web/environments.js";
+import type { EnvironmentSource } from "../web/workers.js";
 import type { Environments } from "./adapter.js";
 
 const DEFAULT_PORT = 3773;

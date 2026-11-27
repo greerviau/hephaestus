@@ -1,14 +1,25 @@
 import { ROLE_NAMES } from "../config/document.js";
-import { STORE_ERROR, read, type FactoryPages } from "./factory.js";
-import { card, empty, escapeHtml, layout, pageHead, selectField, status, when } from "./html.js";
+import { STORE_ERROR, here, notice, read, type FactoryPages } from "./factory.js";
+import {
+  empty,
+  escapeHtml,
+  layout,
+  pageHead,
+  postButton,
+  segmented,
+  selectControl,
+  statusText,
+  when,
+} from "./html.js";
 import { sendHtml, type Route } from "./http.js";
 import { eventDetail, eventTitle, isBad } from "./work.js";
 
 const LIMIT = 200;
-const SHOW = [
+const ARGUMENT_CHARS = 240;
+const KINDS = [
   ["", "Everything"],
-  ["events", "Card events"],
-  ["mcp", "MCP calls"],
+  ["tasks", "Tasks"],
+  ["calls", "Agent calls"],
   ["notifications", "Notifications"],
 ] as const;
 
@@ -16,55 +27,75 @@ interface Entry {
   at: string;
   /** Safe HTML. */
   text: string;
-  /** Safe HTML. */
+  /** Safe HTML under the text. */
   sub: string;
-  /** Safe HTML. */
+  /** Safe HTML at the right. */
   outcome: string;
 }
 
-/** The Activity page: card events, the factory profiles' MCP calls, and notifications, newest first. */
+/** The Activity page: task events, the factory profiles' tool calls, and notifications, newest first. */
 export function activityRoutes(factory: FactoryPages): Route[] {
   const now = factory.now ?? Date.now;
   return [
     {
       method: "GET",
       path: /^\/activity$/,
-      handle: ({ response, url }) => {
-        const show = url.searchParams.get("show") ?? "";
-        const role = url.searchParams.get("role") ?? "";
+      handle: ({ response, url, shell }) => {
+        const show = KINDS.find(([value]) => value === url.searchParams.get("show"))?.[0] ?? "";
+        // The role filter belongs to the Agent calls view, the only one that shows its form.
+        const role = show === "calls" ? (url.searchParams.get("role") ?? "") : "";
+        const project = shell?.project;
+        const back = here(url);
         const entries: Entry[] = [];
         let failed = false;
 
-        if (show === "" || show === "events") {
-          const events = read("card events", () => factory.cards.recentEvents(LIMIT));
+        const listed = read("cards", () => factory.cards.list());
+        if (!listed.ok) failed = true;
+        const cards = new Map((listed.ok ? listed.value : []).map((card) => [card.id, card]));
+
+        if (show === "" || show === "tasks") {
+          // The store narrows each list to the project, so a quiet project still fills the page.
+          const events = read("card events", () => factory.cards.recentEvents(LIMIT, project));
           if (events.ok) {
             for (const event of events.value) {
+              const issue = cards.get(event.cardId)?.issueNumber;
+              const name = `${issue === undefined || issue === null ? "" : `#${String(issue)} `}${event.title}`;
+              const what = eventTitle(event);
+              const detail = eventDetail(event);
               entries.push({
                 at: event.at,
-                text: `<a href="/work/${String(event.cardId)}">${escapeHtml(event.title)}</a>: ${escapeHtml(eventTitle(event))}`,
-                sub: eventDetail(event) === "" ? "" : escapeHtml(eventDetail(event)),
-                outcome: isBad(event) ? status("warn", "q", "Needs a look") : "",
+                text: `<a href="/work/${String(event.cardId)}">${escapeHtml(name)}</a>: ${escapeHtml(what.charAt(0).toLowerCase() + what.slice(1))}`,
+                sub: detail === "" ? "" : `<span class="subline">${escapeHtml(detail)}</span>`,
+                outcome: isBad(event) ? statusText("you", "Needs a look") : "",
               });
             }
           } else failed = true;
         }
-        if (show === "" || show === "mcp") {
-          const calls = read("MCP calls", () => factory.mcp.calls(LIMIT));
+        if (show === "" || show === "calls") {
+          const calls = read("MCP calls", () =>
+            factory.mcp.calls(LIMIT, {
+              ...(role === "" ? {} : { role }),
+              ...(project === undefined ? {} : { repo: project }),
+            }),
+          );
           if (calls.ok) {
             for (const call of calls.value) {
-              if (role !== "" && call.role !== role) continue;
+              const args =
+                call.arguments.length > ARGUMENT_CHARS
+                  ? `${call.arguments.slice(0, ARGUMENT_CHARS)}...`
+                  : call.arguments;
               entries.push({
                 at: call.at,
                 text: escapeHtml(`${call.role} called ${call.tool}`),
-                sub: `<code>${escapeHtml(call.arguments.slice(0, 240))}</code>`,
-                outcome: call.ok ? status("good", "ok", "OK") : status("crit", "x", "Failed"),
+                sub: `<details class="fold"><summary>Arguments</summary><div class="fold-body"><pre class="block">${escapeHtml(args)}</pre></div></details>`,
+                outcome: call.ok ? statusText("done", "OK") : statusText("bad", "Failed"),
               });
             }
           } else failed = true;
         }
         if (show === "" || show === "notifications") {
           const notifications = read("notifications", () =>
-            factory.cards.recentNotifications(LIMIT),
+            factory.cards.recentNotifications(LIMIT, project),
           );
           if (notifications.ok) {
             for (const item of notifications.value) {
@@ -76,8 +107,12 @@ export function activityRoutes(factory: FactoryPages): Route[] {
                     : `<a href="/work/${String(item.cardId)}">${escapeHtml(item.text)}</a>`,
                 sub: "",
                 outcome: item.dismissed
-                  ? status("muted", "ok", "Dismissed")
-                  : status("warn", "q", "Notified you"),
+                  ? statusText("off", "Dismissed")
+                  : `${statusText("you", "Notified you")}${postButton(
+                      `/notifications/${String(item.id)}/dismiss`,
+                      "Dismiss",
+                      { fields: { back } },
+                    )}`,
               });
             }
           } else failed = true;
@@ -85,39 +120,45 @@ export function activityRoutes(factory: FactoryPages): Route[] {
 
         entries.sort((a, b) => b.at.localeCompare(a.at));
         const shown = entries.slice(0, LIMIT);
-        const filters = `<form class="filterbar" method="get" action="/activity">${selectField("show", "Show", SHOW, show)}${selectField(
-          "role",
-          "MCP calls by role",
-          [["", "All roles"], ...ROLE_NAMES.map((name): [string, string] => [name, name])],
-          role,
-        )}<button type="submit" class="btn-secondary">Filter</button></form>`;
-        const body =
+        const kinds = segmented(
+          "Kind",
+          KINDS.map(([value, label]) => ({
+            href: value === "" ? "/activity" : `/activity?show=${value}`,
+            label,
+            current: value === show,
+          })),
+        );
+        const roles =
+          show === "calls"
+            ? `<form class="grp" method="get" action="/activity"><input type="hidden" name="show" value="calls"><label class="inline-field">Role ${selectControl(
+                "role",
+                [["", "All roles"], ...ROLE_NAMES.map((name): [string, string] => [name, name])],
+                role,
+              )}</label><button type="submit">Apply</button></form>`
+            : "";
+        const list =
           shown.length === 0
             ? empty(
                 failed
                   ? "The log could not be read."
-                  : "Nothing has happened yet. Card events, MCP calls from the factory profiles, and notifications appear here.",
+                  : "Nothing has happened yet. Task events, agent calls, and notifications appear here.",
               )
-            : `<ul class="log">${shown
+            : `<ul class="rows">${shown
                 .map(
                   (entry) =>
-                    `<li><span class="t">${when(entry.at, now())}</span><div>${entry.text}${entry.sub === "" ? "" : `<p class="meta">${entry.sub}</p>`}</div><div>${entry.outcome}</div></li>`,
+                    `<li class="row kinded act-row"><span class="kind">${when(entry.at, now())}</span><div class="main"><span>${entry.text}</span>${entry.sub}</div><div class="aside">${entry.outcome}</div></li>`,
                 )
-                .join("\n")}</ul>`;
+                .join(
+                  "\n",
+                )}</ul><p class="empty muted">${String(shown.length)} shown, newest first. The page lists at most ${String(LIMIT)}.</p>`;
 
         sendHtml(
           response,
           200,
           layout(
             "Activity",
-            `${pageHead({ title: "Activity", lede: "What the factory did, what the planner, lead, and improver asked of Hephaestus, and what it told you." })}${failed ? STORE_ERROR : ""}${filters}<div class="grid">${card(
-              {
-                title: "Event log",
-                meta: `<span class="meta">${String(shown.length)} shown, newest first</span>`,
-                body,
-              },
-            )}</div>`,
-            { section: "/activity" },
+            `${pageHead({ title: "Activity", lede: "What the factory did and what it told you, newest first." })}${notice(url)}${failed ? STORE_ERROR : ""}<div class="bar"><div class="grp">${kinds}</div>${roles}</div>${list}`,
+            { section: "/activity", shell, refreshSeconds: 10 },
           ),
         );
       },

@@ -497,7 +497,7 @@ export class WorkerManager {
   deploy(environmentId: string): Promise<WorkerTask> {
     return this.serialized(async () => {
       const desired = this.desired();
-      if (desired === undefined) throw new Error("Deploy a version from Settings first.");
+      if (desired === undefined) throw new Error("Deploy a version from Config first.");
       const running = this.latestTask(environmentId, "deploy");
       if (running?.status === "running") return running;
       if (this.deployThreadRunning(environmentId)) {

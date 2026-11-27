@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { Database } from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { CardStore } from "../src/factory/cards.js";
-import { Messaging, MessagingError, RestartError } from "../src/messaging.js";
+import { Messaging, MessagingError, RestartError, proposalAlerts } from "../src/messaging.js";
 import { openStore } from "../src/store.js";
 import { workerAlerts, type WorkerAlertView } from "../src/workers/alerts.js";
 
@@ -442,5 +442,23 @@ describe("worker alerts", () => {
     calls.length = 0;
     await own.sendAlerts();
     expect(calls).toEqual([]);
+  });
+});
+
+describe("proposalAlerts", () => {
+  it("asks for approval of each waiting proposal on the Proposals page, without naming a role", () => {
+    const alerts = proposalAlerts([
+      { id: 4, author: "improver", state: "draft" },
+      { id: 5, author: "improver", state: "rejected" },
+      { id: 6, author: "owner", state: "draft" },
+    ]);
+
+    expect(alerts).toEqual([
+      {
+        key: "proposal-4",
+        text: "Config version 4 is proposed and waits for your approval on Proposals.",
+      },
+    ]);
+    expect(alerts[0]?.text).not.toMatch(/planner|lead|improver/i);
   });
 });

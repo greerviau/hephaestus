@@ -1,19 +1,22 @@
 import type { WorkerView } from "../workers/manager.js";
 import { read, type FactoryPages } from "./factory.js";
-import { card, escapeHtml, icon } from "./html.js";
+import { buttonLink, escapeHtml } from "./html.js";
 
 interface Step {
   title: string;
   done: boolean;
-  /** Safe HTML: what to do next, with a link to where it is done. */
+  /** What to do next. */
   next: string;
+  /** The page where the step is done, and the text of the link to it. */
+  href: string;
+  link: string;
 }
 
 /**
- * The setup steps a new factory needs, in order, each with its state and a
- * link to finish it. Overview shows the card until every step is done.
+ * The setup steps a new factory needs, in order, each with its state and
+ * the page that finishes it. Undefined when the config could not be read.
  */
-export function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[] | undefined {
+function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[] | undefined {
   const version = read("config", () => factory.store.current());
   if (!version.ok) return undefined;
   const configRepo = factory.configRepo?.();
@@ -31,54 +34,79 @@ export function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[]
     {
       title: "Name the config repo",
       done: configRepo !== undefined && configRepo !== "",
-      next: 'On <a href="/environments">Workers</a>, name a private repo for config versions. Hephaestus creates it if it does not exist.',
+      next: "Name a private repo for config versions. Hephaestus creates it if it does not exist.",
+      href: "/config",
+      link: "Open config",
     },
     {
       title: "Add a worker",
       done: enabled.length > 0,
-      next: 'On <a href="/environments">Workers</a>, click Use as a worker on a linked machine.',
+      next: "Click Use as a worker on a linked machine.",
+      href: "/workers",
+      link: "Open workers",
     },
     {
       title: "Sign the worker in",
       done: signedIn.length > 0,
       next:
         waiting?.blocker === undefined
-          ? 'On <a href="/environments">Workers</a>, sign in Factory Claude and Factory Codex.'
-          : `${escapeHtml(waiting.label)}: ${escapeHtml(waiting.blocker)} <a href="/environments">Open Workers</a>.`,
+          ? "Sign in Factory Claude and Factory Codex."
+          : `${waiting.label}: ${waiting.blocker}`,
+      href: "/workers",
+      link: "Open workers",
     },
     {
       title: "Add a project",
       done: projects > 0,
-      next: 'On <a href="/projects">Projects</a>, add a repo for the factory to work on.',
+      next: "Add a repo for the factory to work on.",
+      href: "/projects",
+      link: "Open projects",
     },
     {
       title: "Deploy the config",
       done: version.value?.state === "deployed",
-      next: 'On <a href="/settings">Settings</a>, approve and deploy a version.',
+      next: "Approve and deploy a version.",
+      href: "/config/versions",
+      link: "Open config",
     },
     {
-      title: "Give the factory Hermes a model",
+      title: "Give the factory a model",
       done: model !== undefined,
-      next: 'On <a href="/model">Model</a>, pick a provider, sign in, and choose a model.',
+      next: "Pick a provider, sign in, and choose a model.",
+      href: "/config/models/planning",
+      link: "Open models",
     },
   ];
 }
 
-/** The setup checklist card, or nothing once setup is complete. */
-export function setupCard(factory: FactoryPages, workers: WorkerView[]): string {
+export interface SetupChecklist {
+  done: number;
+  total: number;
+  /** Safe HTML: the steps, then the optional one. */
+  html: string;
+}
+
+/**
+ * The setup checklist Home shows until every step is done. Undefined once
+ * setup is complete, and when the config could not be read.
+ */
+export function setupChecklist(
+  factory: FactoryPages,
+  workers: WorkerView[],
+): SetupChecklist | undefined {
   const steps = setupSteps(factory, workers);
-  if (steps === undefined || steps.every((step) => step.done)) return "";
-  const done = steps.filter((step) => step.done).length;
+  if (steps === undefined || steps.every((step) => step.done)) return undefined;
+  const next = steps.find((step) => !step.done);
   const items = steps
-    .map(
-      (step) =>
-        `<li class="${step.done ? "done" : "todo"}">${icon(step.done ? "ok" : "q", step.done ? "s-good" : "s-neutral")}<div><strong>${escapeHtml(step.title)}</strong>${step.done ? "" : `<p class="sub">${step.next}</p>`}</div></li>`,
+    .map((step) =>
+      step.done
+        ? `<li class="done"><div><strong>${escapeHtml(step.title)}</strong></div></li>`
+        : `<li${step === next ? ' class="next"' : ""}><div><strong>${escapeHtml(step.title)}</strong><span class="subline">${escapeHtml(step.next)}</span></div>${buttonLink(step.href, step.link, step === next ? { variant: "primary" } : {})}</li>`,
     )
     .join("");
-  return card({
-    title: "Set up the factory",
-    className: "setup",
-    meta: `<span class="meta">${String(done)} of ${String(steps.length)} done</span>`,
-    body: `<ol class="setup-steps">${items}</ol><p class="sub">Optional: <a href="/messaging">connect a messaging platform</a>, to ask for work in a chat and get alerts there.</p>`,
-  });
+  return {
+    done: steps.filter((step) => step.done).length,
+    total: steps.length,
+    html: `<ol class="setup">${items}</ol><p class="empty">Optional: <a href="/chat">connect a chat</a> to ask for work and get alerts there.</p>`,
+  };
 }

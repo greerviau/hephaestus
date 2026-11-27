@@ -5,6 +5,8 @@ import type { Stage } from "../hermes/board.js";
 
 /** The card event detail when a PR is sent back because it no longer merges cleanly. */
 export const MERGE_CONFLICT_DETAIL = "the PR conflicts with its base branch";
+/** The card event detail when a PR is sent back because its reviewer asked for changes. */
+export const CHANGES_REQUESTED_DETAIL = "the reviewer asked for changes";
 
 export type Provider = "claude" | "codex";
 export type EscalationTarget = "lead" | "owner";
@@ -337,13 +339,15 @@ export class CardStore {
   }
 
   /** The newest events across all cards, for the Activity page. */
-  recentEvents(limit = 200): (CardEvent & { title: string; repo: string })[] {
+  /** The newest card events, of one project's cards when `repo` is given. */
+  recentEvents(limit = 200, repo?: string): (CardEvent & { title: string; repo: string })[] {
     return this.db
       .prepare(
         `SELECT e.id, e.card_id AS cardId, e.at, e.kind, e.detail, c.title, c.repo
-         FROM card_events e JOIN cards c ON c.id = e.card_id ORDER BY e.id DESC LIMIT ?`,
+         FROM card_events e JOIN cards c ON c.id = e.card_id
+         WHERE @repo IS NULL OR c.repo = @repo ORDER BY e.id DESC LIMIT @limit`,
       )
-      .all(limit) as (CardEvent & { title: string; repo: string })[];
+      .all({ limit, repo: repo ?? null }) as (CardEvent & { title: string; repo: string })[];
   }
 
   recordReview(review: {
@@ -442,7 +446,7 @@ export class CardStore {
     );
   }
 
-  /** `kind` is `escalation` for a card handed to the owner, which Overview already lists. */
+  /** `kind` is `escalation` for a card handed to the owner, which Home already lists. */
   notify(text: string, cardId: number | null = null, kind: "info" | "escalation" = "info"): void {
     this.db
       .prepare("INSERT INTO notifications (at, card_id, text, kind) VALUES (?, ?, ?, ?)")
@@ -457,16 +461,22 @@ export class CardStore {
       .all() as { id: number; at: string; cardId: number | null; text: string; kind: string }[];
   }
 
-  /** The newest notifications, dismissed or not, for the Activity page. */
+  /**
+   * The newest notifications, dismissed or not, for the Activity page. With
+   * `repo`, only those about one of that project's cards.
+   */
   recentNotifications(
     limit = 200,
+    repo?: string,
   ): { id: number; at: string; cardId: number | null; text: string; dismissed: boolean }[] {
     return (
       this.db
         .prepare(
-          "SELECT id, at, card_id AS cardId, text, dismissed FROM notifications ORDER BY id DESC LIMIT ?",
+          `SELECT id, at, card_id AS cardId, text, dismissed FROM notifications
+           WHERE @repo IS NULL OR card_id IN (SELECT id FROM cards WHERE repo = @repo)
+           ORDER BY id DESC LIMIT @limit`,
         )
-        .all(limit) as {
+        .all({ limit, repo: repo ?? null }) as {
         id: number;
         at: string;
         cardId: number | null;

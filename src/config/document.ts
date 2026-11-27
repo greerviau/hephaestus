@@ -100,7 +100,7 @@ export class ConfigValidationError extends Error {
 
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
 const NAME = /^[A-Za-z0-9][A-Za-z0-9_.-]*$/;
-/** The largest config, in UTF-8 bytes of JSON, that a version may hold; the Settings editor can save any config up to this size. */
+/** The largest config, in UTF-8 bytes of JSON, that a version may hold; the JSON editor on Config can save any config up to this size. */
 export const MAX_CONFIG_BYTES = 2 * 1024 * 1024;
 
 // eslint-disable-next-line no-control-regex

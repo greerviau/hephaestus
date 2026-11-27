@@ -9,7 +9,7 @@ export const PLUGIN_NAME = "hephaestus";
 
 /**
  * Installs and enables the plugin that adds `hermes hephaestus`, which the
- * Model page uses to set the factory Hermes's provider and model. It goes in
+ * planning model page uses to set the factory Hermes's provider and model. It goes in
  * the factory root only, so the owner's own Hermes never loads it.
  */
 export async function installModelPlugin(hermes: FactoryHermes): Promise<void> {

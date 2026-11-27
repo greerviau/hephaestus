@@ -1,44 +1,26 @@
-import { escapeHtml, table } from "./html.js";
+import { escapeHtml, fold } from "./html.js";
 
 /**
- * Charts drawn on the server as SVG, in the mockup's style: one value axis,
- * a recessive grid, the second series hatched so it never depends on hue
- * alone, and a table under each chart with the same numbers. Hovering a
- * column or point shows its values through SVG titles, with no script.
+ * Charts drawn on the server as SVG: one value axis, a recessive grid, and
+ * a hatched series so that no series depends on hue alone. Nothing here
+ * answers a hover, because that needs a script; `tableFold` holds the exact
+ * numbers.
  */
 
 export interface Series {
   name: string;
-  /** null means no reading for that label. */
-  values: (number | null)[];
+  values: number[];
   /** A CSS color, such as `var(--series-1)`. */
   color: string;
   hatch?: boolean;
 }
-
-export interface ChartOptions {
-  /** Unique on the page; names the hatch pattern. */
-  id: string;
-  labels: string[];
-  series: Series[];
-  /** What the chart shows, for screen readers. */
-  aria: string;
-  height?: number;
-  /** The drawing's width in SVG units; close to its width on screen keeps labels near 12 px. */
-  width?: number;
-  /** Counts: gridlines only at whole numbers. */
-  integer?: boolean;
-  format?: (value: number) => string;
-}
-
-const DEFAULT_WIDTH = 720;
 
 function plain(value: number): string {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 /** A round axis maximum and step that fit `max`, with four or five gridlines. */
-export function axis(max: number, integer = false): { max: number; step: number } {
+function axis(max: number, integer: boolean): { max: number; step: number } {
   if (max <= 0) return { max: 4, step: 1 };
   const rough = max / 4;
   const magnitude = 10 ** Math.floor(Math.log10(rough));
@@ -47,22 +29,8 @@ export function axis(max: number, integer = false): { max: number; step: number 
   return { max: Math.ceil(max / step) * step, step };
 }
 
-function grid(
-  width: number,
-  scale: { max: number; step: number },
-  left: number,
-  top: number,
-  plotHeight: number,
-  format: (value: number) => string,
-): string {
-  const lines: string[] = [];
-  for (let value = 0; value <= scale.max + 1e-9; value += scale.step) {
-    const y = top + plotHeight - (value / scale.max) * plotHeight;
-    lines.push(
-      `<line x1="${String(left)}" x2="${String(width)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${value === 0 ? "var(--axis)" : "var(--grid)"}" stroke-width="1"/><text x="${String(left - 8)}" y="${(y + 4).toFixed(1)}" text-anchor="end">${escapeHtml(format(Number(value.toFixed(2))))}</text>`,
-    );
-  }
-  return lines.join("");
+function gridline(left: number, width: number, y: number, value: number): string {
+  return `<line x1="${String(left)}" x2="${String(width)}" y1="${y.toFixed(1)}" y2="${y.toFixed(1)}" stroke="${value === 0 ? "var(--axis)" : "var(--grid)"}"/><text x="${String(left - 8)}" y="${(y + 4).toFixed(1)}" text-anchor="end">${plain(Number(value.toFixed(2)))}</text>`;
 }
 
 /** Which labels to print so they do not collide: evenly spaced, always the last. */
@@ -78,160 +46,181 @@ function labelIndexes(count: number, plotWidth: number, minGap: number): Set<num
   return new Set(keep);
 }
 
-function roundedTop(x: number, y: number, width: number, height: number, radius: number): string {
-  if (radius === 0 || height < radius)
-    return `M${x.toFixed(1)},${y.toFixed(1)}h${width.toFixed(1)}v${height.toFixed(1)}h${(-width).toFixed(1)}z`;
-  return `M${x.toFixed(1)},${(y + height).toFixed(1)}V${(y + radius).toFixed(1)}Q${x.toFixed(1)},${y.toFixed(1)} ${(x + radius).toFixed(1)},${y.toFixed(1)}H${(x + width - radius).toFixed(1)}Q${(x + width).toFixed(1)},${y.toFixed(1)} ${(x + width).toFixed(1)},${(y + radius).toFixed(1)}V${(y + height).toFixed(1)}z`;
+function hatchFill(color: string): string {
+  return `repeating-linear-gradient(45deg,${color} 0 3px,var(--bg) 3px 5px)`;
 }
 
-function tooltip(options: ChartOptions, index: number): string {
-  const format = options.format ?? plain;
-  return `${options.labels[index] ?? ""}: ${options.series
-    .map((series) => {
-      const value = series.values[index];
-      return `${series.name} ${value === null || value === undefined ? "no reading" : format(value)}`;
-    })
-    .join(", ")}`;
+export interface ColumnsOptions {
+  /** Unique on the page; names the hatch pattern. */
+  id: string;
+  labels: string[];
+  /** Whole-number counts, stacked from the first series up. */
+  series: Series[];
+  /** What the chart shows, for screen readers. */
+  aria: string;
+  /** Names the region that scrolls sideways on a narrow screen. */
+  region: string;
 }
 
-function svgOpen(options: ChartOptions, width: number, height: number): string {
-  return `<div class="chart graph-scroll"><svg class="plot" viewBox="0 0 ${String(width)} ${String(height)}" role="img" aria-label="${escapeHtml(options.aria)}">`;
-}
-
-/** Stacked columns, one per label. */
-export function columns(options: ChartOptions): string {
-  const height = options.height ?? 220;
-  const width = options.width ?? DEFAULT_WIDTH;
-  const left = 36;
+/** Stacked columns, one per label, in a region that scrolls sideways when the screen is narrow. */
+export function columns(options: ColumnsOptions): string {
+  const width = 860;
+  const height = 220;
+  const left = 32;
   const top = 8;
-  const bottom = 28;
+  const bottom = 24;
   const plotHeight = height - top - bottom;
-  const plotWidth = width - left;
   const count = options.labels.length;
   const totals = options.labels.map((_, index) =>
     options.series.reduce((sum, series) => sum + (series.values[index] ?? 0), 0),
   );
-  const scale = axis(Math.max(0, ...totals), options.integer);
-  const band = plotWidth / Math.max(1, count);
-  const barWidth = Math.min(24, band * 0.6);
+  const scale = axis(Math.max(0, ...totals), true);
+  const band = (width - left) / Math.max(1, count);
+  const barWidth = Math.min(32, band * 0.6);
+  const shown = labelIndexes(count, width - left, 56);
   const hatchId = `hatch-${options.id}`;
-  const shown = labelIndexes(count, plotWidth, 52);
+  const hatched = options.series.find((series) => series.hatch === true);
   const parts: string[] = [
-    svgOpen(options, width, height),
-    `<defs><pattern id="${hatchId}" width="5" height="5" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="5" height="5" fill="var(--series-2)"/><line x1="0" y1="0" x2="0" y2="5" stroke="var(--surface)" stroke-width="1.6"/></pattern></defs>`,
-    grid(width, scale, left, top, plotHeight, options.format ?? plain),
+    hatched === undefined
+      ? ""
+      : `<defs><pattern id="${escapeHtml(hatchId)}" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="${hatched.color}"/><rect width="2" height="6" fill="var(--bg)"/></pattern></defs>`,
   ];
+  for (let value = 0; value <= scale.max + 1e-9; value += scale.step) {
+    parts.push(gridline(left, width, top + plotHeight - (value / scale.max) * plotHeight, value));
+  }
   options.labels.forEach((label, index) => {
     const x = left + band * index + (band - barWidth) / 2;
-    const topSeries = options.series.reduce(
-      (found, series, seriesIndex) => ((series.values[index] ?? 0) > 0 ? seriesIndex : found),
-      -1,
-    );
-    let stacked = 0;
-    const marks: string[] = [];
-    options.series.forEach((series, seriesIndex) => {
-      const value = series.values[index] ?? 0;
-      if (value <= 0) return;
-      const barHeight = (value / scale.max) * plotHeight;
-      const y = top + plotHeight - ((stacked + value) / scale.max) * plotHeight;
-      const gap = stacked > 0 ? 2 : 0;
-      marks.push(
-        `<path class="mark" d="${roundedTop(x, y, barWidth, Math.max(0, barHeight - gap), seriesIndex === topSeries ? 4 : 0)}" fill="${series.hatch === true ? `url(#${hatchId})` : series.color}"/>`,
-      );
-      stacked += value;
-    });
-    parts.push(
-      `<g><title>${escapeHtml(tooltip(options, index))}</title><rect x="${(left + band * index).toFixed(1)}" y="${String(top)}" width="${band.toFixed(1)}" height="${String(plotHeight)}" fill="transparent"/>${marks.join("")}</g>`,
-    );
-    if (shown.has(index)) {
-      const last = index === count - 1;
+    let y = top + plotHeight;
+    for (const series of options.series) {
+      const barHeight = ((series.values[index] ?? 0) / scale.max) * plotHeight;
+      if (barHeight <= 0) continue;
+      y -= barHeight;
+      // A 1px gap keeps stacked segments apart without leaning on their colors.
       parts.push(
-        `<text x="${(last ? x + barWidth : x + barWidth / 2).toFixed(1)}" y="${String(height - 8)}" text-anchor="${last ? "end" : "middle"}">${escapeHtml(label)}</text>`,
+        `<rect x="${x.toFixed(1)}" y="${(y + 1).toFixed(1)}" width="${barWidth.toFixed(1)}" height="${Math.max(1, barHeight - 1).toFixed(1)}" rx="2" fill="${series.hatch === true ? `url(#${escapeHtml(hatchId)})` : series.color}"/>`,
+      );
+    }
+    if (shown.has(index)) {
+      const last = index === count - 1 && count > 1;
+      parts.push(
+        `<text x="${(last ? x + barWidth : x + barWidth / 2).toFixed(1)}" y="${String(height - 6)}" text-anchor="${last ? "end" : "middle"}">${escapeHtml(label)}</text>`,
       );
     }
   });
-  parts.push("</svg></div>");
-  return parts.join("");
+  return `<div class="chart-scroll" tabindex="0" role="region" aria-label="${escapeHtml(options.region)}"><div class="chart"><svg class="wide" viewBox="0 0 ${String(width)} ${String(height)}" role="img" aria-label="${escapeHtml(options.aria)}">${parts.join("")}</svg></div></div>`;
 }
 
-/** Lines over the labels; a null value breaks the line. */
-export function lines(options: ChartOptions): string {
-  const height = options.height ?? 200;
-  const width = options.width ?? DEFAULT_WIDTH;
-  const left = 44;
-  const right = 8;
-  const top = 12;
-  const bottom = 28;
+export interface LineOptions {
+  labels: string[];
+  /** null means no reading for that label, which breaks the line. */
+  values: (number | null)[];
+  /** A CSS color. */
+  color: string;
+  /** What the chart shows, for screen readers. */
+  aria: string;
+  /** Counts: the axis ticks stay whole numbers. */
+  integer?: boolean;
+}
+
+/** A small trend line with the first and last labels under it. */
+export function line(options: LineOptions): string {
+  const width = 280;
+  const height = 120;
+  const left = 32;
+  const top = 8;
+  const bottom = 20;
   const plotHeight = height - top - bottom;
-  const plotWidth = width - left - right;
-  const count = options.labels.length;
-  const values = options.series.flatMap((series) =>
-    series.values.filter((value): value is number => value !== null),
-  );
-  const scale = axis(Math.max(0, ...values), options.integer);
+  const plotWidth = width - left - 8;
+  const count = options.values.length;
+  const readings = options.values.filter((value): value is number => value !== null);
+  let max = axis(Math.max(0, ...readings), options.integer === true).max;
+  // The middle tick is half the maximum, so a count's maximum must be even.
+  if (options.integer === true && max % 2 === 1) max += 1;
   const x = (index: number): number =>
-    left + (count === 1 ? plotWidth / 2 : (index / (count - 1)) * plotWidth);
-  const y = (value: number): number => top + plotHeight - (value / scale.max) * plotHeight;
-  const format = options.format ?? plain;
-  const parts: string[] = [
-    svgOpen(options, width, height),
-    grid(width, scale, left, top, plotHeight, format),
-  ];
-  for (const series of options.series) {
-    let pen = "M";
-    let path = "";
-    series.values.forEach((value, index) => {
-      if (value === null) {
-        pen = "M";
-        return;
-      }
-      path += `${pen}${x(index).toFixed(1)},${y(value).toFixed(1)}`;
-      pen = "L";
-    });
-    parts.push(
-      `<path d="${path}" fill="none" stroke="${series.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`,
-    );
-    series.values.forEach((value, index) => {
-      if (value === null) return;
-      parts.push(
-        `<circle class="mark" cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="${index === count - 1 ? "4" : "3"}" fill="${series.color}" stroke="var(--surface)" stroke-width="1.5"><title>${escapeHtml(`${options.labels[index] ?? ""}: ${series.name} ${format(value)}`)}</title></circle>`,
+    left + (count <= 1 ? plotWidth / 2 : (index / (count - 1)) * plotWidth);
+  const y = (value: number): number => top + plotHeight - (value / max) * plotHeight;
+  const parts = [0, max / 2, max].map((value) => gridline(left, width, y(value), value));
+  let path = "";
+  let pen = "M";
+  const dots: string[] = [];
+  options.values.forEach((value, index) => {
+    if (value === null) {
+      pen = "M";
+      return;
+    }
+    path += `${pen}${x(index).toFixed(1)},${y(value).toFixed(1)}`;
+    pen = "L";
+    // A reading with no reading on either side has no line segment, so it needs a mark of its own.
+    if (
+      (options.values[index - 1] ?? null) === null &&
+      (options.values[index + 1] ?? null) === null
+    ) {
+      dots.push(
+        `<circle cx="${x(index).toFixed(1)}" cy="${y(value).toFixed(1)}" r="3" fill="${options.color}"/>`,
       );
-    });
-  }
-  for (const index of labelIndexes(count, plotWidth, 60)) {
+    }
+  });
+  if (path !== "") {
     parts.push(
-      `<text x="${x(index).toFixed(1)}" y="${String(height - 8)}" text-anchor="${index === 0 ? "start" : index === count - 1 ? "end" : "middle"}">${escapeHtml(options.labels[index] ?? "")}</text>`,
+      `<path d="${path}" fill="none" stroke="${options.color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>`,
     );
   }
-  parts.push("</svg></div>");
-  return parts.join("");
+  parts.push(...dots);
+  const first = options.labels[0];
+  const last = options.labels.at(-1);
+  if (first !== undefined) {
+    parts.push(`<text x="${String(left)}" y="${String(height - 4)}">${escapeHtml(first)}</text>`);
+  }
+  if (last !== undefined && count > 1) {
+    parts.push(
+      `<text x="${String(width)}" y="${String(height - 4)}" text-anchor="end">${escapeHtml(last)}</text>`,
+    );
+  }
+  return `<div class="chart"><svg viewBox="0 0 ${String(width)} ${String(height)}" role="img" aria-label="${escapeHtml(options.aria)}">${parts.join("")}</svg></div>`;
 }
 
-/** The chart's key. `total` is shown after the name when given. */
-export function legend(series: (Series & { total?: string })[], line = false): string {
-  return `<ul class="legend" aria-hidden="true">${series
+/** The chart's key: each series' swatch, its name, and its total. */
+export function legend(series: readonly (Series & { total: number })[]): string {
+  return `<ul class="legend">${series
     .map(
       (item) =>
-        `<li><span class="key${line ? " lk" : ""}${item.hatch === true ? " hatch" : ""}"${item.hatch === true ? "" : ` style="background:${item.color}"`}></span>${escapeHtml(item.name)}${item.total === undefined ? "" : ` <span class="num">${escapeHtml(item.total)}</span>`}</li>`,
+        `<li><span class="key" style="background:${item.hatch === true ? hatchFill(item.color) : item.color}"></span>${escapeHtml(item.name)} ${String(item.total)}</li>`,
     )
     .join("")}</ul>`;
 }
 
-/** The chart's numbers as a table, folded under it. */
-export function tableView(
-  labels: string[],
-  series: Series[],
-  head: string,
-  format: (value: number) => string = plain,
+/**
+ * The charts' numbers as one folded table in a scroll region the keyboard
+ * can reach. The first column is each row's header; the rest are right
+ * aligned. Every cell is escaped.
+ */
+export function tableFold(
+  summary: string,
+  label: string,
+  head: readonly string[],
+  rows: readonly (readonly string[])[],
 ): string {
-  return `<details class="as-table"><summary>Show as table</summary>${table(
-    [{ label: head }, ...series.map((item) => ({ label: item.name, right: true }))],
-    labels.map((label, index) => [
-      escapeHtml(label),
-      ...series.map((item) => {
-        const value = item.values[index];
-        return value === null || value === undefined ? "No reading" : escapeHtml(format(value));
-      }),
-    ]),
-  )}</details>`;
+  const headCells = head
+    .map(
+      (cell, index) => `<th scope="col"${index === 0 ? "" : ' class="r"'}>${escapeHtml(cell)}</th>`,
+    )
+    .join("");
+  const body = rows
+    .map(
+      (cells) =>
+        `<tr>${cells
+          .map((cell, index) =>
+            index === 0
+              ? `<th scope="row">${escapeHtml(cell)}</th>`
+              : `<td class="r">${escapeHtml(cell)}</td>`,
+          )
+          .join("")}</tr>`,
+    )
+    .join("\n");
+  return fold(
+    summary,
+    `<div class="table-region" tabindex="0" role="region" aria-label="${escapeHtml(label)}"><table><thead><tr>${headCells}</tr></thead><tbody>
+${body}
+</tbody></table></div>`,
+  );
 }
