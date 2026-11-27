@@ -1,4 +1,7 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { AddressInfo } from "node:net";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
@@ -134,6 +137,42 @@ describe("FactoryMcp", () => {
     expect(h.github.issues.get(result.issue as number)?.title).toBe("Add a flag");
     expect(mcp.calls()[0]).toMatchObject({ role: "planner", tool: "file_issue", ok: true });
     await c.close();
+  });
+
+  it("files an issue with an attachment, and reports a bad attachment as an error with no issue", async () => {
+    const { h, url } = await start();
+    const dir = await mkdtemp(join(tmpdir(), "mcp-attach-"));
+    try {
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+      const path = join(dir, "banner.png");
+      await writeFile(path, bytes);
+      const c = await client(url, TOKENS.planner);
+      const tool = (await c.listTools()).tools.find((candidate) => candidate.name === "file_issue");
+      expect(tool?.description).toMatch(/10 files, 10 MB each/);
+      expect(Object.keys(tool?.inputSchema.properties ?? {})).toContain("attachments");
+
+      const missing = await c.callTool({
+        name: "file_issue",
+        arguments: { repo: "octo/app", title: "x", body: "", attachments: [join(dir, "nope.png")] },
+      });
+      expect(missing.isError).toBe(true);
+      expect(JSON.stringify(missing)).toContain("nope.png");
+      expect(h.github.issues.size).toBe(0);
+
+      const filed = json(
+        await c.callTool({
+          name: "file_issue",
+          arguments: { repo: "octo/app", title: "Banner", body: "B", attachments: [path] },
+        }),
+      );
+      await rm(path);
+      const body = h.github.issues.get(filed.issue as number)?.body ?? "";
+      expect(body).toContain("![banner.png](https://github.com/octo/app/blob/");
+      expect([...h.github.stored.values()][0]?.data.equals(bytes)).toBe(true);
+      await c.close();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 
   it("starts work for the lead and reports a refused call as an error", async () => {

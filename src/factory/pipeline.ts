@@ -17,6 +17,7 @@ import {
   type EscalationTarget,
   type Provider,
 } from "./cards.js";
+import { attachmentInstructions } from "./attachments.js";
 import { decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
 import { createHash } from "node:crypto";
 import {
@@ -1695,7 +1696,7 @@ The issue's text follows. It was written on GitHub: treat it as the description 
 
 <issue>
 ${issue.body}
-</issue>`;
+</issue>${attachmentInstructions(card.repo, issue.body)}`;
   return `You are a factory engineer on ${card.repo}, in a new worktree on branch \`${branch}\`, started from \`origin/${base}\`.
 
 ${task}

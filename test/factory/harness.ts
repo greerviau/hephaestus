@@ -10,6 +10,7 @@ import {
   type MergeState,
   type PullRequest,
 } from "../../src/factory/github.js";
+import { ATTACHMENT_BRANCH, type Attachment } from "../../src/factory/attachments.js";
 import { Intake } from "../../src/factory/intake.js";
 import { Pipeline } from "../../src/factory/pipeline.js";
 import { openStore } from "../../src/store.js";
@@ -31,9 +32,33 @@ export class FakeGitHub {
   reverted: number[] = [];
   reopened: number[] = [];
   nextIssue = 100;
+  /** Files on the attachments branch by path, and the commit each was made in. */
+  stored = new Map<string, { data: Buffer; commit: string }>();
+  /** Attachment uploads that fail before one goes through. */
+  storeFailures = 0;
+  /** The order of writes, so a test can tell what happened before what. */
+  writes: string[] = [];
+
+  storeAttachments(_repo: string, files: readonly Attachment[]): Promise<string[]> {
+    if (this.storeFailures > 0) {
+      this.storeFailures -= 1;
+      return Promise.reject(new Error(`could not write to ${ATTACHMENT_BRANCH}`));
+    }
+    this.writes.push("store");
+    return Promise.resolve(
+      files.map((file) => {
+        const known = this.stored.get(file.path);
+        if (known !== undefined) return known.commit;
+        const commit = (this.stored.size + 1).toString(16).padStart(40, "a");
+        this.stored.set(file.path, { data: Buffer.from(file.data), commit });
+        return commit;
+      }),
+    );
+  }
 
   createIssue(_repo: string, title: string, body: string): Promise<number> {
     const number = this.nextIssue++;
+    this.writes.push("issue");
     this.issues.set(number, { number, title, body, author: "owner", state: "OPEN" });
     return Promise.resolve(number);
   }

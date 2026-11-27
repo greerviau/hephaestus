@@ -34,6 +34,65 @@ describe("foldChecks", () => {
   });
 });
 
+describe("GitHub attachments", () => {
+  const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0xfe]);
+  const file = {
+    name: "b.png",
+    path: "attachments/0123456789abcdef/b.png",
+    data: png,
+    sha256: "x",
+  };
+
+  it("creates the branch from the default branch and commits the exact bytes through stdin", async () => {
+    const calls: { args: string[]; input: string | undefined }[] = [];
+    const exec: CommandRun = (_file, args, _cwd, _timeout, input) => {
+      calls.push({ args, input });
+      const joined = args.join(" ");
+      if (joined.includes("git/ref/heads/hephaestus/attachments")) {
+        return Promise.reject(new Error("gh failed: Not Found (HTTP 404)"));
+      }
+      if (args[1] === "repo" || args[0] === "repo") {
+        return Promise.resolve('{"defaultBranchRef":{"name":"main"}}');
+      }
+      if (joined.includes("git/ref/heads/main")) return Promise.resolve("base\n");
+      if (joined.includes("/commits?")) return Promise.resolve("\n");
+      if (joined.includes("/contents/")) return Promise.resolve("c0mmit\n");
+      return Promise.resolve("");
+    };
+    expect(await new GitHub("gh", exec).storeAttachments("octo/app", [file])).toEqual(["c0mmit"]);
+    const create = calls.find((call) => call.args.includes("repos/octo/app/git/refs"));
+    expect(create?.args).toEqual(
+      expect.arrayContaining(["ref=refs/heads/hephaestus/attachments", "sha=base"]),
+    );
+    const put = calls.find((call) => call.args.includes(`repos/octo/app/contents/${file.path}`));
+    const sent = JSON.parse(put?.input ?? "{}") as Record<string, string>;
+    expect(Buffer.from(sent.content ?? "", "base64").equals(png)).toBe(true);
+    expect(sent.branch).toBe("hephaestus/attachments");
+    // The bytes go on stdin, never on the command line.
+    expect(put?.args.join(" ")).not.toContain(png.toString("base64"));
+    expect(put?.args).toEqual(expect.arrayContaining(["--input", "-"]));
+  });
+
+  it("reuses a file already on the branch, and an existing branch", async () => {
+    const calls: string[][] = [];
+    const exec: CommandRun = (_file, args) => {
+      calls.push(args);
+      return Promise.resolve(args.join(" ").includes("/commits?") ? "found\n" : "{}");
+    };
+    expect(await new GitHub("gh", exec).storeAttachments("octo/app", [file])).toEqual(["found"]);
+    expect(calls.some((args) => args.includes("PUT"))).toBe(false);
+    expect(calls.some((args) => args.includes("repos/octo/app/git/refs"))).toBe(false);
+  });
+
+  it("does not take another failure for a missing branch", async () => {
+    const exec: CommandRun = () =>
+      Promise.reject(new Error("gh failed: Bad credentials (HTTP 401)"));
+    await expect(new GitHub("gh", exec).storeAttachments("octo/app", [file])).rejects.toThrow(
+      "Bad credentials",
+    );
+  });
+});
+
 describe("GitHub", () => {
   it("merges only at the expected head and returns the merge commit from the merge call", async () => {
     const calls: string[][] = [];

@@ -8,6 +8,16 @@ Every two minutes Hephaestus lists each factory project's open issues with `gh`.
 
 A closed issue leaves the owner's queue and comes back if it is reopened, and closing an admitted issue before any thread starts abandons its card. `gh` lists at most 200 open issues, so an issue missing from a full list is read on its own: 10 such reads per poll split among the projects, with at least one for each, oldest first. The intake reads time out after 30 seconds, so a stalled project delays the next poll by a few minutes at most. Writes to GitHub take no timeout, because one that outlived it might still have happened.
 
+### Attachments
+
+`file_issue` takes an optional `attachments` list of absolute local file paths, such as an image the requester attached in a chat, which the planner reads from its cache on the Hermes host. Calls without it behave as before.
+
+Hephaestus checks every file first: it must exist, be a readable regular file, and be at most 10 MB, and a call takes at most 10 files. Any type is accepted, and URLs are not. A bad file fails the call with an error that names it, and no issue is filed. Otherwise each file is committed through the GitHub API to the branch `hephaestus/attachments` of the target repo, which Hephaestus creates from the default branch when it is missing and uses for nothing else. A file lands at `attachments/<first 16 hex characters of its sha256>/<name>`, so filing the same file again reuses the existing commit. Characters in a name outside letters, digits, dot, underscore, and hyphen become underscores. The files are committed before the issue is created, so a failure after that can leave files on the branch with no issue; they are harmless.
+
+The issue body gains an `Attachments` section with a commit-pinned link, the size, and the sha256 of each file, and images (png, jpg, gif, webp, svg) are embedded so they render on the issue. Because the files live on the branch, they outlive the planner's cache.
+
+The implement thread's first message lists each attachment's path and commit when the issue links any, with the steps to fetch the exact bytes: `git fetch origin hephaestus/attachments`, then `git show <commit>:<path> > <destination>`. The engineer commits the file into its own branch where the task says; it never pushes to the attachments branch.
+
 ## The pipeline
 
 - The lead starts a card with `start_work` and a brief. If the lead has not started an admitted card after `factory.autoStartMinutes` (10 by default; 0 waits for the lead), Hephaestus starts it from the issue.

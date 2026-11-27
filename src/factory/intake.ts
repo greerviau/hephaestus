@@ -2,6 +2,7 @@ import type { Database } from "better-sqlite3";
 import { projectFor, projectKey, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
+import { readAttachments, withAttachments, type StoredAttachment } from "./attachments.js";
 import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
 /** Issues missing from the open lists that one poll reads on their own, split among the projects; each gets at least one. */
@@ -49,7 +50,7 @@ export interface Board {
 export interface IntakeOptions {
   db: Database;
   cards: CardStore;
-  github: Pick<GitHub, "createIssue" | "openIssues" | "issue">;
+  github: Pick<GitHub, "createIssue" | "openIssues" | "issue" | "storeAttachments">;
   /** The config in force: the deployed version. */
   config: () => FactoryConfig | undefined;
   board?: () => Board | undefined;
@@ -143,12 +144,32 @@ export class Intake {
     return resolvePolicy(project.policy);
   }
 
-  /** Files an issue for a factory role and admits it when the project's cap allows. */
-  fileIssue(role: string, repo: string, title: string, body: string): Promise<TrackedIssue> {
+  /**
+   * Files an issue for a factory role and admits it when the project's cap allows.
+   * Attachments are local file paths: every one is checked before anything is
+   * written, then committed to the repo's attachments branch, and the issue
+   * body links them. A failure leaves no issue.
+   */
+  fileIssue(
+    role: string,
+    repo: string,
+    title: string,
+    body: string,
+    attachments: readonly string[] = [],
+  ): Promise<TrackedIssue> {
     return this.serial(async () => {
       // The config's spelling, so the same repo under another casing shares its cap and record.
       repo = projectKey(this.options.config()?.projects, repo) ?? repo;
       this.policy(repo);
+      if (attachments.length > 0) {
+        const files = await readAttachments(attachments);
+        const commits = await this.options.github.storeAttachments(repo, files);
+        const stored: StoredAttachment[] = files.map((attachment, index) => ({
+          attachment,
+          commit: commits[index] ?? "",
+        }));
+        body = withAttachments(repo, body, stored);
+      }
       const number = await this.options.github.createIssue(repo, title, body);
       this.record({
         repo,
