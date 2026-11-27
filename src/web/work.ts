@@ -1536,7 +1536,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             })}${notice(url)}${events.ok && threads.ok && approved.ok ? "" : STORE_ERROR}${
               track === undefined
                 ? ""
-                : `${track.html}${noteLine(trackNote(item, track.step, events.ok ? events.value : [], now()))}`
+                : `<div class="tracker">${track.html}${noteLine(trackNote(item, track.step, events.ok ? events.value : [], now()))}</div>`
             }${taskCallout(item, back, place)}<div class="cols">${section({
               title: "Details",
               body: details(item, labels, now()),
