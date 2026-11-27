@@ -24,19 +24,13 @@ export const SHIPPED_PARAGRAPHS: readonly string[] = [
   "4cb2f3fb6dde03f3de4b802809bbfe1fd30f6f82a44597d4510632fe0d397b9c",
   "8a1843f96749eda4724c1fbc6fcbc130ba4c3a911693fc41895062d9fed84310",
   "97d8df22f826467271e7558b254980a897e415debc7d77a4436aac97b7c88aff",
+  "f25b9b145eb867bf9f3e0aaeb617dc972563217461bc7d17922ef47e5cd99270",
 ];
 
 const OWNER_HEADING = "## The owner's instructions";
 
-function paragraphs(text: string): string[] {
-  return text
-    .split(/\n\s*\n/)
-    .map((paragraph) => paragraph.trim())
-    .filter((paragraph) => paragraph !== "");
-}
-
-function isShipped(paragraph: string): boolean {
-  const hash = createHash("sha256").update(paragraph.replace(/\s+/g, " ").trim()).digest("hex");
+function isShipped(text: string): boolean {
+  const hash = createHash("sha256").update(text.replace(/\s+/g, " ").trim()).digest("hex");
   return SHIPPED_PARAGRAPHS.includes(hash);
 }
 
@@ -45,11 +39,39 @@ export function shippedInstructions(role: RoleName): string {
   return readFileSync(`${ROLES}${role}.md`, "utf8").trim();
 }
 
-/** The owner's instructions for a role, without paragraphs that copy shipped ones, and how many were left out. */
+/**
+ * The owner's instructions for a role, without the copies of shipped instructions they hold,
+ * and how many copies were left out: a paragraph that matches a shipped one, or a line that
+ * does, for an owner who typed straight under a copy. Everything else stays exactly as typed.
+ */
 export function ownInstructions(persona: string): { text: string; dropped: number } {
-  const all = paragraphs(persona);
-  const kept = all.filter((paragraph) => !isShipped(paragraph));
-  return { text: kept.join("\n\n"), dropped: all.length - kept.length };
+  const lines = persona.replace(/\r\n/g, "\n").split("\n");
+  const keep = lines.map(() => true);
+  let dropped = 0;
+  for (let start = 0; start < lines.length;) {
+    if ((lines[start] ?? "").trim() === "") {
+      start += 1;
+      continue;
+    }
+    let end = start;
+    while (end < lines.length && (lines[end] ?? "").trim() !== "") end += 1;
+    if (isShipped(lines.slice(start, end).join("\n"))) {
+      for (let line = start; line < end; line += 1) keep[line] = false;
+      dropped += 1;
+    } else {
+      for (let line = start; line < end; line += 1) {
+        if (isShipped(lines[line] ?? "")) {
+          keep[line] = false;
+          dropped += 1;
+        }
+      }
+    }
+    start = end;
+  }
+  const kept = lines.filter((_, index) => keep[index]).join("\n");
+  // Only gaps that removed text left behind are closed up.
+  const text = dropped === 0 ? kept : kept.replace(/\n{3,}/g, "\n\n");
+  return { text: text.replace(/^\s*\n/, "").trimEnd(), dropped };
 }
 
 /** What a role's Hermes profile gets: the shipped instructions, then the owner's. */

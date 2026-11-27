@@ -112,14 +112,55 @@ describe("applyShippedInstructions", () => {
       return Promise.resolve(undefined);
     };
 
+    const store = new ConfigStore(db);
+    const version = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "m",
+    });
+    store.approve(version.id);
+    const options = { db, store, hermesRoot: hermes, sync };
+
     // No profiles yet: the first deploy sets the root up, so there is nothing to bring up to date.
-    expect(await applyShippedInstructions({ db, hermesRoot: hermes, sync })).toBe(false);
+    expect(await applyShippedInstructions(options)).toBe(false);
     for (const role of ["planner", "lead", "improver"]) {
       mkdirSync(join(hermes, "profiles", role), { recursive: true });
     }
-    expect(await applyShippedInstructions({ db, hermesRoot: hermes, sync })).toBe(true);
-    expect(await applyShippedInstructions({ db, hermesRoot: hermes, sync })).toBe(false);
+    // An approved version the owner has not deployed is not applied.
+    expect(await applyShippedInstructions(options)).toBe(false);
+    store.markDeployed(version.id);
+    expect(await applyShippedInstructions(options)).toBe(true);
+    expect(await applyShippedInstructions(options)).toBe(false);
     expect(syncs).toBe(1);
+    db.close();
+  });
+
+  it("tries again on the next call after a sync fails", async () => {
+    const db = openStore(":memory:");
+    const store = new ConfigStore(db);
+    const version = store.createVersion({
+      document: sampleConfig(),
+      author: "owner",
+      message: "m",
+    });
+    store.approve(version.id);
+    store.markDeployed(version.id);
+    const hermes = join(home, "factory-hermes");
+    for (const role of ["planner", "lead", "improver"]) {
+      mkdirSync(join(hermes, "profiles", role), { recursive: true });
+    }
+    let syncs = 0;
+    const sync = (): Promise<string | undefined> => {
+      syncs += 1;
+      if (syncs === 1) return Promise.resolve("hermes exited with 1");
+      recordShippedInstructions(db);
+      return Promise.resolve(undefined);
+    };
+    const options = { db, store, hermesRoot: hermes, sync };
+    await applyShippedInstructions(options);
+    await applyShippedInstructions(options);
+    await applyShippedInstructions(options);
+    expect(syncs).toBe(2);
     db.close();
   });
 });

@@ -41,6 +41,18 @@ describe("rolePrompt", () => {
     expect(rolePrompt("lead", FIRST_LEAD)).toBe(`${shippedInstructions("lead")}\n`);
   });
 
+  it("leaves out an old copy when the owner typed a line straight under it", () => {
+    expect(ownInstructions(`${FIRST_LEAD.trimEnd()}\nAlso require tests.\n`)).toEqual({
+      text: "Also require tests.",
+      dropped: 3,
+    });
+  });
+
+  it("keeps the owner's text exactly as typed when it repeats nothing", () => {
+    const persona = "Prefer small PRs.\n\n\n```ts\nfunction f() {\n\n    return a;\n}\n```\n";
+    expect(ownInstructions(persona)).toEqual({ text: persona.trimEnd(), dropped: 0 });
+  });
+
   it("knows every paragraph the running build ships, so a later build can leave out copies of it", () => {
     for (const role of ROLE_NAMES) {
       for (const paragraph of shippedInstructions(role).split(/\n\s*\n/)) {

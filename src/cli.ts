@@ -465,18 +465,24 @@ async function main(argv: string[]): Promise<number> {
       const follower = new ThreadFollower(t3, events).run(following.signal);
       const workers = workerManager(db, paths, config, store, t3, events);
       const engine = factoryEngine(db, paths, config, store, t3, events, workers);
-      // A build that ships new role instructions brings them to the factory Hermes root at once.
-      if (config.hermesPath !== undefined) {
+      // A build that ships new role instructions brings them to the factory Hermes root at once,
+      // and a failed sync is tried again.
+      const hermesPath = config.hermesPath;
+      const applyShipped = (): void => {
+        if (hermesPath === undefined) return;
         applyShippedInstructions({
           db,
+          store,
           hermesRoot: paths.hermes,
           sync: () => workers.resyncHermes(),
         }).catch((error: unknown) => {
           console.error("Applying the shipped role instructions failed", error);
         });
-      }
+      };
+      applyShipped();
       const mcpServer = engine.mcp.listen(config.port + 1);
       const engineTicks = [
+        setInterval(applyShipped, 5 * 60_000),
         setInterval(() => {
           engine.pipeline.tick().catch((error: unknown) => {
             console.error("Advancing cards failed", error);
