@@ -13,6 +13,8 @@ import {
 import { dirname, join, relative, sep } from "node:path";
 import type { Database } from "better-sqlite3";
 import { ROLE_NAMES, type CronJob, type FactoryConfig, type RoleName } from "../config/document.js";
+import { rolePrompt, shippedDigest } from "../config/shipped.js";
+import { getMeta, setMeta } from "../meta.js";
 import { stripAnsi, type FactoryHermes } from "./cli.js";
 import { hermesModel, hermesModelBlock } from "./model.js";
 
@@ -39,6 +41,18 @@ const CHAT_DISPLAY = [
   ["long_running_notifications", "generic"],
 ] as const;
 const CRON_PREFIX = "hephaestus-";
+/** The shipped role instructions the last sync applied, as {@link shippedDigest} names them. */
+const SHIPPED_KEY = "hermes_shipped_instructions";
+
+/** Whether this build ships role instructions that the factory Hermes root has not been given yet. */
+export function shippedInstructionsChanged(db: Database): boolean {
+  return getMeta(db, SHIPPED_KEY) !== shippedDigest();
+}
+
+/** Records that the factory Hermes root has this build's shipped role instructions. */
+export function recordShippedInstructions(db: Database): void {
+  setMeta(db, SHIPPED_KEY, shippedDigest());
+}
 
 function yamlString(value: string): string {
   return JSON.stringify(value);
@@ -62,7 +76,8 @@ function listedJobs(output: string): Map<string, string> {
 
 /**
  * Keeps the planner, lead, and improver profiles in the factory Hermes root
- * in line with a config version. The persona and skills arrive as a profile
+ * in line with a config version. Each role's instructions, the shipped ones
+ * followed by the owner's persona, and its skills arrive as a profile
  * distribution; toolsets, the MCP entry, and cron jobs go through the CLI,
  * because `config.yaml` also holds the model settings the owner chose. The
  * MCP token is written straight to the profile's `.env`, so it never appears
@@ -108,6 +123,7 @@ export class FactoryProfiles {
     for (const role of ROLE_NAMES) {
       await this.syncRole(config, role, version, typeof mcp === "function" ? mcp(role) : mcp);
     }
+    recordShippedInstructions(this.db);
   }
 
   private async syncRole(
@@ -177,7 +193,9 @@ export class FactoryProfiles {
       ].join("\n"),
       { mode: 0o644 },
     );
-    writeFileSync(join(dir, "SOUL.md"), config.roles[role].persona, { mode: 0o644 });
+    writeFileSync(join(dir, "SOUL.md"), rolePrompt(role, config.roles[role].persona), {
+      mode: 0o644,
+    });
     for (const skill of skills) {
       for (const [path, text] of Object.entries(config.skills[skill] ?? {})) {
         const target = join(dir, "skills", skill, path);

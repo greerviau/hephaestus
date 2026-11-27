@@ -458,6 +458,11 @@ export class WorkerManager {
     });
   }
 
+  /** Applies the current version to the factory Hermes root again, after any deploy under way. */
+  resyncHermes(): Promise<string | undefined> {
+    return this.serialized(() => this.syncHermes());
+  }
+
   private async syncHermes(): Promise<string | undefined> {
     try {
       await this.options.syncHermes?.();

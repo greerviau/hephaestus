@@ -14,10 +14,12 @@ import {
   type InstructionSetName,
 } from "../config/agents.js";
 import { MAX_SKILL_FILE_BYTES } from "../config/defaults.js";
+import { ownInstructions, shippedInstructions } from "../config/shipped.js";
 import {
   ConfigValidationError,
   isSafeRelativePath,
   type FactoryConfig,
+  type RoleName,
 } from "../config/document.js";
 import type { ConfigVersion } from "../config/store.js";
 import {
@@ -42,6 +44,7 @@ import {
   empty,
   escapeHtml,
   field,
+  fold,
   input,
   menu,
   pageHead,
@@ -101,12 +104,33 @@ function skillHref(name: string, file: string = SKILL_FILE): string {
 }
 
 /** A tall plain-text editor. The newline after the tag keeps a text's own first newline, which a browser would drop. */
-function editor(id: string, label: string, text: string): string {
+function editor(id: string, label: string, text: string, hint?: string): string {
   return field(
     id,
     label,
     `<textarea id="${id}" class="config" name="text" spellcheck="false">\n${escapeHtml(text)}</textarea>`,
+    hint === undefined ? {} : { hint },
   );
+}
+
+/**
+ * A role's shipped instructions, which the page shows but cannot change, and a note when the
+ * owner's text repeats some of them, as a config made by an earlier install does.
+ */
+function shippedPart(role: RoleName, persona: string): string {
+  const { dropped } = ownInstructions(persona);
+  const repeated =
+    dropped === 0
+      ? ""
+      : callout(
+          "info",
+          "Some of your text repeats the shipped instructions",
+          `${dropped === 1 ? "1 paragraph here repeats" : `${String(dropped)} paragraphs here repeat`} instructions Hephaestus ships, so the role gets ${dropped === 1 ? "it" : "them"} only once. You can delete ${dropped === 1 ? "it" : "them"}.`,
+        );
+  return `${fold(
+    "Shipped with Hephaestus",
+    `<p class="hint">The role gets these first, and your instructions after them. They come with Hephaestus and change when it is updated, so they cannot be edited here.</p><pre class="block">${escapeHtml(shippedInstructions(role))}</pre>`,
+  )}${repeated}`;
 }
 
 /** The message and deploy choice of a dialog that saves a version. `id` keeps its fields apart from the page's own. */
@@ -337,10 +361,13 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       configPage(
         context.shell,
         `${title} instructions`,
-        `${pageHead({ title: `${title} instructions`, lede: does })}${savedNotice(context.url)}${stale ? conflict(current, typed, "the instructions and skills") : ""}${problems("Not saved", refused?.errors)}<form class="form wide" method="post" action="${AGENTS}/${name}"><input type="hidden" name="parentId" value="${escapeHtml(builtFrom(current, kept))}">${editor(
+        `${pageHead({ title: `${title} instructions`, lede: does })}${savedNotice(context.url)}${stale ? conflict(current, typed, "the instructions and skills") : ""}${problems("Not saved", refused?.errors)}${name === "threads" ? "" : shippedPart(name, saved.text)}<form class="form wide" method="post" action="${AGENTS}/${name}"><input type="hidden" name="parentId" value="${escapeHtml(builtFrom(current, kept))}">${editor(
           "instructions",
-          "Instructions",
+          name === "threads" ? "Instructions" : "Your instructions",
           kept === undefined ? saved.text : formText(kept, "text"),
+          name === "threads"
+            ? undefined
+            : "Added after the shipped instructions. Leave it empty to use them alone.",
         )}<fieldset class="sec"><legend>Skills it loads</legend><div class="checks">${
           choices === ""
             ? `<p class="hint">No skills yet. Add one on <a href="${AGENTS}">Agents</a>.</p>`

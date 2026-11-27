@@ -4,7 +4,7 @@ export const ROLE_NAMES = ["planner", "lead", "improver"] as const;
 export type RoleName = (typeof ROLE_NAMES)[number];
 
 export interface RoleConfig {
-  /** The role's instructions, used as the Hermes profile's persona. */
+  /** The owner's instructions for the role, which its Hermes profile gets after the shipped ones. */
   persona: string;
   /** Names of skills in `FactoryConfig.skills` that the role loads. */
   skills: string[];
