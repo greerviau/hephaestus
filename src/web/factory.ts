@@ -33,6 +33,8 @@ export interface FactoryPages {
   version?: () => { commit: string; behind?: number; command: string } | undefined;
   /** Runs `update` for the update page; absent in tests that leave the page out. */
   updater?: Pick<SelfUpdate, "start" | "status">;
+  /** Whether an update holds the update lock now. Cheap enough to ask on every page. */
+  updating?: () => boolean;
   cards: CardStore;
   intake: Pick<Intake, "issues" | "approve" | "reject" | "fileIssue">;
   pipeline: Pick<

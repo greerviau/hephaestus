@@ -14,6 +14,8 @@ export interface Paths {
   secrets: string;
   /** The factory Hermes root: a Hermes home of its own, separate from the owner's. */
   hermes: string;
+  /** Held while an update runs, from the dashboard or a shell. */
+  updateLock: string;
   unit: string;
   /** The factory Hermes gateway's unit, beside Hephaestus's own. */
   gatewayUnit: string;
@@ -34,6 +36,7 @@ export function resolvePaths(env: NodeJS.ProcessEnv = process.env): Paths {
     backups: join(root, "backups"),
     secrets: join(root, "secrets.json"),
     hermes: join(root, "hermes"),
+    updateLock: join(root, "update.lock"),
     unit: join(configHome, "systemd", "user", SERVICE_NAME),
     gatewayUnit: join(configHome, "systemd", "user", GATEWAY_SERVICE_NAME),
   };

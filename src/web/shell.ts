@@ -65,12 +65,11 @@ export function shellSource(factory: FactoryPages): ShellSource {
     const proposals = drafts.ok ? drafts.value.length : 0;
     const projects = factoryProjects(factory);
     const version = factory.version?.();
-    const { updater } = factory;
-    // Asking systemd costs a process, so only while the update notice shows.
+    const { updating: locked } = factory;
     const status =
-      updater === undefined || (version?.behind ?? 0) === 0
+      locked === undefined || (version?.behind ?? 0) === 0
         ? undefined
-        : read("the update", () => updater.status().running);
+        : read("the update lock", locked);
     const updating = status?.ok === true ? status.value : undefined;
     return {
       paused: paused.ok ? paused.value : undefined,

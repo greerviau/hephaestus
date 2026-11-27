@@ -61,6 +61,7 @@ export interface DashboardOptions {
   messaging?: FactoryPages["messaging"];
   model?: FactoryPages["model"];
   updater?: FactoryPages["updater"];
+  updating?: FactoryPages["updating"];
   version?: FactoryPages["version"];
 }
 
@@ -103,6 +104,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     ...(options.messaging === undefined ? {} : { messaging: options.messaging }),
     ...(options.model === undefined ? {} : { model: options.model }),
     ...(options.updater === undefined ? {} : { updater: options.updater }),
+    ...(options.updating === undefined ? {} : { updating: options.updating }),
     ...(options.version === undefined ? {} : { version: options.version }),
     hermesModel: () => options.hermesModel,
     now: () => NOW,

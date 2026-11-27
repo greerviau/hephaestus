@@ -12,7 +12,7 @@ function check(answers: { fetch: boolean; behind?: string }) {
     if (args[0] === "rev-list") return Promise.resolve(answers.behind ?? "0\n");
     return Promise.reject(new Error(`unexpected ${args.join(" ")}`));
   };
-  return { version: new VersionCheck({ exec }), fetches };
+  return { version: new VersionCheck({ exec }), fetches, answers };
 }
 
 describe("VersionCheck", () => {
@@ -21,8 +21,10 @@ describe("VersionCheck", () => {
     await t.version.refresh();
     expect(t.version.state()).toEqual({ commit: "abcdef1234567890", behind: 3 });
 
+    t.answers.behind = "5\n";
     await t.version.refresh();
     expect(t.fetches).toHaveLength(2);
+    expect(t.version.state()).toEqual({ commit: "abcdef1234567890", behind: 5 });
   });
 
   it("shows nothing about origin/main when the fetch fails", async () => {

@@ -57,10 +57,27 @@ describe("Update", () => {
     expect(fake.started).toHaveLength(1);
   });
 
-  it("shows an update notice with an Update now button on every page while origin/main is ahead", async () => {
-    const state = { running: false };
-    dashboard = await startDashboard({ updater: fakeUpdater(state).updater, version });
+  it("shows an update notice with an Update now button on every page once origin/main is ahead", async () => {
+    const fake = fakeUpdater({ running: false });
+    let calls = 0;
+    const updater = {
+      ...fake.updater,
+      status: () => {
+        calls += 1;
+        return fake.updater.status();
+      },
+    };
+    let behind = 0;
+    let updating = false;
+    dashboard = await startDashboard({
+      updater,
+      version: () => ({ ...version(), behind }),
+      updating: () => updating,
+    });
 
+    expect((await dashboard.get("/")).html).not.toContain("update-notice");
+
+    behind = 2;
     for (const path of ["/", "/work", "/config"]) {
       const page = await dashboard.get(path);
       const notice = /<div class="box info update-notice"[^]*?<\/div><\/div>/.exec(page.html)?.[0];
@@ -69,25 +86,19 @@ describe("Update", () => {
       expect(notice, path).toContain('action="/update"');
       expect(notice, path).toContain("Update now");
     }
+    // Rendering the notice reads the update lock, never systemd.
+    expect(calls).toBe(0);
 
     // The Update page has its own button, so it shows no notice.
     const own = await dashboard.get("/update");
     expect(own.html).not.toContain("update-notice");
 
-    state.running = true;
+    // An update holds the lock whether the dashboard or a shell started it.
+    updating = true;
     const running = await dashboard.get("/");
     expect(running.html).toContain("Updating");
     expect(running.html).toContain('<a href="/update">');
     expect(running.html).not.toContain("Update now");
-  });
-
-  it("shows no update notice when origin/main has nothing newer", async () => {
-    dashboard = await startDashboard({
-      updater: fakeUpdater({ running: false }).updater,
-      version: () => ({ ...version(), behind: 0 }),
-    });
-    const home = await dashboard.get("/");
-    expect(home.html).not.toContain("update-notice");
   });
 
   it("shows a running update's log and reloads until it finishes, then shows the result", async () => {
