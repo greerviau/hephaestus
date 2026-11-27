@@ -1,4 +1,5 @@
 import { ICON_LINKS, LOGO_PATH } from "./brand.js";
+import { LIVE_SCRIPT_PATH } from "./live.js";
 
 const ESCAPES: Record<string, string> = {
   "&": "&amp;",
@@ -24,11 +25,18 @@ export function lookup<T>(table: Readonly<Record<string, T>>, key: string | null
 
 export const STYLESHEET_PATH = "/assets/app.css";
 
+function refreshTags(seconds: number, url: string | undefined): string {
+  const meta = `<meta http-equiv="refresh" content="${String(seconds)}${url === undefined ? "" : `;url=${escapeHtml(url)}`}">`;
+  const live = url === undefined ? "" : ` data-live-url="${escapeHtml(url)}"`;
+  return `<noscript>${meta}</noscript>\n<script src="${LIVE_SCRIPT_PATH}" data-live-seconds="${String(seconds)}"${live} defer></script>\n`;
+}
+
 /**
  * A complete HTML document. `title` is escaped; `body` must already be safe
- * HTML. `refreshSeconds` reloads the page, which is how a section that is
- * still loading fills in without JavaScript. `refreshUrl` is the local path
- * the reload loads; without it the browser loads the current address again.
+ * HTML. `refreshSeconds` keeps the page current: a script fetches it again
+ * and swaps in the regions that changed, and a meta refresh reloads it for a
+ * browser that runs no scripts. `refreshUrl` is the local path both load;
+ * without it they load the current address again.
  */
 export function page(
   title: string,
@@ -41,7 +49,7 @@ export function page(
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-${refreshSeconds === undefined ? "" : `<meta http-equiv="refresh" content="${String(refreshSeconds)}${refreshUrl === undefined ? "" : `;url=${escapeHtml(refreshUrl)}`}">\n`}<title>${escapeHtml(title)} - Hephaestus</title>
+${refreshSeconds === undefined ? "" : refreshTags(refreshSeconds, refreshUrl)}<title>${escapeHtml(title)} - Hephaestus</title>
 <link rel="stylesheet" href="${STYLESHEET_PATH}">
 ${ICON_LINKS}
 </head>
