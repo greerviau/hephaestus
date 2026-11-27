@@ -74,7 +74,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   store.markDeployed(first.id);
   const mcp = new FactoryMcp({
     db: h.db,
-    cards: h.cards,
+    tasks: h.tasks,
     intake: h.intake,
     pipeline: h.pipeline,
     store,
@@ -86,7 +86,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   const workers = options.workers;
   let configRepo = options.configRepo;
   const factory: FactoryPages = {
-    cards: h.cards,
+    tasks: h.tasks,
     intake: h.intake,
     pipeline: h.pipeline,
     events: h.events,
@@ -156,16 +156,16 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
   };
 }
 
-/** A card escalated to the owner, waiting for approval to merge PR 5 at SHA. */
-export function escalatedCard(h: Harness): number {
-  const id = h.cards.create({ repo: "octo/app", issueNumber: 7, title: "Fix <the> parser" }).id;
-  h.cards.transition(id, "Implementing", "work started", {
+/** A task escalated to the owner, waiting for approval to merge PR 5 at SHA. */
+export function escalatedTask(h: Harness): number {
+  const id = h.tasks.create({ repo: "octo/app", issueNumber: 7, title: "Fix <the> parser" }).id;
+  h.tasks.transition(id, "Implementing", "work started", {
     workerEnv: "w1",
     startedAt: new Date(NOW).toISOString(),
   });
-  h.cards.transition(id, "Reviewing", "PR #5 at 1111111", { prNumber: 5, headSha: SHA });
-  h.cards.transition(id, "Merging", "approved");
-  h.cards.transition(id, "Escalated", "the PR touches .github/workflows/ci.yml", {
+  h.tasks.transition(id, "Reviewing", "PR #5 at 1111111", { prNumber: 5, headSha: SHA });
+  h.tasks.transition(id, "Merging", "approved");
+  h.tasks.transition(id, "Escalated", "the PR touches .github/workflows/ci.yml", {
     escalatedTo: "owner",
     reason: "The PR touches .github/workflows/ci.yml",
     ownerAction: "merge",
@@ -174,10 +174,10 @@ export function escalatedCard(h: Harness): number {
   return id;
 }
 
-/** A card implementing on w1 with a running implement thread. */
-export function runningCard(h: Harness): number {
-  const id = h.cards.create({ repo: "octo/app", issueNumber: 8, title: "Add a cache" }).id;
-  h.cards.transition(id, "Implementing", "work started", {
+/** A task implementing on w1 with a running implement thread. */
+export function runningTask(h: Harness): number {
+  const id = h.tasks.create({ repo: "octo/app", issueNumber: 8, title: "Add a cache" }).id;
+  h.tasks.transition(id, "Implementing", "work started", {
     workerEnv: "w1",
     implementer: "codex",
     implementThread: "t-impl",
@@ -186,11 +186,11 @@ export function runningCard(h: Harness): number {
   h.events.recordThread({
     environmentId: "w1",
     threadId: "t-impl",
-    title: "Hephaestus: implement card",
+    title: "Hephaestus: implement task",
     providerInstanceId: "hephaestus-codex",
     model: "gpt-5.5",
     configVersion: 1,
-    cardId: String(id),
+    taskId: String(id),
     kind: "implement",
   });
   h.events.setStatus("w1", "t-impl", "running");

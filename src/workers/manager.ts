@@ -680,7 +680,7 @@ export class WorkerManager {
         },
         {
           configVersion: row.version ?? this.desired()?.version ?? 0,
-          cardId: null,
+          taskId: null,
           kind: "setup",
         },
       );

@@ -37,18 +37,18 @@ function chosen(raw: string | undefined, projects: readonly string[]): string | 
  * that cannot be read counts as none.
  */
 function needsYou(factory: FactoryPages, proposals: number): number {
-  const cards = read("cards", () =>
-    factory.cards
+  const tasks = read("tasks", () =>
+    factory.tasks
       .list()
-      .filter((card) => card.stage === "Escalated" && card.escalatedTo === "owner"),
+      .filter((task) => task.stage === "Escalated" && task.escalatedTo === "owner"),
   );
   const issues = read("issues", () => factory.intake.issues(["awaiting-owner", "held-cap"]));
   const workers = read("workers", () => (factory.workers?.views() ?? []).filter(workerNeedsOwner));
   // An escalation is counted from its task, as on Home.
   const notifications = read("notifications", () =>
-    factory.cards.notifications().filter((item) => item.kind !== "escalation"),
+    factory.tasks.notifications().filter((item) => item.kind !== "escalation"),
   );
-  return [cards, issues, workers, notifications].reduce(
+  return [tasks, issues, workers, notifications].reduce(
     (sum, part) => sum + (part.ok ? part.value.length : 0),
     proposals,
   );

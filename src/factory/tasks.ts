@@ -3,21 +3,21 @@ import type { PolicySettings } from "../config/policy.js";
 import type { Database } from "better-sqlite3";
 import type { Stage } from "../hermes/board.js";
 
-/** The card event detail when a PR is sent back because it no longer merges cleanly. */
+/** The task event detail when a PR is sent back because it no longer merges cleanly. */
 export const MERGE_CONFLICT_DETAIL = "the PR conflicts with its base branch";
-/** The card event detail when a PR is sent back because its reviewer asked for changes. */
+/** The task event detail when a PR is sent back because its reviewer asked for changes. */
 export const CHANGES_REQUESTED_DETAIL = "the reviewer asked for changes";
 
 export type Provider = "claude" | "codex";
 export type EscalationTarget = "lead" | "owner";
 
-export interface Card {
+export interface Task {
   id: number;
   repo: string;
   issueNumber: number | null;
   title: string;
   stage: Stage;
-  hermesCardId: string | null;
+  hermesTaskId: string | null;
   brief: string | null;
   workerEnv: string | null;
   projectId: string | null;
@@ -31,7 +31,7 @@ export interface Card {
   headSha: string | null;
   rounds: number;
   escalatedTo: EscalationTarget | null;
-  /** Why the card is escalated, or why it was abandoned. */
+  /** Why the task is escalated, or why it was abandoned. */
   reason: string | null;
   /** Why the next thread has not started yet: a cap, a pause, or no ready worker. */
   waiting: string | null;
@@ -54,23 +54,23 @@ export interface Card {
   foreignMerge: boolean;
   /** Set from the failed validation that opened a revert PR until that revert merges. */
   reverting: boolean;
-  /** The policy the card last ran under, kept so a merge in flight can finish if its project is removed. */
+  /** The policy the task last ran under, kept so a merge in flight can finish if its project is removed. */
   policy: PolicySettings | null;
   /**
-   * When the card's thread stopped on a provider's usage limit: when the pipeline looks at it
+   * When the task's thread stopped on a provider's usage limit: when the pipeline looks at it
    * again, and the T3 run that stopped, so a run T3 resumed on its own is told from it.
    */
   limitUntil: string | null;
   limitRun: string | null;
-  /** Counts every change, so a form from an earlier state of the card is refused. */
+  /** Counts every change, so a form from an earlier state of the task is refused. */
   version: number;
   createdAt: string;
   updatedAt: string;
 }
 
-export interface CardEvent {
+export interface TaskEvent {
   id: number;
-  cardId: number;
+  taskId: number;
   at: string;
   kind: string;
   detail: string;
@@ -78,7 +78,7 @@ export interface CardEvent {
 
 /**
  * Every stage change the pipeline may make. Tests walk this table, and
- * {@link CardStore.transition} refuses any change it does not list.
+ * {@link TaskStore.transition} refuses any change it does not list.
  */
 export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
   Admitted: ["Implementing", "Escalated", "Abandoned"],
@@ -95,8 +95,8 @@ export const TRANSITIONS: Record<Stage, readonly Stage[]> = {
 };
 
 export class TransitionError extends Error {
-  constructor(card: Card, to: Stage) {
-    super(`Card ${String(card.id)} cannot move from ${card.stage} to ${to}.`);
+  constructor(task: Task, to: Stage) {
+    super(`Task ${String(task.id)} cannot move from ${task.stage} to ${to}.`);
   }
 }
 
@@ -106,7 +106,7 @@ interface Row {
   issue_number: number | null;
   title: string;
   stage: Stage;
-  hermes_card_id: string | null;
+  hermes_task_id: string | null;
   brief: string | null;
   worker_env: string | null;
   project_id: string | null;
@@ -140,12 +140,12 @@ interface Row {
   updated_at: string;
 }
 
-const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt" | "version">, string> = {
+const COLUMNS: Record<keyof Omit<Task, "id" | "createdAt" | "updatedAt" | "version">, string> = {
   repo: "repo",
   issueNumber: "issue_number",
   title: "title",
   stage: "stage",
-  hermesCardId: "hermes_card_id",
+  hermesTaskId: "hermes_task_id",
   brief: "brief",
   workerEnv: "worker_env",
   projectId: "project_id",
@@ -176,14 +176,14 @@ const COLUMNS: Record<keyof Omit<Card, "id" | "createdAt" | "updatedAt" | "versi
   limitRun: "limit_run",
 };
 
-function toCard(row: Row): Card {
+function toTask(row: Row): Task {
   return {
     id: row.id,
     repo: row.repo,
     issueNumber: row.issue_number,
     title: row.title,
     stage: row.stage,
-    hermesCardId: row.hermes_card_id,
+    hermesTaskId: row.hermes_task_id,
     brief: row.brief,
     workerEnv: row.worker_env,
     projectId: row.project_id,
@@ -220,53 +220,53 @@ function toCard(row: Row): Card {
   };
 }
 
-/** Hephaestus's record of every card: its stage, threads, PR, and a log of what happened. */
-export class CardStore {
+/** Hephaestus's record of every task: its stage, threads, PR, and a log of what happened. */
+export class TaskStore {
   constructor(
     private readonly db: Database,
     private readonly now: () => Date = () => new Date(),
   ) {}
 
-  create(card: { repo: string; issueNumber: number | null; title: string }): Card {
+  create(task: { repo: string; issueNumber: number | null; title: string }): Task {
     const at = this.now().toISOString();
     const result = this.db
       .prepare(
-        `INSERT INTO cards (repo, issue_number, title, stage, created_at, updated_at)
+        `INSERT INTO tasks (repo, issue_number, title, stage, created_at, updated_at)
          VALUES (?, ?, ?, 'Admitted', ?, ?)`,
       )
-      .run(card.repo, card.issueNumber, card.title, at, at);
+      .run(task.repo, task.issueNumber, task.title, at, at);
     const id = Number(result.lastInsertRowid);
     this.event(
       id,
       "admitted",
-      card.issueNumber === null ? card.title : `issue #${String(card.issueNumber)}`,
+      task.issueNumber === null ? task.title : `issue #${String(task.issueNumber)}`,
     );
     return this.get(id);
   }
 
-  get(id: number): Card {
-    const row = this.db.prepare("SELECT * FROM cards WHERE id = ?").get(id) as Row | undefined;
-    if (row === undefined) throw new Error(`There is no card ${String(id)}.`);
-    return toCard(row);
+  get(id: number): Task {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Row | undefined;
+    if (row === undefined) throw new Error(`There is no task ${String(id)}.`);
+    return toTask(row);
   }
 
-  find(id: number): Card | undefined {
-    const row = this.db.prepare("SELECT * FROM cards WHERE id = ?").get(id) as Row | undefined;
-    return row === undefined ? undefined : toCard(row);
+  find(id: number): Task | undefined {
+    const row = this.db.prepare("SELECT * FROM tasks WHERE id = ?").get(id) as Row | undefined;
+    return row === undefined ? undefined : toTask(row);
   }
 
-  byHermesId(hermesCardId: string): Card | undefined {
+  byHermesId(hermesTaskId: string): Task | undefined {
     const row = this.db
-      .prepare("SELECT * FROM cards WHERE hermes_card_id = ?")
-      .get(hermesCardId) as Row | undefined;
-    return row === undefined ? undefined : toCard(row);
+      .prepare("SELECT * FROM tasks WHERE hermes_task_id = ?")
+      .get(hermesTaskId) as Row | undefined;
+    return row === undefined ? undefined : toTask(row);
   }
 
-  /** The implement and review threads of every card that is not done or abandoned. */
+  /** The implement and review threads of every task that is not done or abandoned. */
   activeThreadIds(): Set<string> {
     const rows = this.db
       .prepare(
-        `SELECT implement_thread AS i, review_thread AS r FROM cards
+        `SELECT implement_thread AS i, review_thread AS r FROM tasks
          WHERE stage NOT IN ('Done', 'Abandoned') AND (implement_thread IS NOT NULL OR review_thread IS NOT NULL)`,
       )
       .all() as { i: string | null; r: string | null }[];
@@ -278,23 +278,23 @@ export class CardStore {
     return ids;
   }
 
-  /** Cards, newest first, optionally only those in the given stages. */
-  list(stages?: readonly Stage[]): Card[] {
+  /** Tasks, newest first, optionally only those in the given stages. */
+  list(stages?: readonly Stage[]): Task[] {
     const rows =
       stages === undefined
-        ? (this.db.prepare("SELECT * FROM cards ORDER BY id DESC").all() as Row[])
+        ? (this.db.prepare("SELECT * FROM tasks ORDER BY id DESC").all() as Row[])
         : (this.db
             .prepare(
-              `SELECT * FROM cards WHERE stage IN (${stages.map(() => "?").join(", ")}) ORDER BY id DESC`,
+              `SELECT * FROM tasks WHERE stage IN (${stages.map(() => "?").join(", ")}) ORDER BY id DESC`,
             )
             .all(...stages) as Row[]);
-    return rows.map(toCard);
+    return rows.map(toTask);
   }
 
   update(
     id: number,
-    fields: Partial<Omit<Card, "id" | "createdAt" | "updatedAt" | "stage" | "version">>,
-  ): Card {
+    fields: Partial<Omit<Task, "id" | "createdAt" | "updatedAt" | "stage" | "version">>,
+  ): Task {
     const entries = Object.entries(fields) as [keyof typeof COLUMNS, unknown][];
     if (entries.length > 0) {
       const sets = entries.map(([key]) => `${COLUMNS[key]} = ?`).join(", ");
@@ -311,24 +311,24 @@ export class CardStore {
             : (value ?? null),
       );
       this.db
-        .prepare(`UPDATE cards SET ${sets}, updated_at = ?, version = version + 1 WHERE id = ?`)
+        .prepare(`UPDATE tasks SET ${sets}, updated_at = ?, version = version + 1 WHERE id = ?`)
         .run(...(values as (string | number | null)[]), this.now().toISOString(), id);
     }
     return this.get(id);
   }
 
-  /** Moves a card to `to` if the stage diagram allows it, and logs why. */
+  /** Moves a task to `to` if the stage diagram allows it, and logs why. */
   transition(
     id: number,
     to: Stage,
     detail: string,
-    fields: Partial<Omit<Card, "id" | "createdAt" | "updatedAt" | "stage" | "version">> = {},
-  ): Card {
+    fields: Partial<Omit<Task, "id" | "createdAt" | "updatedAt" | "stage" | "version">> = {},
+  ): Task {
     return this.db.transaction(() => {
-      const card = this.get(id);
-      if (!TRANSITIONS[card.stage].includes(to)) throw new TransitionError(card, to);
+      const task = this.get(id);
+      if (!TRANSITIONS[task.stage].includes(to)) throw new TransitionError(task, to);
       this.db
-        .prepare("UPDATE cards SET stage = ?, updated_at = ?, version = version + 1 WHERE id = ?")
+        .prepare("UPDATE tasks SET stage = ?, updated_at = ?, version = version + 1 WHERE id = ?")
         .run(to, this.now().toISOString(), id);
       this.update(id, fields);
       this.event(id, `stage:${to}`, detail);
@@ -336,34 +336,34 @@ export class CardStore {
     })();
   }
 
-  event(cardId: number, kind: string, detail: string): void {
+  event(taskId: number, kind: string, detail: string): void {
     this.db
-      .prepare("INSERT INTO card_events (card_id, at, kind, detail) VALUES (?, ?, ?, ?)")
-      .run(cardId, this.now().toISOString(), kind, detail);
+      .prepare("INSERT INTO task_events (task_id, at, kind, detail) VALUES (?, ?, ?, ?)")
+      .run(taskId, this.now().toISOString(), kind, detail);
   }
 
-  events(cardId: number): CardEvent[] {
+  events(taskId: number): TaskEvent[] {
     return this.db
       .prepare(
-        "SELECT id, card_id AS cardId, at, kind, detail FROM card_events WHERE card_id = ? ORDER BY id",
+        "SELECT id, task_id AS taskId, at, kind, detail FROM task_events WHERE task_id = ? ORDER BY id",
       )
-      .all(cardId) as CardEvent[];
+      .all(taskId) as TaskEvent[];
   }
 
-  /** The newest events across all cards, for the Activity page. */
-  /** The newest card events, of one project's cards when `repo` is given. */
-  recentEvents(limit = 200, repo?: string): (CardEvent & { title: string; repo: string })[] {
+  /** The newest events across all tasks, for the Activity page. */
+  /** The newest task events, of one project's tasks when `repo` is given. */
+  recentEvents(limit = 200, repo?: string): (TaskEvent & { title: string; repo: string })[] {
     return this.db
       .prepare(
-        `SELECT e.id, e.card_id AS cardId, e.at, e.kind, e.detail, c.title, c.repo
-         FROM card_events e JOIN cards c ON c.id = e.card_id
+        `SELECT e.id, e.task_id AS taskId, e.at, e.kind, e.detail, c.title, c.repo
+         FROM task_events e JOIN tasks c ON c.id = e.task_id
          WHERE @repo IS NULL OR c.repo = @repo ORDER BY e.id DESC LIMIT @limit`,
       )
-      .all({ limit, repo: repo ?? null }) as (CardEvent & { title: string; repo: string })[];
+      .all({ limit, repo: repo ?? null }) as (TaskEvent & { title: string; repo: string })[];
   }
 
   recordReview(review: {
-    cardId: number;
+    taskId: number;
     headSha: string;
     reviewer: Provider;
     author: Provider;
@@ -372,11 +372,11 @@ export class CardStore {
   }): void {
     this.db
       .prepare(
-        `INSERT INTO review_results (card_id, head_sha, reviewer, author, verdict, thread_id, at)
+        `INSERT INTO review_results (task_id, head_sha, reviewer, author, verdict, thread_id, at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
-        review.cardId,
+        review.taskId,
         review.headSha,
         review.reviewer,
         review.author,
@@ -387,13 +387,13 @@ export class CardStore {
   }
 
   /** Whether a reviewer other than the author approved exactly this head commit. */
-  approvedAt(cardId: number, headSha: string): boolean {
+  approvedAt(taskId: number, headSha: string): boolean {
     const row = this.db
       .prepare(
-        `SELECT 1 FROM review_results WHERE card_id = ? AND head_sha = ? AND verdict = 'approve'
+        `SELECT 1 FROM review_results WHERE task_id = ? AND head_sha = ? AND verdict = 'approve'
          AND reviewer != author ORDER BY at DESC LIMIT 1`,
       )
-      .get(cardId, headSha);
+      .get(taskId, headSha);
     return row !== undefined;
   }
 
@@ -401,21 +401,21 @@ export class CardStore {
     repo: string,
     prNumber: number,
     mergeSha: string,
-    cardId: number,
+    taskId: number,
     revert: boolean,
     /** Merged by someone else; recorded so a revert still counts, never as Hephaestus's merge. */
     foreign = false,
   ): void {
     this.db
       .prepare(
-        `INSERT OR REPLACE INTO merges (repo, pr_number, merge_sha, card_id, revert, foreign_merge, at)
+        `INSERT OR REPLACE INTO merges (repo, pr_number, merge_sha, task_id, revert, foreign_merge, at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         repo,
         prNumber,
         mergeSha,
-        cardId,
+        taskId,
         revert ? 1 : 0,
         foreign ? 1 : 0,
         this.now().toISOString(),
@@ -430,18 +430,18 @@ export class CardStore {
   }
 
   /** Records a revert PR someone else merged, with its audit event, in one write. */
-  recordForeignRevert(repo: string, prNumber: number, mergeSha: string, cardId: number): void {
+  recordForeignRevert(repo: string, prNumber: number, mergeSha: string, taskId: number): void {
     this.db.transaction(() => {
-      this.recordMerge(repo, prNumber, mergeSha, cardId, true, true);
+      this.recordMerge(repo, prNumber, mergeSha, taskId, true, true);
       this.event(
-        cardId,
+        taskId,
         "foreign-merge",
         `revert PR #${String(prNumber)} merged outside Hephaestus`,
       );
     })();
   }
 
-  /** When the PR's merge was recorded, or null when none is. Unlike a card's update time, a later change does not move it. */
+  /** When the PR's merge was recorded, or null when none is. Unlike a task's update time, a later change does not move it. */
   mergedAt(repo: string, prNumber: number | null): string | null {
     if (prNumber === null) return null;
     const row = this.db
@@ -467,40 +467,40 @@ export class CardStore {
     );
   }
 
-  /** `kind` is `escalation` for a card handed to the owner, which Home already lists. */
-  notify(text: string, cardId: number | null = null, kind: "info" | "escalation" = "info"): void {
+  /** `kind` is `escalation` for a task handed to the owner, which Home already lists. */
+  notify(text: string, taskId: number | null = null, kind: "info" | "escalation" = "info"): void {
     this.db
-      .prepare("INSERT INTO notifications (at, card_id, text, kind) VALUES (?, ?, ?, ?)")
-      .run(this.now().toISOString(), cardId, text, kind);
+      .prepare("INSERT INTO notifications (at, task_id, text, kind) VALUES (?, ?, ?, ?)")
+      .run(this.now().toISOString(), taskId, text, kind);
   }
 
-  notifications(): { id: number; at: string; cardId: number | null; text: string; kind: string }[] {
+  notifications(): { id: number; at: string; taskId: number | null; text: string; kind: string }[] {
     return this.db
       .prepare(
-        "SELECT id, at, card_id AS cardId, text, kind FROM notifications WHERE dismissed = 0 ORDER BY id DESC",
+        "SELECT id, at, task_id AS taskId, text, kind FROM notifications WHERE dismissed = 0 ORDER BY id DESC",
       )
-      .all() as { id: number; at: string; cardId: number | null; text: string; kind: string }[];
+      .all() as { id: number; at: string; taskId: number | null; text: string; kind: string }[];
   }
 
   /**
    * The newest notifications, dismissed or not, for the Activity page. With
-   * `repo`, only those about one of that project's cards.
+   * `repo`, only those about one of that project's tasks.
    */
   recentNotifications(
     limit = 200,
     repo?: string,
-  ): { id: number; at: string; cardId: number | null; text: string; dismissed: boolean }[] {
+  ): { id: number; at: string; taskId: number | null; text: string; dismissed: boolean }[] {
     return (
       this.db
         .prepare(
-          `SELECT id, at, card_id AS cardId, text, dismissed FROM notifications
-           WHERE @repo IS NULL OR card_id IN (SELECT id FROM cards WHERE repo = @repo)
+          `SELECT id, at, task_id AS taskId, text, dismissed FROM notifications
+           WHERE @repo IS NULL OR task_id IN (SELECT id FROM tasks WHERE repo = @repo)
            ORDER BY id DESC LIMIT @limit`,
         )
         .all({ limit, repo: repo ?? null }) as {
         id: number;
         at: string;
-        cardId: number | null;
+        taskId: number | null;
         text: string;
         dismissed: number;
       }[]
@@ -513,21 +513,21 @@ export class CardStore {
 }
 
 /**
- * A card's name in refs and branches outside Hephaestus, scoped to this
- * install: card ids restart at 1 after a reinstall, and a bare
- * `factory/card-1` would collide with the last install's branch on GitHub.
+ * A task's name in refs and branches outside Hephaestus, scoped to this
+ * install: task ids restart at 1 after a reinstall, and a bare
+ * `factory/task-1` would collide with the last install's branch on GitHub.
  */
-export function cardRef(install: string, cardId: number): string {
-  return `${installPrefix(install)}-card-${String(cardId)}`;
+export function taskRef(install: string, taskId: number): string {
+  return `${installPrefix(install)}-task-${String(taskId)}`;
 }
 
 /**
- * The evidence ref a card's engineer was told to push to. It follows the
- * card's branch, so a card started before branch names carried the install
- * still finds its evidence under the old `card-<id>` name.
+ * The evidence ref a task's engineer was told to push to. It follows the
+ * task's branch, so a task started before branch names carried the install
+ * still finds its evidence under its existing branch name.
  */
-export function evidenceRefFor(card: Pick<Card, "id" | "branch">, install: string): string {
+export function evidenceRefFor(task: Pick<Task, "id" | "branch">, install: string): string {
   const named =
-    card.branch === null ? undefined : /^factory\/(.+?)(?:-retry-\d+)?$/.exec(card.branch)?.[1];
-  return `hephaestus/evidence/${named ?? cardRef(install, card.id)}`;
+    task.branch === null ? undefined : /^factory\/(.+?)(?:-retry-\d+)?$/.exec(task.branch)?.[1];
+  return `hephaestus/evidence/${named ?? taskRef(install, task.id)}`;
 }

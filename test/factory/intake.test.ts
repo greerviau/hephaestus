@@ -4,11 +4,11 @@ import { Intake, NotAFactoryProjectError } from "../../src/factory/intake.js";
 import { harness } from "./harness.js";
 
 describe("Intake", () => {
-  it("admits an issue filed through file_issue and gives it a card", async () => {
+  it("admits an issue filed through file_issue and gives it a task", async () => {
     const h = harness();
     const issue = await h.intake.fileIssue("planner", "octo/app", "Add a flag", "Body");
     expect(issue).toMatchObject({ provenance: "factory", filedBy: "planner", state: "admitted" });
-    expect(h.cards.get(issue.cardId ?? 0)).toMatchObject({
+    expect(h.tasks.get(issue.taskId ?? 0)).toMatchObject({
       stage: "Admitted",
       issueNumber: issue.number,
     });
@@ -28,12 +28,12 @@ describe("Intake", () => {
       provenance: "external",
       author: "someone",
       state: "awaiting-owner",
-      cardId: null,
+      taskId: null,
     });
-    expect(h.cards.list()).toEqual([]);
+    expect(h.tasks.list()).toEqual([]);
 
-    const card = await h.intake.approve("octo/app", 7);
-    expect(card.issueNumber).toBe(7);
+    const task = await h.intake.approve("octo/app", 7);
+    expect(task.issueNumber).toBe(7);
     expect(h.intake.issue("octo/app", 7)?.state).toBe("admitted");
   });
 
@@ -50,7 +50,7 @@ describe("Intake", () => {
     await h.intake.reject("octo/app", 7);
     await h.intake.poll();
     expect(h.intake.issue("octo/app", 7)?.state).toBe("rejected");
-    expect(h.cards.list()).toEqual([]);
+    expect(h.tasks.list()).toEqual([]);
     // An Admit form opened before the rejection must not undo it.
     await expect(h.intake.approve("octo/app", 7)).rejects.toThrow(/not waiting for you/);
     await expect(h.intake.reject("octo/app", 7)).rejects.toThrow(/not waiting for you/);
@@ -70,14 +70,14 @@ describe("Intake", () => {
     expect(h.intake.awaitingWork("octo/app")).toBe(2);
 
     // The held issue waits for the owner, even after room opens.
-    const first = h.cards.list().at(-1);
-    h.cards.update(first?.id ?? 0, { startedAt: "2026-11-25T12:00:00Z" });
-    h.cards.transition(first?.id ?? 0, "Implementing", "started");
+    const first = h.tasks.list().at(-1);
+    h.tasks.update(first?.id ?? 0, { startedAt: "2026-11-25T12:00:00Z" });
+    h.tasks.transition(first?.id ?? 0, "Implementing", "started");
     await h.intake.poll();
     const held = h.intake.issues(["held-cap"]);
     expect(held).toHaveLength(1);
     await h.intake.approve("octo/app", held[0]?.number ?? 0);
-    expect(h.cards.list()).toHaveLength(3);
+    expect(h.tasks.list()).toHaveLength(3);
   });
 
   it("refuses to admit an issue that was closed meanwhile", async () => {
@@ -194,7 +194,7 @@ describe("Intake", () => {
     };
 
     const polling = h.intake.poll();
-    await expect.poll(() => h.cards.get(filed.cardId ?? 0).stage).toBe("Abandoned");
+    await expect.poll(() => h.tasks.get(filed.taskId ?? 0).stage).toBe("Abandoned");
     release();
     await polling;
   });
@@ -218,7 +218,7 @@ describe("Intake", () => {
       return read(repo, number);
     };
     await h.intake.poll();
-    expect(h.cards.get(first.cardId ?? 0).stage).toBe("Admitted");
+    expect(h.tasks.get(first.taskId ?? 0).stage).toBe("Admitted");
 
     // Ten more issues are filed, held at the cap, and closed before the next poll.
     for (let index = 0; index < 10; index += 1) {
@@ -228,10 +228,10 @@ describe("Intake", () => {
       if (filed !== undefined) filed.state = "CLOSED";
     }
     await h.intake.poll();
-    expect(h.cards.get(first.cardId ?? 0).stage).toBe("Abandoned");
+    expect(h.tasks.get(first.taskId ?? 0).stage).toBe("Abandoned");
   });
 
-  it("goes on when a card it would abandon was abandoned during the read", async () => {
+  it("goes on when a task it would abandon was abandoned during the read", async () => {
     const h = harness();
     const a = await h.intake.fileIssue("planner", "octo/app", "a", "");
     const b = await h.intake.fileIssue("planner", "octo/app", "b", "");
@@ -241,9 +241,9 @@ describe("Intake", () => {
     }
     const read = h.github.issue.bind(h.github);
     h.github.issue = async (repo, number) => {
-      // The owner abandons both cards while the first read is out.
-      for (const id of [a.cardId, b.cardId]) {
-        if (id !== null && h.cards.get(id).stage !== "Abandoned") {
+      // The owner abandons both tasks while the first read is out.
+      for (const id of [a.taskId, b.taskId]) {
+        if (id !== null && h.tasks.get(id).stage !== "Abandoned") {
           await h.pipeline.abandon(id, "not needed");
         }
       }
@@ -252,10 +252,10 @@ describe("Intake", () => {
 
     await h.intake.poll();
     expect(
-      h.cards.events(a.cardId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
+      h.tasks.events(a.taskId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
     ).toHaveLength(1);
     expect(
-      h.cards.events(b.cardId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
+      h.tasks.events(b.taskId ?? 0).filter((event) => event.kind === "stage:Abandoned"),
     ).toHaveLength(1);
   });
 
@@ -320,7 +320,7 @@ describe("Intake", () => {
     // A fresh service, as after a restart, polls once.
     const restarted = new Intake({
       db: h.db,
-      cards: h.cards,
+      tasks: h.tasks,
       github: h.github,
       config: () => h.config,
     });
@@ -362,7 +362,7 @@ describe("Intake", () => {
     const issue = h.github.issues.get(first.number);
     if (issue !== undefined) issue.state = "CLOSED";
     await h.intake.poll();
-    expect(h.cards.get(first.cardId ?? 0).stage).toBe("Abandoned");
+    expect(h.tasks.get(first.taskId ?? 0).stage).toBe("Abandoned");
     expect((await h.intake.fileIssue("planner", "octo/app", "two", "")).state).toBe("admitted");
   });
 
@@ -393,7 +393,7 @@ describe("Intake", () => {
     expect(h.intake.issues().filter((issue) => issue.number === 7)).toHaveLength(1);
     await h.intake.approve("octo/app", 7);
     await expect(h.intake.approve("octo/app", 7)).resolves.toBeDefined();
-    expect(h.cards.list()).toHaveLength(1);
+    expect(h.tasks.list()).toHaveLength(1);
   });
 
   it("refuses a repo that is not a factory project", async () => {

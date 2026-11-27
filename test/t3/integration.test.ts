@@ -54,7 +54,7 @@ describe.runIf(enabled)("T3 integration", () => {
               'Run `echo hephaestus` as a shell command, then end your reply with exactly:\n```hephaestus-result\n{"ok": true}\n```',
             clientRequestId: `hephaestus-integration-${String(process.pid)}`,
           },
-          { configVersion: 0, cardId: null },
+          { configVersion: 0, taskId: null },
         );
         expect(events.thread(environmentId, threadId)?.status).toBe("starting");
         const follower = new ThreadFollower(t3, events, { waitMs: 15_000 });

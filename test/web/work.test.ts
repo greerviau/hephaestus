@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { MERGE_CONFLICT_DETAIL } from "../../src/factory/cards.js";
+import { MERGE_CONFLICT_DETAIL } from "../../src/factory/tasks.js";
 import { decideMerge } from "../../src/factory/gate.js";
 import { PRESETS } from "../../src/config/policy.js";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
@@ -7,9 +7,9 @@ import { MERGE_STEP_REASONS, checksPassedAtGate } from "../../src/factory/pipeli
 import type { WorkerView } from "../../src/workers/manager.js";
 import { SHA, pr, type Harness } from "../factory/harness.js";
 import {
-  escalatedCard,
+  escalatedTask,
   externalIssue,
-  runningCard,
+  runningTask,
   startDashboard,
   type Dashboard,
 } from "./dashboard.js";
@@ -25,56 +25,56 @@ const SHA2 = "2222222222222222222222222222222222222222";
 const MERGE = "3333333333333333333333333333333333333333";
 
 /** A task whose PR 6 was reviewed and sits at the merge gate. */
-function mergingCard(h: Harness, waiting: string | null = null): number {
-  const id = h.cards.create({ repo: "octo/app", issueNumber: 11, title: "Under test" }).id;
-  h.cards.transition(id, "Implementing", "work started", { workerEnv: "w1" });
-  h.cards.transition(id, "Reviewing", "PR #6 at 2222222", { prNumber: 6, headSha: SHA2 });
-  h.cards.transition(id, "Merging", `approved at ${SHA2}`);
-  if (waiting !== null) h.cards.update(id, { waiting });
+function mergingTask(h: Harness, waiting: string | null = null): number {
+  const id = h.tasks.create({ repo: "octo/app", issueNumber: 11, title: "Under test" }).id;
+  h.tasks.transition(id, "Implementing", "work started", { workerEnv: "w1" });
+  h.tasks.transition(id, "Reviewing", "PR #6 at 2222222", { prNumber: 6, headSha: SHA2 });
+  h.tasks.transition(id, "Merging", `approved at ${SHA2}`);
+  if (waiting !== null) h.tasks.update(id, { waiting });
   return id;
 }
 
 /** A task the reviewer sent back once and a conflict sent back once, now in review again. */
-function sentBackCard(h: Harness): number {
-  const id = h.cards.create({ repo: "octo/app", issueNumber: 12, title: "Twice sent back" }).id;
-  h.cards.transition(id, "Implementing", "work started", {
+function sentBackTask(h: Harness): number {
+  const id = h.tasks.create({ repo: "octo/app", issueNumber: 12, title: "Twice sent back" }).id;
+  h.tasks.transition(id, "Implementing", "work started", {
     workerEnv: "w1",
     policy: PRESETS.standard,
   });
-  h.cards.transition(id, "Reviewing", "PR #9 at 1111111", { prNumber: 9, headSha: SHA });
-  h.cards.transition(id, "Implementing", "the reviewer asked for changes", { rounds: 1 });
-  h.cards.transition(id, "Reviewing", "PR #9 at 2222222", { headSha: SHA2 });
-  h.cards.transition(id, "Merging", `approved at ${SHA2}`);
-  h.cards.transition(id, "Implementing", MERGE_CONFLICT_DETAIL, { rounds: 2 });
-  h.cards.transition(id, "Reviewing", "PR #9 at 2222222", { headSha: SHA2 });
+  h.tasks.transition(id, "Reviewing", "PR #9 at 1111111", { prNumber: 9, headSha: SHA });
+  h.tasks.transition(id, "Implementing", "the reviewer asked for changes", { rounds: 1 });
+  h.tasks.transition(id, "Reviewing", "PR #9 at 2222222", { headSha: SHA2 });
+  h.tasks.transition(id, "Merging", `approved at ${SHA2}`);
+  h.tasks.transition(id, "Implementing", MERGE_CONFLICT_DETAIL, { rounds: 2 });
+  h.tasks.transition(id, "Reviewing", "PR #9 at 2222222", { headSha: SHA2 });
   return id;
 }
 
 /** A task merged by Hephaestus whose merge commit passed its checks. */
-function doneCard(h: Harness): number {
-  const id = mergingCard(h);
-  h.cards.recordReview({
-    cardId: id,
+function doneTask(h: Harness): number {
+  const id = mergingTask(h);
+  h.tasks.recordReview({
+    taskId: id,
     headSha: SHA2,
     reviewer: "codex",
     author: "claude",
     verdict: "approve",
     threadId: "t-rev",
   });
-  h.cards.transition(id, "Validating", `merged PR #6 as ${MERGE}`, {
+  h.tasks.transition(id, "Validating", `merged PR #6 as ${MERGE}`, {
     mergeSha: MERGE,
     expectedChecks: ["check:unit", "check:lint"],
   });
-  h.cards.transition(id, "Done", `checks passed on ${MERGE}`);
+  h.tasks.transition(id, "Done", `checks passed on ${MERGE}`);
   return id;
 }
 
 const MERGE2 = "4444444444444444444444444444444444444444";
 
 /** A task whose merge of PR 6 as MERGE is being checked on the default branch. */
-function validatingCard(h: Harness): number {
-  const id = mergingCard(h);
-  h.cards.transition(id, "Validating", `merged PR #6 as ${MERGE}`, {
+function validatingTask(h: Harness): number {
+  const id = mergingTask(h);
+  h.tasks.transition(id, "Validating", `merged PR #6 as ${MERGE}`, {
     mergeSha: MERGE,
     expectedChecks: ["check:unit"],
   });
@@ -127,9 +127,9 @@ function steps(html: string): string[] {
 describe("Work", () => {
   it("opens on the tasks in progress, with tabs that count each group", async () => {
     dashboard = await startDashboard();
-    const running = runningCard(dashboard.h);
-    const escalated = escalatedCard(dashboard.h);
-    doneCard(dashboard.h);
+    const running = runningTask(dashboard.h);
+    const escalated = escalatedTask(dashboard.h);
+    doneTask(dashboard.h);
     await externalIssue(dashboard.h);
 
     const { status, html } = await dashboard.get("/work");
@@ -173,7 +173,7 @@ describe("Work", () => {
 
   it("says how many threads run against the limits", async () => {
     dashboard = await startDashboard();
-    runningCard(dashboard.h);
+    runningTask(dashboard.h);
 
     const { html } = await dashboard.get("/work");
 
@@ -196,14 +196,14 @@ describe("Work", () => {
   it("shows the tasks in progress as a board of the stages that hold tasks", async () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
-    const implementing = runningCard(h);
-    const merging = mergingCard(h, "checks are running");
-    const withLead = h.cards.create({ repo: "octo/app", issueNumber: 13, title: "Stuck" }).id;
-    h.cards.transition(withLead, "Escalated", "to the lead: no PR to merge", {
+    const implementing = runningTask(h);
+    const merging = mergingTask(h, "checks are running");
+    const withLead = h.tasks.create({ repo: "octo/app", issueNumber: 13, title: "Stuck" }).id;
+    h.tasks.transition(withLead, "Escalated", "to the lead: no PR to merge", {
       escalatedTo: "lead",
       reason: "no PR to merge",
     });
-    escalatedCard(h);
+    escalatedTask(h);
 
     const { status, html } = await dashboard.get("/work?view=board");
 
@@ -236,9 +236,9 @@ describe("Work", () => {
   it("gives a task with no merge to approve a Send to lead button, as Home does", async () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
-    const id = h.cards.create({ repo: "octo/app", issueNumber: 11, title: "Pick an approach" }).id;
-    h.cards.transition(id, "Implementing", "work started");
-    h.cards.transition(id, "Escalated", "needs a decision", {
+    const id = h.tasks.create({ repo: "octo/app", issueNumber: 11, title: "Pick an approach" }).id;
+    h.tasks.transition(id, "Implementing", "work started");
+    h.tasks.transition(id, "Escalated", "needs a decision", {
       escalatedTo: "owner",
       reason: "Two designs fit",
     });
@@ -261,21 +261,21 @@ describe("Work", () => {
 
   it("lists what needs you: escalated tasks with their actions, and issues to admit", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
     await externalIssue(dashboard.h);
     const back = "/work?tab=needs";
 
     const { html } = await dashboard.get(back);
 
-    expect(html).toContain(`<a class="title" href="/work/${String(card)}">`);
+    expect(html).toContain(`<a class="title" href="/work/${String(task)}">`);
     expect(html).toContain("The PR touches .github/workflows/ci.yml");
-    expect(html).toContain(`action="/work/${String(card)}/approve-merge"`);
+    expect(html).toContain(`action="/work/${String(task)}/approve-merge"`);
     expect(html).toContain(`Merge PR #5 at ${SHA.slice(0, 7)}`);
     expect(html).toContain(
-      `href="/work/${String(card)}/lead?back=${encodeURIComponent(back)}">Send to lead</a>`,
+      `href="/work/${String(task)}/lead?back=${encodeURIComponent(back)}">Send to lead</a>`,
     );
     expect(html).toContain(
-      `href="/work/${String(card)}/abandon?back=${encodeURIComponent(back)}">Abandon</a>`,
+      `href="/work/${String(task)}/abandon?back=${encodeURIComponent(back)}">Abandon</a>`,
     );
     expect(html).toContain("#42 Crash on &lt;empty&gt; input");
     expect(html).toContain('action="/work/issues/admit"');
@@ -311,8 +311,8 @@ describe("Work", () => {
 
   it("lists finished tasks, and every task under All", async () => {
     dashboard = await startDashboard();
-    runningCard(dashboard.h);
-    const done = doneCard(dashboard.h);
+    runningTask(dashboard.h);
+    const done = doneTask(dashboard.h);
 
     const finished = (await dashboard.get("/work?tab=finished")).html;
     expect(finished).toContain(`href="/work/${String(done)}"`);
@@ -325,8 +325,8 @@ describe("Work", () => {
 
   it("shows only the project the sidebar picker is set to", async () => {
     dashboard = await startDashboard();
-    runningCard(dashboard.h);
-    dashboard.h.cards.create({ repo: "octo/lib", issueNumber: 3, title: "Lib work" });
+    runningTask(dashboard.h);
+    dashboard.h.tasks.create({ repo: "octo/lib", issueNumber: 3, title: "Lib work" });
 
     const all = (await dashboard.get("/work")).html;
     expect(all).toContain("Lib work");
@@ -380,7 +380,7 @@ describe("Issue actions", () => {
     expect(response.headers.get("location")).toBe("/work?tab=needs&notice=admitted");
     const issue = dashboard.h.intake.issues().find((item) => item.number === 42);
     expect(issue?.state).toBe("admitted");
-    expect(issue?.cardId).not.toBeNull();
+    expect(issue?.taskId).not.toBeNull();
     const { html } = await dashboard.get("/work?tab=needs&notice=admitted");
     expect(html).toContain("It has a task now.");
   });
@@ -481,7 +481,7 @@ describe("Request work", () => {
       filedBy: "owner",
       title: "Add a --verbose flag",
     });
-    expect(dashboard.h.cards.list()).toHaveLength(1);
+    expect(dashboard.h.tasks.list()).toHaveLength(1);
   });
 
   it("accepts a long request in any script", async () => {
@@ -640,8 +640,8 @@ describe("Request work", () => {
 describe("Task page", () => {
   it("shows a task waiting for you with its reason and actions", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
-    const id = String(card);
+    const task = escalatedTask(dashboard.h);
+    const id = String(task);
 
     const { status, html } = await dashboard.get(`/work/${id}`);
 
@@ -679,13 +679,13 @@ describe("Task page", () => {
 
   it("folds the details an owner rarely needs, and the lead's brief", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    dashboard.h.cards.update(card, { brief: "Goal: add a <cache>.", branch: "factory/x-card-1" });
+    const task = runningTask(dashboard.h);
+    dashboard.h.tasks.update(task, { brief: "Goal: add a <cache>.", branch: "factory/x-task-1" });
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain("<summary>More details</summary>");
-    expect(html).toContain("factory/x-card-1");
+    expect(html).toContain("factory/x-task-1");
     expect(html).toContain("Factory Codex");
     expect(html).toContain("<summary>The lead&#39;s brief</summary>");
     expect(html).toContain("Goal: add a &lt;cache&gt;.");
@@ -694,8 +694,8 @@ describe("Task page", () => {
 
   it("lists the task's threads, and offers Abandon in a menu", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = String(card);
+    const task = runningTask(dashboard.h);
+    const id = String(task);
 
     const { html } = await dashboard.get(`/work/${id}`);
 
@@ -721,21 +721,21 @@ describe("Task page", () => {
 
   it("shows Testing until the gate's wait says the head's checks passed, then Merging", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h, "checks are running");
+    const task = mergingTask(dashboard.h, "checks are running");
 
-    const testing = (await dashboard.get(`/work/${String(card)}`)).html;
+    const testing = (await dashboard.get(`/work/${String(task)}`)).html;
     expect(steps(testing).slice(3, 5)).toEqual(["now hold:Testing", ":Merging"]);
 
-    dashboard.h.cards.update(card, { waiting: "letting every check register on the head commit" });
-    const merging = (await dashboard.get(`/work/${String(card)}`)).html;
+    dashboard.h.tasks.update(task, { waiting: "letting every check register on the head commit" });
+    const merging = (await dashboard.get(`/work/${String(task)}`)).html;
     expect(steps(merging).slice(3, 5)).toEqual(["past:Testing", "now hold:Merging"]);
   });
 
   it("marks how often a task was sent back, and lists the attempts from its history", async () => {
     dashboard = await startDashboard();
-    const card = sentBackCard(dashboard.h);
+    const task = sentBackTask(dashboard.h);
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain('<span class="link loop" title="Sent back to Implementing 2 times">');
     expect(html).toContain('2x<span class="sr-only"> sent back</span>');
@@ -757,13 +757,13 @@ describe("Task page", () => {
   it("counts attempts only since the lead restarted the work", async () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
-    const card = sentBackCard(h);
-    h.cards.transition(card, "Escalated", "to the lead: stuck", { escalatedTo: "lead" });
-    h.cards.transition(card, "Implementing", "the lead restarted the work", { rounds: 0 });
-    h.cards.transition(card, "Reviewing", "PR #9 at 2222222");
-    h.cards.transition(card, "Implementing", "the reviewer asked for changes", { rounds: 1 });
+    const task = sentBackTask(h);
+    h.tasks.transition(task, "Escalated", "to the lead: stuck", { escalatedTo: "lead" });
+    h.tasks.transition(task, "Implementing", "the lead restarted the work", { rounds: 0 });
+    h.tasks.transition(task, "Reviewing", "PR #9 at 2222222");
+    h.tasks.transition(task, "Implementing", "the reviewer asked for changes", { rounds: 1 });
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain('Attempts<span class="n">2</span>');
     expect(html).not.toContain("Attempt 3");
@@ -772,9 +772,9 @@ describe("Task page", () => {
 
   it("shows a done task with every step checked and the proof Hephaestus stores", async () => {
     dashboard = await startDashboard();
-    const card = doneCard(dashboard.h);
+    const task = doneTask(dashboard.h);
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(steps(html)).toEqual([
       "past:Admitted",
@@ -796,20 +796,20 @@ describe("Task page", () => {
     expect(html).toContain("Checks after the merge");
     expect(html).toContain("unit, lint");
     expect(html).toContain("Passed");
-    expect(html).not.toContain(`action="/work/${String(card)}/`);
+    expect(html).not.toContain(`action="/work/${String(task)}/`);
     expect(html).not.toContain("/abandon");
     expect(html).not.toContain("Evidence");
   });
 
   it("says a merge made outside Hephaestus was not checked", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h);
-    dashboard.h.cards.transition(card, "Done", "merged outside Hephaestus", {
+    const task = mergingTask(dashboard.h);
+    dashboard.h.tasks.transition(task, "Done", "merged outside Hephaestus", {
       foreignMerge: true,
       mergeSha: MERGE,
     });
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain("Merged outside Hephaestus");
     expect(html).not.toContain("Passed");
@@ -818,16 +818,16 @@ describe("Task page", () => {
 
   it("keeps a task that reverts a failed merge at Verifying, with the checks marked failed", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h);
-    dashboard.h.cards.transition(card, "Validating", `merged PR #6 as ${MERGE}`, {
+    const task = mergingTask(dashboard.h);
+    dashboard.h.tasks.transition(task, "Validating", `merged PR #6 as ${MERGE}`, {
       mergeSha: MERGE,
     });
-    dashboard.h.cards.transition(card, "Reverting", "checks failed; opened revert PR #7", {
+    dashboard.h.tasks.transition(task, "Reverting", "checks failed; opened revert PR #7", {
       revertPr: 7,
       reverting: true,
     });
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(steps(html).slice(4)).toEqual(["past:Merging", "now hold:Verifying", ":Done"]);
     expect(html).toContain("Failed");
@@ -836,102 +836,102 @@ describe("Task page", () => {
 
   it("says the checks after the merge have not started before the merge", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h);
+    const task = mergingTask(dashboard.h);
 
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe(
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe(
       "Not started",
     );
   });
 
   it("says the checks after the merge are running, then passed", async () => {
     dashboard = await startDashboard();
-    const card = validatingCard(dashboard.h);
+    const task = validatingTask(dashboard.h);
 
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe("Running");
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe("Running");
 
-    dashboard.h.cards.transition(card, "Done", `checks passed on ${MERGE}`);
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe("Passed");
+    dashboard.h.tasks.transition(task, "Done", `checks passed on ${MERGE}`);
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe("Passed");
   });
 
   it("says the checks after the merge failed when the merge is being reverted", async () => {
     dashboard = await startDashboard();
-    const card = validatingCard(dashboard.h);
-    dashboard.h.cards.transition(
-      card,
+    const task = validatingTask(dashboard.h);
+    dashboard.h.tasks.transition(
+      task,
       "Reverting",
       `checks failed on ${MERGE} (check:unit); opened revert PR #7`,
       { revertPr: 7, reverting: true },
     );
 
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe("Failed");
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe("Failed");
   });
 
   it("says the checks after the merge failed when the policy does not revert", async () => {
     dashboard = await startDashboard();
-    const card = validatingCard(dashboard.h);
+    const task = validatingTask(dashboard.h);
     const reason = `checks failed on the merge commit ${MERGE}: check:unit`;
-    dashboard.h.cards.transition(card, "Escalated", `to the owner: ${reason}`, {
+    dashboard.h.tasks.transition(task, "Escalated", `to the owner: ${reason}`, {
       escalatedTo: "owner",
       reason,
     });
 
-    const owner = (await dashboard.get(`/work/${String(card)}`)).html;
+    const owner = (await dashboard.get(`/work/${String(task)}`)).html;
     expect(checksAfterMerge(owner)).toBe("Failed");
 
     // The lead's note replaces the reason; the failure is still on record.
     dashboard.h.github.prs.set(6, pr(6, SHA2));
-    await dashboard.h.pipeline.sendToLead(card, "Fix forward");
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe("Failed");
+    await dashboard.h.pipeline.sendToLead(task, "Fix forward");
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe("Failed");
   });
 
   it("says the checks passed after a revert and a second merge that passed", async () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
-    const card = validatingCard(h);
-    h.cards.transition(card, "Reverting", `checks failed on ${MERGE} (check:unit)`, {
+    const task = validatingTask(h);
+    h.tasks.transition(task, "Reverting", `checks failed on ${MERGE} (check:unit)`, {
       revertPr: 7,
       reverting: true,
     });
     // What the pipeline records once the revert PR merged; the revert PR stays on the task.
-    h.cards.transition(card, "Implementing", "revert PR #7 merged; working on the issue again", {
+    h.tasks.transition(task, "Implementing", "revert PR #7 merged; working on the issue again", {
       prNumber: null,
       headSha: null,
       mergeSha: null,
       reverting: false,
       rounds: 0,
     });
-    h.cards.transition(card, "Reviewing", "PR #8 at 1111111", { prNumber: 8, headSha: SHA });
-    h.cards.transition(card, "Merging", `approved at ${SHA}`);
-    h.cards.transition(card, "Validating", `merged PR #8 as ${MERGE2}`, { mergeSha: MERGE2 });
+    h.tasks.transition(task, "Reviewing", "PR #8 at 1111111", { prNumber: 8, headSha: SHA });
+    h.tasks.transition(task, "Merging", `approved at ${SHA}`);
+    h.tasks.transition(task, "Validating", `merged PR #8 as ${MERGE2}`, { mergeSha: MERGE2 });
 
-    expect(h.cards.get(card).revertPr).toBe(7);
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe("Running");
+    expect(h.tasks.get(task).revertPr).toBe(7);
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe("Running");
 
-    h.cards.transition(card, "Done", `checks passed on ${MERGE2}`);
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    h.tasks.transition(task, "Done", `checks passed on ${MERGE2}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
     expect(steps(html).at(-1)).toBe("done:Done");
     expect(checksAfterMerge(html)).toBe("Passed");
   });
 
   it("says the checks after a merge made outside Hephaestus were not checked", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h);
-    dashboard.h.cards.transition(card, "Done", "merged outside Hephaestus", {
+    const task = mergingTask(dashboard.h);
+    dashboard.h.tasks.transition(task, "Done", "merged outside Hephaestus", {
       foreignMerge: true,
       mergeSha: MERGE,
     });
 
-    expect(checksAfterMerge((await dashboard.get(`/work/${String(card)}`)).html)).toBe(
+    expect(checksAfterMerge((await dashboard.get(`/work/${String(task)}`)).html)).toBe(
       "Not checked",
     );
   });
 
   it("keeps an abandoned task at Merging when it was abandoned there", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h, MERGE_STEP_REASONS.settling);
-    await dashboard.h.pipeline.abandon(card, "The owner abandoned it: superseded");
+    const task = mergingTask(dashboard.h, MERGE_STEP_REASONS.settling);
+    await dashboard.h.pipeline.abandon(task, "The owner abandoned it: superseded");
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain("<strong>Stopped at Merging.</strong>");
     expect(steps(html).slice(3, 5)).toEqual(["past:Testing", "now stop:Merging"]);
@@ -939,10 +939,10 @@ describe("Task page", () => {
 
   it("keeps an abandoned task at Testing when its checks had not passed", async () => {
     dashboard = await startDashboard();
-    const card = mergingCard(dashboard.h, "checks are running");
-    await dashboard.h.pipeline.abandon(card, "The owner abandoned it: superseded");
+    const task = mergingTask(dashboard.h, "checks are running");
+    await dashboard.h.pipeline.abandon(task, "The owner abandoned it: superseded");
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain("<strong>Stopped at Testing.</strong>");
     expect(steps(html).slice(3, 5)).toEqual(["now stop:Testing", ":Merging"]);
@@ -951,37 +951,37 @@ describe("Task page", () => {
   it("keeps a task that escalated past its checks at Merging, with the lead and abandoned", async () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
-    const card = mergingCard(h);
+    const task = mergingTask(h);
     const reason = `${MERGE_STEP_REASONS.refused} PR #6: a ruleset blocks it`;
-    h.cards.transition(card, "Escalated", `to the owner: ${reason}`, {
+    h.tasks.transition(task, "Escalated", `to the owner: ${reason}`, {
       escalatedTo: "owner",
       reason,
     });
-    expect(steps((await dashboard.get(`/work/${String(card)}`)).html).slice(3, 5)).toEqual([
+    expect(steps((await dashboard.get(`/work/${String(task)}`)).html).slice(3, 5)).toEqual([
       "past:Testing",
       "now hold:Merging",
     ]);
 
     h.github.prs.set(6, pr(6, SHA2));
-    await h.pipeline.sendToLead(card, "Ask the admin");
-    expect(steps((await dashboard.get(`/work/${String(card)}`)).html).slice(3, 5)).toEqual([
+    await h.pipeline.sendToLead(task, "Ask the admin");
+    expect(steps((await dashboard.get(`/work/${String(task)}`)).html).slice(3, 5)).toEqual([
       "past:Testing",
       "now hold:Merging",
     ]);
 
-    await h.pipeline.abandon(card, "The owner abandoned it: blocked for good");
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    await h.pipeline.abandon(task, "The owner abandoned it: blocked for good");
+    const { html } = await dashboard.get(`/work/${String(task)}`);
     expect(html).toContain("<strong>Stopped at Merging.</strong>");
   });
 
   it("names a worker by its label, on the task and on its thread", async () => {
     dashboard = await startDashboard({ workers: [worker()] });
-    const card = runningCard(dashboard.h);
+    const task = runningTask(dashboard.h);
 
-    const task = (await dashboard.get(`/work/${String(card)}`)).html;
-    expect(task).toContain("worker one, Factory Codex, gpt-5.5");
-    expect(task).toContain("<dt>Worker</dt><dd>worker one</dd>");
-    expect(task).not.toContain("w1, Factory Codex");
+    const page = (await dashboard.get(`/work/${String(task)}`)).html;
+    expect(page).toContain("worker one, Factory Codex, gpt-5.5");
+    expect(page).toContain("<dt>Worker</dt><dd>worker one</dd>");
+    expect(page).not.toContain("w1, Factory Codex");
 
     const thread = (await dashboard.get("/threads/w1/t-impl")).html;
     expect(thread).toContain("worker one, Factory Codex, gpt-5.5");
@@ -990,9 +990,9 @@ describe("Task page", () => {
 
   it("shows commit SHAs in the history in their short form, with the full value as a title", async () => {
     dashboard = await startDashboard();
-    const card = doneCard(dashboard.h);
+    const task = doneTask(dashboard.h);
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain(`merged PR #6 as <code title="${MERGE}">${MERGE.slice(0, 7)}</code>`);
     expect(html).toContain(`approved at <code title="${SHA2}">${SHA2.slice(0, 7)}</code>`);
@@ -1004,13 +1004,13 @@ describe("Task page", () => {
 
   it("shows where an abandoned task stopped, and offers no actions", async () => {
     dashboard = await startDashboard();
-    const card = dashboard.h.cards.create({ repo: "octo/app", issueNumber: 1, title: "Old" }).id;
-    dashboard.h.cards.transition(card, "Implementing", "work started");
-    dashboard.h.cards.transition(card, "Abandoned", "not needed", { reason: "not needed" });
+    const task = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "Old" }).id;
+    dashboard.h.tasks.transition(task, "Implementing", "work started");
+    dashboard.h.tasks.transition(task, "Abandoned", "not needed", { reason: "not needed" });
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
-    expect(html).not.toContain(`action="/work/${String(card)}/`);
+    expect(html).not.toContain(`action="/work/${String(task)}/`);
     expect(html).not.toContain("/abandon");
     expect(html).toContain("<strong>Stopped at Implementing.</strong> Nothing was merged.");
     expect(html).toContain("not needed");
@@ -1023,10 +1023,10 @@ describe("Task page", () => {
 
   it("says why a task waits", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    dashboard.h.cards.update(card, { waiting: "The factory is paused." });
+    const task = runningTask(dashboard.h);
+    dashboard.h.tasks.update(task, { waiting: "The factory is paused." });
 
-    const { html } = await dashboard.get(`/work/${String(card)}`);
+    const { html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(html).toContain('<div class="box info">');
     expect(html).toContain("The factory is paused.");
@@ -1044,10 +1044,10 @@ describe("Task page", () => {
 
   it("shows the store error when the store cannot be read", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
     dashboard.h.db.close();
 
-    const { status, html } = await dashboard.get(`/work/${String(card)}`);
+    const { status, html } = await dashboard.get(`/work/${String(task)}`);
 
     expect(status).toBe(503);
     expect(html).toContain("Hephaestus could not read its store");
@@ -1160,8 +1160,8 @@ describe("Testing or Merging", () => {
 describe("Send to lead", () => {
   it("is a form on its own page that does not reload", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
-    const id = String(card);
+    const task = escalatedTask(dashboard.h);
+    const id = String(task);
 
     const { status, html } = await dashboard.get(`/work/${id}/lead?back=%2F`);
 
@@ -1170,7 +1170,7 @@ describe("Send to lead", () => {
     expect(html).toContain("#7 Fix &lt;the&gt; parser");
     expect(html).toContain(`action="/work/${id}/send-to-lead"`);
     expect(html).toContain('name="back" value="/"');
-    expect(html).toContain(`name="version" value="${String(dashboard.h.cards.get(card).version)}"`);
+    expect(html).toContain(`name="version" value="${String(dashboard.h.tasks.get(task).version)}"`);
     expect(html).toContain('<textarea id="note" name="note"');
     expect(html).toContain('<a href="/">Cancel</a>');
     expect(html).not.toContain('http-equiv="refresh"');
@@ -1178,8 +1178,8 @@ describe("Send to lead", () => {
 
   it("returns to the task page by default, and ignores a back address that is not local", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
-    const id = String(card);
+    const task = escalatedTask(dashboard.h);
+    const id = String(task);
 
     const { html } = await dashboard.get(`/work/${id}/lead?back=https%3A%2F%2Fevil.example`);
 
@@ -1188,12 +1188,12 @@ describe("Send to lead", () => {
 
   it("shows an empty note under its field", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
-    const id = String(card);
+    const task = escalatedTask(dashboard.h);
+    const id = String(task);
 
     const response = await dashboard.post(`/work/${id}/send-to-lead`, {
       note: " ",
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
       back: "/",
     });
     const html = await response.text();
@@ -1201,61 +1201,61 @@ describe("Send to lead", () => {
     expect(response.status).toBe(422);
     expect(html).toContain('id="note-err" role="alert"');
     expect(html).toContain('name="back" value="/"');
-    expect(dashboard.h.cards.get(card).escalatedTo).toBe("owner");
+    expect(dashboard.h.tasks.get(task).escalatedTo).toBe("owner");
   });
 
   it("sends the task to the lead with the note and returns where it came from", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
-    const id = String(card);
+    const task = escalatedTask(dashboard.h);
+    const id = String(task);
 
     const response = await dashboard.post(`/work/${id}/send-to-lead`, {
       note: "Split the workflow change out",
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
       back: "/work?tab=needs",
     });
 
     expect(response.headers.get("location")).toBe("/work?tab=needs&notice=sent-to-lead");
-    expect(dashboard.h.cards.get(card).escalatedTo).toBe("lead");
+    expect(dashboard.h.tasks.get(task).escalatedTo).toBe("lead");
     const { html } = await dashboard.get("/work?tab=needs&notice=sent-to-lead");
     expect(html).toContain("The lead picks the task up with your note.");
   });
 
   it("takes a note as long as its field allows, in any script", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
 
-    const response = await dashboard.post(`/work/${String(card)}/send-to-lead`, {
+    const response = await dashboard.post(`/work/${String(task)}/send-to-lead`, {
       note: "長".repeat(2000),
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
       back: "/",
     });
 
     expect(response.headers.get("location")).toBe("/?notice=sent-to-lead");
-    expect(dashboard.h.cards.get(card).escalatedTo).toBe("lead");
+    expect(dashboard.h.tasks.get(task).escalatedTo).toBe("lead");
   });
 
   it("says a note larger than the form reader takes is too long, not that it is empty", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
 
-    const response = await dashboard.post(`/work/${String(card)}/send-to-lead`, {
+    const response = await dashboard.post(`/work/${String(task)}/send-to-lead`, {
       note: "x".repeat(100_000),
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
     });
     const html = await response.text();
 
     expect(response.status).toBe(413);
     expect(html).toContain("The note is too long. It takes 2000 characters.");
     expect(html).not.toContain("Write a note for the lead.");
-    expect(dashboard.h.cards.get(card).escalatedTo).toBe("owner");
+    expect(dashboard.h.tasks.get(task).escalatedTo).toBe("owner");
   });
 
   it("says when the task is no longer waiting for you", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
+    const task = runningTask(dashboard.h);
 
-    const { status, html } = await dashboard.get(`/work/${String(card)}/lead`);
+    const { status, html } = await dashboard.get(`/work/${String(task)}/lead`);
 
     expect(status).toBe(200);
     expect(html).toContain("This task is not waiting for you");
@@ -1273,8 +1273,8 @@ describe("Send to lead", () => {
 describe("Abandon", () => {
   it("is a form on its own page that does not reload", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = String(card);
+    const task = runningTask(dashboard.h);
+    const id = String(task);
 
     const { status, html } = await dashboard.get(`/work/${id}/abandon?back=%2Fwork`);
 
@@ -1291,33 +1291,33 @@ describe("Abandon", () => {
 
   it("shows an empty reason under its field", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = String(card);
+    const task = runningTask(dashboard.h);
+    const id = String(task);
 
     const response = await dashboard.post(`/work/${id}/abandon`, {
       reason: "",
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
     });
     const html = await response.text();
 
     expect(response.status).toBe(422);
     expect(html).toContain('id="reason-err" role="alert"');
-    expect(dashboard.h.cards.get(card).stage).toBe("Implementing");
+    expect(dashboard.h.tasks.get(task).stage).toBe("Implementing");
   });
 
   it("abandons the task with the reason and returns where it came from", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = String(card);
+    const task = runningTask(dashboard.h);
+    const id = String(task);
 
     const response = await dashboard.post(`/work/${id}/abandon`, {
       reason: "superseded",
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
       back: `/work/${id}`,
     });
 
     expect(response.headers.get("location")).toBe(`/work/${id}?notice=abandoned`);
-    expect(dashboard.h.cards.get(card)).toMatchObject({
+    expect(dashboard.h.tasks.get(task)).toMatchObject({
       stage: "Abandoned",
       reason: "The owner abandoned it: superseded",
     });
@@ -1327,38 +1327,38 @@ describe("Abandon", () => {
 
   it("says a reason larger than the form reader takes is too long, not that it is empty", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
+    const task = runningTask(dashboard.h);
 
-    const response = await dashboard.post(`/work/${String(card)}/abandon`, {
+    const response = await dashboard.post(`/work/${String(task)}/abandon`, {
       reason: "x".repeat(100_000),
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
     });
     const html = await response.text();
 
     expect(response.status).toBe(413);
     expect(html).toContain("The reason is too long. It takes 2000 characters.");
     expect(html).not.toContain("Say why you abandon it.");
-    expect(dashboard.h.cards.get(card).stage).toBe("Implementing");
+    expect(dashboard.h.tasks.get(task).stage).toBe("Implementing");
   });
 
   it("refuses a form from an earlier state of the task", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = String(card);
-    const stale = String(dashboard.h.cards.get(card).version);
-    dashboard.h.cards.update(card, { waiting: "changed" });
+    const task = runningTask(dashboard.h);
+    const id = String(task);
+    const stale = String(dashboard.h.tasks.get(task).version);
+    dashboard.h.tasks.update(task, { waiting: "changed" });
 
     const response = await dashboard.post(`/work/${id}/abandon`, { reason: "x", version: stale });
 
     expect(response.headers.get("location")).toBe(`/work/${id}?notice=abandon-failed`);
-    expect(dashboard.h.cards.get(card).stage).toBe("Implementing");
+    expect(dashboard.h.tasks.get(task).stage).toBe("Implementing");
   });
 
   it("says when the task can no longer be abandoned", async () => {
     dashboard = await startDashboard();
-    const card = doneCard(dashboard.h);
+    const task = doneTask(dashboard.h);
 
-    const { html } = await dashboard.get(`/work/${String(card)}/abandon`);
+    const { html } = await dashboard.get(`/work/${String(task)}/abandon`);
 
     expect(html).toContain("This task can no longer be abandoned");
     expect(html).not.toContain('name="reason"');
@@ -1368,8 +1368,8 @@ describe("Abandon", () => {
 describe("Thread transcript", () => {
   it("shows the thread's recorded activity, escaped, under its task", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = String(card);
+    const task = runningTask(dashboard.h);
+    const id = String(task);
 
     const { status, html } = await dashboard.get("/threads/w1/t-impl");
 
@@ -1398,7 +1398,7 @@ describe("Thread transcript", () => {
       providerInstanceId: "hephaestus-claude",
       model: "opus",
       configVersion: 1,
-      cardId: null,
+      taskId: null,
       kind: "review",
     });
 

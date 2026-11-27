@@ -46,15 +46,15 @@ function round(value: number, places = 1): number {
 export interface FactoryStats {
   window: StatsWindow;
   repo: string | null;
-  /** Cards as they stand now, not limited to the window. */
-  cardsByStage: Record<string, number>;
-  /** Cards that reached Done in the window. */
+  /** Tasks as they stand now, not limited to the window. */
+  tasksByStage: Record<string, number>;
+  /** Tasks that reached Done in the window. */
   completed: number;
-  /** Completed cards per day over the window. */
+  /** Completed tasks per day over the window. */
   perDay: number;
-  /** Hours from a card's first thread to Done, for cards done in the window. */
+  /** Hours from a task's first thread to Done, for tasks done in the window. */
   cycleHours: { median: number | null; p90: number | null; count: number };
-  /** Review rounds of the cards done in the window. */
+  /** Review rounds of the tasks done in the window. */
   reviewRounds: { average: number | null; max: number | null; count: number };
   escalations: { total: number; byTarget: Record<string, number>; reasons: EscalationReason[] };
   /** Issues waiting for the owner or for room under the cap, as they stand now. */
@@ -62,14 +62,14 @@ export interface FactoryStats {
 }
 
 export interface EscalationReason {
-  cardId: number;
+  taskId: number;
   repo: string;
   to: string;
   reason: string;
   at: string;
 }
 
-/** Cards, throughput, cycle time, review rounds, escalations, and held issues. */
+/** Tasks, throughput, cycle time, review rounds, escalations, and held issues. */
 export function factoryStats(
   db: Database,
   options: { repo?: string | undefined; window?: string | undefined; now?: Date } = {},
@@ -80,15 +80,15 @@ export function factoryStats(
 
   const stages = db
     .prepare(
-      `SELECT stage, COUNT(*) AS n FROM cards WHERE (@repo IS NULL OR repo = @repo) GROUP BY stage ORDER BY stage`,
+      `SELECT stage, COUNT(*) AS n FROM tasks WHERE (@repo IS NULL OR repo = @repo) GROUP BY stage ORDER BY stage`,
     )
     .all({ repo }) as { stage: string; n: number }[];
 
-  // A card is done once; the first Done event is when.
+  // A task is done once; the first Done event is when.
   const done = db
     .prepare(
       `SELECT c.id, c.rounds, c.started_at AS startedAt, MIN(e.at) AS doneAt
-       FROM cards c JOIN card_events e ON e.card_id = c.id AND e.kind = 'stage:Done'
+       FROM tasks c JOIN task_events e ON e.task_id = c.id AND e.kind = 'stage:Done'
        WHERE (@repo IS NULL OR c.repo = @repo)
        GROUP BY c.id HAVING MIN(e.at) >= @since AND MIN(e.at) <= @until`,
     )
@@ -108,12 +108,12 @@ export function factoryStats(
 
   const escalationRows = db
     .prepare(
-      `SELECT e.card_id AS cardId, c.repo, e.at, e.detail FROM card_events e JOIN cards c ON c.id = e.card_id
+      `SELECT e.task_id AS taskId, c.repo, e.at, e.detail FROM task_events e JOIN tasks c ON c.id = e.task_id
        WHERE e.kind = 'stage:Escalated' AND e.at >= @since AND e.at <= @until
          AND (@repo IS NULL OR c.repo = @repo) ORDER BY e.id`,
     )
     .all({ repo, since: window.since, until: window.until }) as {
-    cardId: number;
+    taskId: number;
     repo: string;
     at: string;
     detail: string;
@@ -122,7 +122,7 @@ export function factoryStats(
     // The pipeline records an escalation as "to the <target>: <reason>".
     const match = /^to the (\S+?):\s*([\s\S]*)$/.exec(row.detail);
     return {
-      cardId: row.cardId,
+      taskId: row.taskId,
       repo: row.repo,
       to: match?.[1] ?? "owner",
       reason: (match?.[2] ?? row.detail).trim(),
@@ -145,7 +145,7 @@ export function factoryStats(
   return {
     window,
     repo,
-    cardsByStage: Object.fromEntries(stages.map((row) => [row.stage, row.n])),
+    tasksByStage: Object.fromEntries(stages.map((row) => [row.stage, row.n])),
     completed: done.length,
     perDay: days > 0 ? round(done.length / days, 2) : 0,
     cycleHours: {
@@ -187,8 +187,8 @@ export interface UsageStats {
   /** Implement and review threads, as engineer and reviewer. */
   byRole: Record<string, UsageGroup>;
   byModel: Record<string, UsageGroup>;
-  /** The cards with the most threads first, at most 20. */
-  byCard: (UsageGroup & { cardId: number; repo: string; title: string })[];
+  /** The tasks with the most threads first, at most 20. */
+  byTask: (UsageGroup & { taskId: number; repo: string; title: string })[];
 }
 
 const ROLE_LABELS: Record<string, string> = { implement: "engineer", review: "reviewer" };
@@ -196,7 +196,7 @@ const ROLE_LABELS: Record<string, string> = { implement: "engineer", review: "re
 interface UsageRow {
   kind: string;
   model: string;
-  cardId: number | null;
+  taskId: number | null;
   repo: string | null;
   title: string | null;
   input: number | null;
@@ -243,7 +243,7 @@ function tidy<T extends UsageGroup>(group: T): T {
 
 /**
  * Token usage and cost of the engineer and reviewer threads started in the
- * window, by role, model, and card. Only recorded usage is counted: a
+ * window, by role, model, and task. Only recorded usage is counted: a
  * thread with no report adds to the thread count and to nothing else, so a
  * total that is null means nothing was recorded, not that nothing was used.
  */
@@ -255,9 +255,9 @@ export function usageStats(
   const repo = options.repo ?? null;
   const rows = db
     .prepare(
-      `SELECT t.kind, t.model, c.id AS cardId, c.repo, c.title,
+      `SELECT t.kind, t.model, c.id AS taskId, c.repo, c.title,
          t.input_tokens AS input, t.output_tokens AS output, t.cost_usd AS cost
-       FROM factory_threads t LEFT JOIN cards c ON CAST(t.card_id AS INTEGER) = c.id AND t.card_id GLOB '[0-9]*'
+       FROM factory_threads t LEFT JOIN tasks c ON CAST(t.task_id AS INTEGER) = c.id AND t.task_id GLOB '[0-9]*'
        WHERE t.kind IN ('implement', 'review') AND t.created_at >= @since AND t.created_at <= @until
          AND (@repo IS NULL OR c.repo = @repo) ORDER BY t.created_at`,
     )
@@ -266,18 +266,18 @@ export function usageStats(
   const total = emptyGroup();
   const byRole = new Map<string, UsageGroup>();
   const byModel = new Map<string, UsageGroup>();
-  const byCard = new Map<number, UsageGroup & { cardId: number; repo: string; title: string }>();
+  const byTask = new Map<number, UsageGroup & { taskId: number; repo: string; title: string }>();
   for (const row of rows) {
     add(total, row);
     const role = ROLE_LABELS[row.kind] ?? row.kind;
     add(slot(byRole, role, emptyGroup), row);
     add(slot(byModel, row.model, emptyGroup), row);
-    if (row.cardId !== null) {
-      const { cardId } = row;
+    if (row.taskId !== null) {
+      const { taskId } = row;
       add(
-        slot(byCard, cardId, () => ({
+        slot(byTask, taskId, () => ({
           ...emptyGroup(),
-          cardId,
+          taskId,
           repo: row.repo ?? "",
           title: row.title ?? "",
         })),
@@ -293,8 +293,8 @@ export function usageStats(
     total: tidy(total),
     byRole: finish(byRole),
     byModel: finish(byModel),
-    byCard: [...byCard.values()]
-      .sort((a, b) => b.threads - a.threads || a.cardId - b.cardId)
+    byTask: [...byTask.values()]
+      .sort((a, b) => b.threads - a.threads || a.taskId - b.taskId)
       .slice(0, 20)
       .map(tidy),
   };
@@ -311,24 +311,24 @@ function hours(value: number | null): string {
 export function formatFactoryStats(stats: FactoryStats): string {
   const scope = stats.repo === null ? "all projects" : stats.repo;
   const lines = [`Factory stats for ${scope}, last ${stats.window.label}:`];
-  const stages = Object.entries(stats.cardsByStage);
+  const stages = Object.entries(stats.tasksByStage);
   lines.push(
     stages.length === 0
-      ? "- Cards by stage: there are no cards yet."
-      : `- Cards by stage: ${stages.map(([stage, n]) => `${stage} ${String(n)}`).join(", ")}.`,
+      ? "- Tasks by stage: there are no tasks yet."
+      : `- Tasks by stage: ${stages.map(([stage, n]) => `${stage} ${String(n)}`).join(", ")}.`,
   );
   lines.push(
-    `- Completed: ${plural(stats.completed, "card")} reached Done (${String(stats.perDay)} per day).`,
+    `- Completed: ${plural(stats.completed, "task")} reached Done (${String(stats.perDay)} per day).`,
   );
   lines.push(
     stats.cycleHours.count === 0
-      ? "- Cycle time: not available, no card with a recorded start reached Done in this window."
-      : `- Cycle time (first thread to Done, ${plural(stats.cycleHours.count, "card")}): median ${hours(stats.cycleHours.median)}, 90th percentile ${hours(stats.cycleHours.p90)}.`,
+      ? "- Cycle time: not available, no task with a recorded start reached Done in this window."
+      : `- Cycle time (first thread to Done, ${plural(stats.cycleHours.count, "task")}): median ${hours(stats.cycleHours.median)}, 90th percentile ${hours(stats.cycleHours.p90)}.`,
   );
   lines.push(
     stats.reviewRounds.count === 0
-      ? "- Review rounds: not available, no card reached Done in this window."
-      : `- Review rounds per completed card: average ${String(stats.reviewRounds.average)}, most ${String(stats.reviewRounds.max)}.`,
+      ? "- Review rounds: not available, no task reached Done in this window."
+      : `- Review rounds per completed task: average ${String(stats.reviewRounds.average)}, most ${String(stats.reviewRounds.max)}.`,
   );
   if (stats.escalations.total === 0) lines.push("- Escalations: none in this window.");
   else {
@@ -337,7 +337,7 @@ export function formatFactoryStats(stats: FactoryStats): string {
       .join(", ");
     lines.push(`- Escalations: ${String(stats.escalations.total)} (${targets}).`);
     for (const reason of stats.escalations.reasons.slice(0, 10)) {
-      lines.push(`  - Card ${String(reason.cardId)} (${reason.repo}): ${reason.reason}`);
+      lines.push(`  - Task ${String(reason.taskId)} (${reason.repo}): ${reason.reason}`);
     }
   }
   if (stats.heldIssues.length === 0) lines.push("- Held issues: none.");
@@ -388,10 +388,10 @@ export function formatUsageStats(stats: UsageStats): string {
   for (const [role, g] of Object.entries(stats.byRole)) lines.push(`  - ${group(role, g)}.`);
   lines.push("- By model:");
   for (const [model, g] of Object.entries(stats.byModel)) lines.push(`  - ${group(model, g)}.`);
-  if (stats.byCard.length > 0) {
-    lines.push("- By card (most threads first):");
-    for (const card of stats.byCard.slice(0, 10)) {
-      lines.push(`  - ${group(`Card ${String(card.cardId)} ${card.title}`, card)}.`);
+  if (stats.byTask.length > 0) {
+    lines.push("- By task (most threads first):");
+    for (const task of stats.byTask.slice(0, 10)) {
+      lines.push(`  - ${group(`Task ${String(task.taskId)} ${task.title}`, task)}.`);
     }
   }
   return lines.join("\n");

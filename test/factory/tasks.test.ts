@@ -1,10 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { CardStore, TRANSITIONS, TransitionError } from "../../src/factory/cards.js";
+import { TaskStore, TRANSITIONS, TransitionError } from "../../src/factory/tasks.js";
 import { STAGES, type Stage } from "../../src/hermes/board.js";
 import { openStore } from "../../src/store.js";
 
-/** A card in `stage`, reached through allowed transitions from Admitted. */
-function cardIn(store: CardStore, stage: Stage): number {
+/** A task in `stage`, reached through allowed transitions from Admitted. */
+function taskIn(store: TaskStore, stage: Stage): number {
   const id = store.create({ repo: "octo/app", issueNumber: 1, title: "t" }).id;
   const path: Record<Stage, Stage[]> = {
     Admitted: [],
@@ -26,8 +26,8 @@ describe("the stage diagram", () => {
     for (const to of STAGES) {
       const allowed = TRANSITIONS[from].includes(to);
       it(`${allowed ? "allows" : "refuses"} ${from} -> ${to}`, () => {
-        const store = new CardStore(openStore(":memory:"));
-        const id = cardIn(store, from);
+        const store = new TaskStore(openStore(":memory:"));
+        const id = taskIn(store, from);
         if (allowed) {
           expect(store.transition(id, to, "test").stage).toBe(to);
           expect(store.events(id).at(-1)).toMatchObject({ kind: `stage:${to}`, detail: "test" });
@@ -47,9 +47,9 @@ describe("the stage diagram", () => {
 
 describe("reviews", () => {
   it("counts only an approval by another provider on the exact head commit", () => {
-    const store = new CardStore(openStore(":memory:"));
+    const store = new TaskStore(openStore(":memory:"));
     const id = store.create({ repo: "octo/app", issueNumber: 1, title: "t" }).id;
-    const base = { cardId: id, threadId: "r", author: "claude" as const };
+    const base = { taskId: id, threadId: "r", author: "claude" as const };
     store.recordReview({ ...base, headSha: "old", reviewer: "codex", verdict: "approve" });
     store.recordReview({ ...base, headSha: "new", reviewer: "claude", verdict: "approve" });
     expect(store.approvedAt(id, "new")).toBe(false);

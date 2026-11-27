@@ -2,7 +2,7 @@ import { isProposal } from "./config/store.js";
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Database } from "better-sqlite3";
-import type { CardStore } from "./factory/cards.js";
+import type { TaskStore } from "./factory/tasks.js";
 import type { HermesRun } from "./hermes/cli.js";
 import { getMeta, setMeta } from "./meta.js";
 
@@ -88,7 +88,7 @@ const ALERTS_SENT_KEY = "messaging_alerts_sent";
 const EXTRA_SENT_KEY = "messaging_alerts_extra";
 
 /**
- * Something that needs the owner, outside the card notifications. An item is
+ * Something that needs the owner, outside the task notifications. An item is
  * sent once per key while its group keeps appearing; a quiet item is never
  * sent, and only keeps its group's sent keys, such as a worker whose checks
  * are running again.
@@ -129,7 +129,7 @@ export interface MessagingOptions {
    */
   gateway?: { stopped(): boolean; start(): void };
   db: Database;
-  cards: Pick<CardStore, "notifications">;
+  tasks: Pick<TaskStore, "notifications">;
   /** The dashboard's address, for the link in each alert. */
   dashboardUrl: () => string;
   /** Other things that need the owner, such as a proposal or a worker sign-in, each keyed so it is sent once. */
@@ -315,7 +315,7 @@ export class Messaging {
   /** Turns alerts on from the newest notification, so earlier ones are not sent. */
   setAlerts(on: boolean): void {
     if (on) {
-      const newest = this.options.cards.notifications()[0]?.id ?? 0;
+      const newest = this.options.tasks.notifications()[0]?.id ?? 0;
       setMeta(this.options.db, ALERTS_SENT_KEY, String(newest));
       this.saveExtraSent(
         (this.options.extraAlerts?.() ?? [])
@@ -339,7 +339,7 @@ export class Messaging {
     const targets = this.states().filter((state) => state.connected && state.home !== undefined);
     if (targets.length === 0) return;
     const sent = Number(getMeta(this.options.db, ALERTS_SENT_KEY) ?? "0");
-    const pending = this.options.cards
+    const pending = this.options.tasks
       .notifications()
       .filter((item) => item.id > sent)
       .sort((a, b) => a.id - b.id);

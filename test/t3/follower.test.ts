@@ -82,7 +82,7 @@ describe("ThreadFollower", () => {
       providerInstanceId: "factory-claude",
       model: "claude-sonnet-5-5",
       configVersion: 1,
-      cardId: null,
+      taskId: null,
     });
     const follower = new ThreadFollower(new T3Adapter(connection), events, { waitMs: 10 });
 
@@ -110,7 +110,7 @@ describe("ThreadFollower", () => {
       providerInstanceId: "i",
       model: "m",
       configVersion: 1,
-      cardId: null,
+      taskId: null,
     };
     events.recordThread({ ...base, environmentId: "gone", threadId: "x" });
     events.recordThread({ ...base, environmentId: "w1", threadId: "t1" });
@@ -133,7 +133,7 @@ describe("ThreadFollower", () => {
 });
 
 describe("ThreadFollower edge cases", () => {
-  const base = { title: "t", providerInstanceId: "i", model: "m", configVersion: 1, cardId: null };
+  const base = { title: "t", providerInstanceId: "i", model: "m", configVersion: 1, taskId: null };
 
   it("reads once more after the thread ends, so an item from an earlier page gets its final status", async () => {
     let reads = 0;
@@ -246,7 +246,7 @@ describe("ThreadFollower edge cases", () => {
 });
 
 describe("ThreadFollower pacing", () => {
-  const base = { title: "t", providerInstanceId: "i", model: "m", configVersion: 1, cardId: null };
+  const base = { title: "t", providerInstanceId: "i", model: "m", configVersion: 1, taskId: null };
 
   it("waits between polls when T3 answers at once but the thread has not ended", async () => {
     fake.tools.set("t3_thread_wait", () => ({ status: "completed", timedOut: false }));

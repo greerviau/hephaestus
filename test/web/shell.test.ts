@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { WorkerView } from "../../src/workers/manager.js";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
 import { sampleConfig } from "../config/fixtures.js";
-import { escalatedCard, externalIssue, startDashboard, type Dashboard } from "./dashboard.js";
+import { escalatedTask, externalIssue, startDashboard, type Dashboard } from "./dashboard.js";
 
 let dashboard: Dashboard | undefined;
 
@@ -67,9 +67,9 @@ describe("the page shell", () => {
   it("counts on Home what needs the owner, and on Proposals the drafts that wait", async () => {
     dashboard = await startDashboard({ workers: [ownerStepWorker()] });
     const { h, store } = dashboard;
-    const card = escalatedCard(h);
+    const task = escalatedTask(h);
     await externalIssue(h);
-    h.cards.notify("Reverted PR #9 in octo/app", card);
+    h.tasks.notify("Reverted PR #9 in octo/app", task);
     store.createVersion({
       document: sampleConfig(),
       author: "improver",
@@ -79,7 +79,7 @@ describe("the page shell", () => {
 
     const html = await page(dashboard, "/activity");
 
-    // An escalated card, an outside issue, a proposal, a worker's step, and a notification.
+    // An escalated task, an outside issue, a proposal, a worker's step, and a notification.
     expect(html).toContain('<span class="count">5<span class="sr-only"> need you</span></span>');
     expect(html).toContain('<span class="count">1<span class="sr-only"> waiting</span></span>');
   });
@@ -87,7 +87,7 @@ describe("the page shell", () => {
   it("counts every project on Home whatever the picker says", async () => {
     dashboard = await startDashboard();
     addProject(dashboard, "octo/site");
-    escalatedCard(dashboard.h);
+    escalatedTask(dashboard.h);
 
     const html = await page(dashboard, "/activity", "octo/site");
 

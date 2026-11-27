@@ -36,7 +36,7 @@ export interface FactorySettings {
   threadSkills: string[];
   /** The model each factory instance runs. */
   models: { claude: ModelChoice; codex: ModelChoice };
-  /** Hephaestus starts an admitted card itself, from its issue, when the lead has not after this many minutes; 0 waits for the lead. */
+  /** Hephaestus starts an admitted task itself, from its issue, when the lead has not after this many minutes; 0 waits for the lead. */
   autoStartMinutes: number;
   /** The owner's own provider instance and model that run deploy and sign-in threads on a worker. */
   setup: ModelChoice & { instanceId: string };
@@ -72,7 +72,7 @@ export interface FactoryConfig {
 
 /**
  * A project's config by repo. GitHub repo names are not case-sensitive, so a
- * card or issue recorded under another casing still finds its project.
+ * task or issue recorded under another casing still finds its project.
  */
 export function projectFor(
   projects: Record<string, ProjectConfig> | undefined,

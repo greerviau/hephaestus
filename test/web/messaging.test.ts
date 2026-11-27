@@ -36,9 +36,9 @@ async function withMessaging(
       if (holder.dashboard === undefined) throw new Error("not started");
       return holder.dashboard.h.db;
     },
-    get cards() {
+    get tasks() {
       if (holder.dashboard === undefined) throw new Error("not started");
-      return holder.dashboard.h.cards;
+      return holder.dashboard.h.tasks;
     },
     dashboardUrl: () => "http://host:7700/",
   });

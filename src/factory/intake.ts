@@ -1,7 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { projectFor, projectKey, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
-import type { Card, CardStore } from "./cards.js";
+import type { Task, TaskStore } from "./tasks.js";
 import {
   readAttachments,
   recordAttachments,
@@ -17,15 +17,15 @@ interface Candidate {
   number: number;
   state: IssueState;
   closed: number;
-  cardId: number | null;
+  taskId: number | null;
   startedAt: string | null;
   stage: string | null;
 }
 
-/** An admitted issue's card that no thread has started, which closing the issue abandons. */
-function unstarted(row: Pick<Candidate, "cardId" | "startedAt" | "stage">): boolean {
+/** An admitted issue's task that no thread has started, which closing the issue abandons. */
+function unstarted(row: Pick<Candidate, "taskId" | "startedAt" | "stage">): boolean {
   return (
-    row.cardId !== null &&
+    row.taskId !== null &&
     row.startedAt === null &&
     ["Admitted", "Implementing", "Escalated"].includes(row.stage ?? "")
   );
@@ -41,7 +41,7 @@ export interface TrackedIssue {
   provenance: "factory" | "external";
   filedBy: string | null;
   state: IssueState;
-  cardId: number | null;
+  taskId: number | null;
   /** Closed on GitHub while it waited for the owner; it returns to the queue if reopened. */
   closed: boolean;
   createdAt: string;
@@ -49,18 +49,18 @@ export interface TrackedIssue {
 
 /** What admission does on the Hermes board; absent when the factory Hermes root is not set up. */
 export interface Board {
-  createCard(card: { title: string; body: string; idempotencyKey: string }): Promise<string>;
+  createTask(task: { title: string; body: string; idempotencyKey: string }): Promise<string>;
 }
 
 export interface IntakeOptions {
   db: Database;
-  cards: CardStore;
+  tasks: TaskStore;
   github: Pick<GitHub, "createIssue" | "openIssues" | "issue" | "storeAttachments">;
   /** The config in force: the deployed version. */
   config: () => FactoryConfig | undefined;
   board?: () => Board | undefined;
-  /** Abandons a card through the pipeline, so it cannot race a launch for the same card. */
-  abandon?: (cardId: number, reason: string) => Promise<unknown>;
+  /** Abandons a task through the pipeline, so it cannot race a launch for the same task. */
+  abandon?: (taskId: number, reason: string) => Promise<unknown>;
   now?: () => Date;
 }
 
@@ -78,7 +78,7 @@ interface Row {
   provenance: "factory" | "external";
   filed_by: string | null;
   state: IssueState;
-  card_id: number | null;
+  task_id: number | null;
   closed: number;
   created_at: string;
 }
@@ -92,7 +92,7 @@ function toIssue(row: Row): TrackedIssue {
     provenance: row.provenance,
     filedBy: row.filed_by,
     state: row.state,
-    cardId: row.card_id,
+    taskId: row.task_id,
     closed: row.closed === 1,
     createdAt: row.created_at,
   };
@@ -102,7 +102,7 @@ function toIssue(row: Row): TrackedIssue {
  * Decides which GitHub issues the factory may work on. An issue Hephaestus
  * filed through `file_issue` is admitted unless the project's cap on open
  * factory-filed issues awaiting work is reached; any other issue waits for
- * the owner. Every admitted issue gets a card.
+ * the owner. Every admitted issue gets a task.
  */
 export class Intake {
   private readonly now: () => Date;
@@ -184,7 +184,7 @@ export class Intake {
         provenance: "factory",
         filedBy: role,
       });
-      // Before admission gives the issue a card, so no engineer starts without them.
+      // Before admission gives the issue a task, so no engineer starts without them.
       recordAttachments(this.db, repo, number, stored);
       await this.admitIfRoom(repo, number);
       const issue = this.issue(repo, number);
@@ -230,7 +230,7 @@ export class Intake {
 
   /**
    * Follows issues the open list leaves out. An admitted issue closed before
-   * any thread started has its card abandoned, so it holds no place under the
+   * any thread started has its task abandoned, so it holds no place under the
    * cap. An issue waiting for the owner leaves the queue while it is closed,
    * and comes back if reopened. A full list may leave out open issues, so
    * missing issues are read on their own: a few per poll, in the order they
@@ -243,8 +243,8 @@ export class Intake {
     const complete = open.size < OPEN_ISSUES_LIMIT;
     const rows = this.db
       .prepare(
-        `SELECT i.number, i.state, i.closed, i.card_id AS cardId, c.started_at AS startedAt, c.stage
-         FROM issues i LEFT JOIN cards c ON c.id = i.card_id WHERE i.repo = ? COLLATE NOCASE
+        `SELECT i.number, i.state, i.closed, i.task_id AS taskId, c.started_at AS startedAt, c.stage
+         FROM issues i LEFT JOIN tasks c ON c.id = i.task_id WHERE i.repo = ? COLLATE NOCASE
          AND i.state IN ('admitted', 'awaiting-owner', 'held-cap') ORDER BY i.read_order`,
       )
       .all(repo) as Candidate[];
@@ -265,8 +265,8 @@ export class Intake {
         if (candidate.state !== "admitted") {
           if (state === "OPEN" && candidate.closed === 1) mark.run(0, repo, candidate.number);
           if (state === "CLOSED" && candidate.closed === 0) mark.run(1, repo, candidate.number);
-        } else if (state === "CLOSED" && candidate.cardId !== null) {
-          await this.abandonUnstarted(candidate.cardId);
+        } else if (state === "CLOSED" && candidate.taskId !== null) {
+          await this.abandonUnstarted(candidate.taskId);
         }
       } catch (error) {
         console.error(`Settling ${repo}#${String(candidate.number)} failed`, error);
@@ -274,19 +274,19 @@ export class Intake {
     }
   }
 
-  private async abandonUnstarted(cardId: number): Promise<void> {
-    // The card may have moved while its issue was read.
-    const card = this.options.cards.get(cardId);
-    if (!unstarted({ cardId, startedAt: card.startedAt, stage: card.stage })) return;
+  private async abandonUnstarted(taskId: number): Promise<void> {
+    // The task may have moved while its issue was read.
+    const task = this.options.tasks.get(taskId);
+    if (!unstarted({ taskId, startedAt: task.startedAt, stage: task.stage })) return;
     const pending = this.db
-      .prepare("SELECT 1 FROM factory_launches WHERE card_id = ? AND status = 'pending'")
-      .get(String(cardId));
+      .prepare("SELECT 1 FROM factory_launches WHERE task_id = ? AND status = 'pending'")
+      .get(String(taskId));
     if (pending !== undefined) return;
     if (this.options.abandon !== undefined) {
-      await this.options.abandon(cardId, "the issue was closed before work started");
+      await this.options.abandon(taskId, "the issue was closed before work started");
     } else {
-      this.options.cards.transition(
-        cardId,
+      this.options.tasks.transition(
+        taskId,
         "Abandoned",
         "the issue was closed before work started",
         {
@@ -312,15 +312,15 @@ export class Intake {
   }
 
   /** The owner's approval on Work: the issue is admitted whatever the cap. */
-  approve(repo: string, number: number): Promise<Card> {
+  approve(repo: string, number: number): Promise<Task> {
     return this.serial(async () => {
       const issue = this.issue(repo, number);
       if (issue === undefined)
         throw new Error(`Hephaestus has not seen ${repo}#${String(number)}.`);
-      if (issue.state === "admitted" && issue.cardId !== null) {
-        // A reopened issue whose card was abandoned gets a new card.
-        const card = this.options.cards.get(issue.cardId);
-        if (card.stage !== "Abandoned") return card;
+      if (issue.state === "admitted" && issue.taskId !== null) {
+        // A reopened issue whose task was abandoned gets a new task.
+        const task = this.options.tasks.get(issue.taskId);
+        if (task.stage !== "Abandoned") return task;
       } else if (issue.state !== "awaiting-owner" && issue.state !== "held-cap") {
         // A stale form must not undo a rejection.
         throw new Error(`${repo}#${String(number)} is ${issue.state}, not waiting for you.`);
@@ -347,12 +347,12 @@ export class Intake {
     });
   }
 
-  /** Factory-filed issues admitted and awaiting work, whose card has no thread yet; the cap counts these. */
+  /** Factory-filed issues admitted and awaiting work, whose task has no thread yet; the cap counts these. */
   awaitingWork(repo: string): number {
     return (
       this.db
         .prepare(
-          `SELECT COUNT(*) AS n FROM issues i JOIN cards c ON c.id = i.card_id
+          `SELECT COUNT(*) AS n FROM issues i JOIN tasks c ON c.id = i.task_id
            WHERE i.repo = ? COLLATE NOCASE AND i.provenance = 'factory' AND c.started_at IS NULL
            AND c.stage IN ('Admitted', 'Implementing', 'Escalated')`,
         )
@@ -379,35 +379,35 @@ export class Intake {
     await this.admit(issue);
   }
 
-  private async admit(issue: TrackedIssue): Promise<Card> {
-    const card = this.options.cards.create({
+  private async admit(issue: TrackedIssue): Promise<Task> {
+    const task = this.options.tasks.create({
       repo: issue.repo,
       issueNumber: issue.number,
       title: issue.title,
     });
     this.db
       .prepare(
-        "UPDATE issues SET state = 'admitted', card_id = ?, updated_at = ? WHERE repo = ? COLLATE NOCASE AND number = ?",
+        "UPDATE issues SET state = 'admitted', task_id = ?, updated_at = ? WHERE repo = ? COLLATE NOCASE AND number = ?",
       )
-      .run(card.id, this.now().toISOString(), issue.repo, issue.number);
+      .run(task.id, this.now().toISOString(), issue.repo, issue.number);
     const board = this.options.board?.();
     if (board !== undefined) {
       try {
-        const hermesCardId = await board.createCard({
-          title: `[card ${String(card.id)}] ${issue.title}`,
-          body: `Hephaestus card ${String(card.id)} for https://github.com/${issue.repo}/issues/${String(issue.number)}. Start it with start_work and card_id ${String(card.id)}.`,
-          idempotencyKey: `hephaestus-card-${String(card.id)}`,
+        const hermesTaskId = await board.createTask({
+          title: `[task ${String(task.id)}] ${issue.title}`,
+          body: `Hephaestus task ${String(task.id)} for https://github.com/${issue.repo}/issues/${String(issue.number)}. Start it with start_work and task_id ${String(task.id)}.`,
+          idempotencyKey: `hephaestus-task-${String(task.id)}`,
         });
-        this.options.cards.update(card.id, { hermesCardId });
+        this.options.tasks.update(task.id, { hermesTaskId });
       } catch (error) {
-        console.error(`Creating the Hermes card for card ${String(card.id)} failed`, error);
-        this.options.cards.event(card.id, "hermes", "the Hermes card could not be created");
+        console.error(`Creating the Hermes task for task ${String(task.id)} failed`, error);
+        this.options.tasks.event(task.id, "hermes", "the Hermes task could not be created");
       }
     }
-    return this.options.cards.get(card.id);
+    return this.options.tasks.get(task.id);
   }
 
-  private record(issue: Omit<TrackedIssue, "state" | "cardId" | "closed" | "createdAt">): void {
+  private record(issue: Omit<TrackedIssue, "state" | "taskId" | "closed" | "createdAt">): void {
     const at = this.now().toISOString();
     this.db
       .prepare(

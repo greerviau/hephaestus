@@ -75,13 +75,13 @@ describe.runIf(enabled)("Hermes integration", () => {
     const board = new FactoryBoard({ root: factoryRoot, run });
     await board.ensure();
     await board.ensure();
-    const id = await board.createCard({
-      title: "Integration card",
+    const id = await board.createTask({
+      title: "Integration task",
       body: "Body",
       idempotencyKey: "integration-1",
     });
     expect(
-      await board.createCard({ title: "Again", body: "Body", idempotencyKey: "integration-1" }),
+      await board.createTask({ title: "Again", body: "Body", idempotencyKey: "integration-1" }),
     ).toBe(id);
     expect(await board.status(id)).toBe("ready");
 
@@ -96,8 +96,8 @@ describe.runIf(enabled)("Hermes integration", () => {
     expect(await board.status(id)).toBe("done");
 
     // Blocked again after an unblock, a task goes to triage, and a hand-back still reaches the lead.
-    const looped = await board.createCard({
-      title: "Looped card",
+    const looped = await board.createTask({
+      title: "Looped task",
       body: "Body",
       idempotencyKey: "integration-3",
     });
@@ -114,7 +114,7 @@ describe.runIf(enabled)("Hermes integration", () => {
     await board.setStage(looped, "Done");
     expect(await board.status(looped)).toBe("done");
 
-    const other = await board.createCard({
+    const other = await board.createTask({
       title: "Abandon me",
       body: "Body",
       idempotencyKey: "integration-2",

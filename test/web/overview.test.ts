@@ -3,10 +3,10 @@ import type { WorkerView } from "../../src/workers/manager.js";
 import { MERGE, SHA, pr } from "../factory/harness.js";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
 import {
-  escalatedCard,
+  escalatedTask,
   externalIssue,
   linked,
-  runningCard,
+  runningTask,
   startDashboard,
   type Dashboard,
   type DashboardOptions,
@@ -73,9 +73,9 @@ describe("Home", () => {
       workers: [readyWorker(), { ...signInWorker(), environmentId: "w2", label: "worker two" }],
     });
     const { h, store } = dashboard;
-    const card = escalatedCard(h);
+    const task = escalatedTask(h);
     await externalIssue(h);
-    h.cards.notify("Reverted PR #9 in octo/app", card);
+    h.tasks.notify("Reverted PR #9 in octo/app", task);
     const deployed = store.list()[0];
     store.createVersion({
       document: deployed?.document ?? ({} as never),
@@ -95,12 +95,12 @@ describe("Home", () => {
     }
     expect(html).toContain("#7 Fix &lt;the&gt; parser");
     expect(html).toContain("The PR touches .github/workflows/ci.yml");
-    expect(html).toContain(`action="/work/${String(card)}/approve-merge"`);
+    expect(html).toContain(`action="/work/${String(task)}/approve-merge"`);
     expect(html).toContain(`name="headSha" value="${SHA}"`);
     expect(html).toContain("Merge PR #5 at 1111111");
     // An action that needs typed text is a page of its own: this page reloads.
-    expect(html).toContain(`href="/work/${String(card)}/lead?back=%2F"`);
-    expect(html).toContain(`href="/work/${String(card)}/abandon?back=%2F"`);
+    expect(html).toContain(`href="/work/${String(task)}/lead?back=%2F"`);
+    expect(html).toContain(`href="/work/${String(task)}/abandon?back=%2F"`);
     expect(html).not.toContain('type="text"');
     // An issue reads as it does on Work: its number and title link to GitHub, the repo sits underneath.
     expect(html).toContain(
@@ -127,9 +127,9 @@ describe("Home", () => {
   it("offers a task with no merge to approve its other actions", async () => {
     dashboard = await startDashboard(setUp());
     const { h } = dashboard;
-    const id = h.cards.create({ repo: "octo/app", issueNumber: 11, title: "Pick an approach" }).id;
-    h.cards.transition(id, "Implementing", "work started");
-    h.cards.transition(id, "Escalated", "needs a decision", {
+    const id = h.tasks.create({ repo: "octo/app", issueNumber: 11, title: "Pick an approach" }).id;
+    h.tasks.transition(id, "Implementing", "work started");
+    h.tasks.transition(id, "Escalated", "needs a decision", {
       escalatedTo: "owner",
       reason: "Two designs fit",
     });
@@ -146,13 +146,13 @@ describe("Home", () => {
   it("shows tasks in progress with their running threads, and the latest finished ones", async () => {
     dashboard = await startDashboard(setUp());
     const { h } = dashboard;
-    const running = runningCard(h);
-    const waiting = h.cards.create({ repo: "octo/app", issueNumber: 9, title: "Queued work" }).id;
-    h.cards.transition(waiting, "Implementing", "work started", {
+    const running = runningTask(h);
+    const waiting = h.tasks.create({ repo: "octo/app", issueNumber: 9, title: "Queued work" }).id;
+    h.tasks.transition(waiting, "Implementing", "work started", {
       waiting: "The limit of 2 running factory threads is reached.",
     });
-    const done = h.cards.create({ repo: "octo/app", issueNumber: 10, title: "Shipped work" }).id;
-    h.cards.transition(done, "Abandoned", "not needed");
+    const done = h.tasks.create({ repo: "octo/app", issueNumber: 10, title: "Shipped work" }).id;
+    h.tasks.transition(done, "Abandoned", "not needed");
 
     const { html } = await dashboard.get("/");
 
@@ -181,19 +181,19 @@ describe("Home", () => {
   it("narrows tasks to the chosen project and keeps factory-wide items", async () => {
     dashboard = await startDashboard(setUp());
     const { h } = dashboard;
-    escalatedCard(h);
-    runningCard(h);
-    const other = h.cards.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
-    h.cards.transition(other, "Implementing", "work started");
-    const gone = h.cards.create({ repo: "octo/other", issueNumber: 4, title: "Dropped" }).id;
-    h.cards.transition(gone, "Abandoned", "not needed");
-    const asked = h.cards.create({ repo: "octo/other", issueNumber: 5, title: "Their call" }).id;
-    h.cards.transition(asked, "Implementing", "work started");
-    h.cards.transition(asked, "Escalated", "needs a decision", {
+    escalatedTask(h);
+    runningTask(h);
+    const other = h.tasks.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
+    h.tasks.transition(other, "Implementing", "work started");
+    const gone = h.tasks.create({ repo: "octo/other", issueNumber: 4, title: "Dropped" }).id;
+    h.tasks.transition(gone, "Abandoned", "not needed");
+    const asked = h.tasks.create({ repo: "octo/other", issueNumber: 5, title: "Their call" }).id;
+    h.tasks.transition(asked, "Implementing", "work started");
+    h.tasks.transition(asked, "Escalated", "needs a decision", {
       escalatedTo: "owner",
       reason: "Two designs fit",
     });
-    h.cards.notify("Something factory-wide happened");
+    h.tasks.notify("Something factory-wide happened");
 
     const all = (await dashboard.get("/")).html;
     expect(all).toContain("#3 Elsewhere");
@@ -215,12 +215,12 @@ describe("Home", () => {
   it("leaves out a notification about another project's task, and still counts it in the sidebar", async () => {
     dashboard = await startDashboard(setUp());
     const { h } = dashboard;
-    const mine = runningCard(h);
-    const other = h.cards.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
-    h.cards.transition(other, "Implementing", "work started");
-    h.cards.notify("Reverted PR #4 in octo/other", other);
-    h.cards.notify("Reverted PR #2 in octo/app", mine);
-    h.cards.notify("Something factory-wide happened");
+    const mine = runningTask(h);
+    const other = h.tasks.create({ repo: "octo/other", issueNumber: 3, title: "Elsewhere" }).id;
+    h.tasks.transition(other, "Implementing", "work started");
+    h.tasks.notify("Reverted PR #4 in octo/other", other);
+    h.tasks.notify("Reverted PR #2 in octo/app", mine);
+    h.tasks.notify("Something factory-wide happened");
 
     const all = (await dashboard.get("/")).html;
     expect(all).toContain("Reverted PR #4 in octo/other");
@@ -283,67 +283,67 @@ describe("Home", () => {
 
   it("approves a merge at the head commit, and refuses a stale one", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
 
-    const stale = await dashboard.post(`/work/${String(card)}/approve-merge`, {
+    const stale = await dashboard.post(`/work/${String(task)}/approve-merge`, {
       headSha: "f".repeat(40),
       action: "merge",
       back: "/",
     });
     expect(stale.headers.get("location")).toBe("/?notice=merge-refused");
-    expect(dashboard.h.cards.get(card).stage).toBe("Escalated");
+    expect(dashboard.h.tasks.get(task).stage).toBe("Escalated");
 
-    const approved = await dashboard.post(`/work/${String(card)}/approve-merge`, {
+    const approved = await dashboard.post(`/work/${String(task)}/approve-merge`, {
       headSha: SHA,
       action: "merge",
       back: "/",
     });
     expect(approved.headers.get("location")).toBe("/?notice=merge-approved");
-    expect(dashboard.h.cards.get(card)).toMatchObject({ stage: "Merging", ownerApprovedSha: SHA });
+    expect(dashboard.h.tasks.get(task)).toMatchObject({ stage: "Merging", ownerApprovedSha: SHA });
   });
 
   it("sends a task to the lead and abandons one", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
 
-    await dashboard.h.pipeline.escalateToOwner(card, "Decide on the CI change");
+    await dashboard.h.pipeline.escalateToOwner(task, "Decide on the CI change");
     const { html } = await dashboard.get("/");
     expect(html).toContain("Decide on the CI change");
-    const version = String(dashboard.h.cards.get(card).version);
-    await dashboard.post(`/work/${String(card)}/send-to-lead`, {
+    const version = String(dashboard.h.tasks.get(task).version);
+    await dashboard.post(`/work/${String(task)}/send-to-lead`, {
       note: "Split the CI change out",
       version,
     });
-    expect(dashboard.h.cards.get(card)).toMatchObject({
+    expect(dashboard.h.tasks.get(task)).toMatchObject({
       escalatedTo: "lead",
       reason: "Split the CI change out",
     });
-    // The escalation's notification does not bring the card back to Needs you.
-    expect(dashboard.h.cards.notifications().map((item) => item.kind)).toContain("escalation");
+    // The escalation's notification does not bring the task back to Needs you.
+    expect(dashboard.h.tasks.notifications().map((item) => item.kind)).toContain("escalation");
     expect((await dashboard.get("/")).html).not.toContain("needs you: ");
 
-    const abandoned = await dashboard.post(`/work/${String(card)}/abandon`, {
+    const abandoned = await dashboard.post(`/work/${String(task)}/abandon`, {
       reason: "Not needed",
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
     });
-    expect(abandoned.headers.get("location")).toBe(`/work/${String(card)}?notice=abandoned`);
-    expect(dashboard.h.cards.get(card).stage).toBe("Abandoned");
+    expect(abandoned.headers.get("location")).toBe(`/work/${String(task)}?notice=abandoned`);
+    expect(dashboard.h.tasks.get(task).stage).toBe("Abandoned");
   });
 
   it("says the PR already merged when sending its task to the lead settles the merge instead", async () => {
     dashboard = await startDashboard();
-    const card = escalatedCard(dashboard.h);
+    const task = escalatedTask(dashboard.h);
     // Hephaestus merged PR 5, and the reply was lost.
     dashboard.h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     dashboard.h.github.ownMerges.add(MERGE);
 
-    const response = await dashboard.post(`/work/${String(card)}/send-to-lead`, {
+    const response = await dashboard.post(`/work/${String(task)}/send-to-lead`, {
       note: "Start over",
-      version: String(dashboard.h.cards.get(card).version),
+      version: String(dashboard.h.tasks.get(task).version),
       back: "/",
     });
     expect(response.headers.get("location")).toBe("/?notice=merge-validating");
-    expect(dashboard.h.cards.get(card).stage).toBe("Merging");
+    expect(dashboard.h.tasks.get(task).stage).toBe("Merging");
   });
 
   it("shows the setup steps until each is done, then hides them", async () => {
@@ -393,17 +393,17 @@ describe("Home", () => {
 
   it("dismisses a notification", async () => {
     dashboard = await startDashboard();
-    dashboard.h.cards.notify("Something happened");
-    const [first] = dashboard.h.cards.notifications();
+    dashboard.h.tasks.notify("Something happened");
+    const [first] = dashboard.h.tasks.notifications();
 
     await dashboard.post(`/notifications/${String(first?.id)}/dismiss`, { back: "/" });
 
-    expect(dashboard.h.cards.notifications()).toEqual([]);
+    expect(dashboard.h.tasks.notifications()).toEqual([]);
   });
 
   it("shows the store error banner and turns actions off when the store cannot be read", async () => {
     dashboard = await startDashboard();
-    escalatedCard(dashboard.h);
+    escalatedTask(dashboard.h);
     dashboard.h.db.close();
 
     const { status, html } = await dashboard.get("/");

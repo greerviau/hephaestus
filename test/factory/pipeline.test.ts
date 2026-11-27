@@ -26,10 +26,10 @@ function admitted(h: Harness): number {
     author: "owner",
     state: "OPEN",
   });
-  return h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Add a flag" }).id;
+  return h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Add a flag" }).id;
 }
 
-/** Starts the card and takes it to Reviewing with PR 5 at SHA. */
+/** Starts the task and takes it to Reviewing with PR 5 at SHA. */
 async function toReview(h: Harness, id: number): Promise<void> {
   await h.pipeline.startWork(id, "Add the flag to the CLI.");
   h.github.prs.set(5, pr(5, SHA));
@@ -46,17 +46,17 @@ function setupThread(h: Harness, threadId: string): void {
     providerInstanceId: "hephaestus-claude",
     model: "m",
     configVersion: 1,
-    cardId: null,
+    taskId: null,
     kind: "setup",
   });
   h.events.setStatus("w1", threadId, "completed");
 }
 
-/** A card the lead restarted while the factory was paused, so its new brief waits to be sent. */
+/** A task the lead restarted while the factory was paused, so its new brief waits to be sent. */
 async function queuedRestart(h: Harness): Promise<number> {
   const id = admitted(h);
   await h.pipeline.startWork(id, "brief");
-  h.cards.update(id, { prNumber: 5, headSha: SHA });
+  h.tasks.update(id, { prNumber: 5, headSha: SHA });
   h.github.prs.set(5, pr(5, SHA));
   await h.pipeline.escalateToOwner(id, "check the PR");
   await h.pipeline.sendToLead(id, "go on");
@@ -66,19 +66,19 @@ async function queuedRestart(h: Harness): Promise<number> {
 }
 
 describe("Pipeline", () => {
-  it("launches on the branch a card already has, so a replayed launch matches its thread", async () => {
+  it("launches on the branch a task already has, so a replayed launch matches its thread", async () => {
     const h = harness();
     const id = admitted(h);
-    h.cards.update(id, { branch: "factory/card-1" });
+    h.tasks.update(id, { branch: "factory/task-1" });
 
     await h.pipeline.startWork(id, "Add the flag to the CLI.");
 
-    expect(h.t3.launches[0]?.workspace).toMatchObject({ branch: "factory/card-1" });
-    expect(h.t3.launches[0]?.message).toContain("refs/hephaestus/evidence/card-1");
-    expect(h.cards.get(id).branch).toBe("factory/card-1");
+    expect(h.t3.launches[0]?.workspace).toMatchObject({ branch: "factory/task-1" });
+    expect(h.t3.launches[0]?.message).toContain("refs/hephaestus/evidence/task-1");
+    expect(h.tasks.get(id).branch).toBe("factory/task-1");
   });
 
-  it("takes a card from Admitted to Done with review on the other provider and no human step", async () => {
+  it("takes a task from Admitted to Done with review on the other provider and no human step", async () => {
     const h = harness();
     const id = admitted(h);
 
@@ -88,7 +88,7 @@ describe("Pipeline", () => {
       environmentId: "w1",
       projectId: "proj",
       providerInstanceId: FACTORY_CLAUDE,
-      workspace: { type: "worktree", baseRef: "origin/main", branch: "factory/0123abcd-card-1" },
+      workspace: { type: "worktree", baseRef: "origin/main", branch: "factory/0123abcd-task-1" },
     });
     expect(implement?.message).toContain("Please add --flag.");
     expect(implement?.message).toContain("Closes #5");
@@ -96,32 +96,32 @@ describe("Pipeline", () => {
     expect(implement?.message).toContain("--force-with-lease");
     expect(implement?.message).toContain("Before this thread has opened a PR");
     expect(implement?.message).toContain("only the task");
-    expect(implement?.message).toContain("refs/hephaestus/evidence/0123abcd-card-1");
-    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(implement?.message).toContain("refs/hephaestus/evidence/0123abcd-task-1");
+    expect(h.tasks.get(id).stage).toBe("Implementing");
 
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reviewing");
+    expect(h.tasks.get(id).stage).toBe("Reviewing");
     const review = h.t3.launches[1];
     expect(review?.providerInstanceId).toBe(FACTORY_CODEX);
     expect(review?.message).toContain(SHA);
     expect(review?.message).toContain("Nobody watches this thread");
     expect(review?.message).toContain("contribution rules");
-    expect(review?.workspace).toMatchObject({ branch: "review/0123abcd-card-1-1" });
+    expect(review?.workspace).toMatchObject({ branch: "review/0123abcd-task-1-1" });
 
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", mergeSha: MERGE });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating", mergeSha: MERGE });
 
     h.github.commits.set(MERGE, checks("success"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Done");
+    expect(h.tasks.get(id).stage).toBe("Done");
 
     for (const threadId of ["t1", "t2"]) {
       expect(h.events.thread("w1", threadId)).toMatchObject({
-        cardId: String(id),
+        taskId: String(id),
         configVersion: 3,
       });
     }
@@ -136,7 +136,7 @@ describe("Pipeline", () => {
 
     h.finish("t2", reviewResult("changes", SHA, "1. src/app.ts:3 handle the empty case"));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
     expect(h.t3.sends.at(-1)).toMatchObject({ threadId: "t1" });
     expect(h.t3.sends.at(-1)?.message).toContain("handle the empty case");
     expect(h.t3.sends.at(-1)?.message).toContain('"status": "done"');
@@ -144,7 +144,7 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA2));
     h.finish("t1", implementResult(5, SHA2));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reviewing");
+    expect(h.tasks.get(id).stage).toBe("Reviewing");
     h.finish("t3", reviewResult("changes", SHA2, "1. still wrong"));
     await h.pipeline.tick();
     h.github.prs.set(5, pr(5, SHA));
@@ -153,8 +153,8 @@ describe("Pipeline", () => {
     h.finish("t4", reviewResult("changes", SHA, "1. still wrong"));
     await h.pipeline.tick();
 
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
-    expect(h.cards.get(id).reason).toMatch(/after 2 rounds/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id).reason).toMatch(/after 2 rounds/);
   });
 
   it("escalates to the lead on a failed thread, a missing result, or a question", async () => {
@@ -168,8 +168,8 @@ describe("Pipeline", () => {
       await h.pipeline.startWork(id, "brief");
       h.finish("t1", text, status);
       await h.pipeline.tick();
-      expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
-      expect(h.cards.get(id).reason).toMatch(reason);
+      expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+      expect(h.tasks.get(id).reason).toMatch(reason);
     }
   });
 
@@ -184,8 +184,8 @@ describe("Pipeline", () => {
     });
     h.limit("t1");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", escalatedTo: null });
-    expect(h.cards.get(id).waiting).toMatch(
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", escalatedTo: null });
+    expect(h.tasks.get(id).waiting).toMatch(
       /Factory Claude reached its usage limit, which resets at 2026-11-25 14:00 UTC/,
     );
 
@@ -196,13 +196,13 @@ describe("Pipeline", () => {
     h.setClock(Date.parse("2026-11-25T14:06:00Z"));
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(0);
-    expect(h.cards.get(id).waiting).toBeNull();
+    expect(h.tasks.get(id).waiting).toBeNull();
     expect(h.events.thread("w1", "t1")?.status).toBe("starting");
 
     h.github.prs.set(5, pr(5, SHA));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reviewing");
+    expect(h.tasks.get(id).stage).toBe("Reviewing");
   });
 
   it("continues a thread on a usage limit itself when T3 does not, and checks again on a new limit", async () => {
@@ -212,8 +212,8 @@ describe("Pipeline", () => {
     // The review thread runs on Factory Codex. T3 reports no snooze, so the reset time is unknown.
     h.limit("t2");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Reviewing", escalatedTo: null });
-    expect(h.cards.get(id).waiting).toMatch(/Factory Codex reached its usage limit.*30 minutes/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Reviewing", escalatedTo: null });
+    expect(h.tasks.get(id).waiting).toMatch(/Factory Codex reached its usage limit.*30 minutes/);
 
     h.setClock(Date.parse("2026-11-25T12:20:00Z"));
     await h.pipeline.tick();
@@ -224,21 +224,21 @@ describe("Pipeline", () => {
     expect(h.t3.sends[0]?.message).toMatch(/usage limit/);
     // A review thread is reminded of its own result block, which a long thread may have compacted away.
     expect(h.t3.sends[0]?.message).toContain('"verdict"');
-    expect(h.cards.get(id).waiting).toBeNull();
+    expect(h.tasks.get(id).waiting).toBeNull();
 
-    // The limit had not reset yet: the next run fails on it too, and the card waits again.
+    // The limit had not reset yet: the next run fails on it too, and the task waits again.
     h.t3.states.set("t2", { status: "failed", latestRunId: "r2", snoozedUntil: null });
     h.limit("t2", "You have hit your limit - resets 8pm");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Reviewing", escalatedTo: null });
-    expect(h.cards.get(id).waiting).toMatch(/usage limit/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Reviewing", escalatedTo: null });
+    expect(h.tasks.get(id).waiting).toMatch(/usage limit/);
 
     h.setClock(Date.parse("2026-11-25T13:02:00Z"));
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(2);
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).not.toBe("Escalated");
+    expect(h.tasks.get(id).stage).not.toBe("Escalated");
   });
 
   it("takes a limit reported as a completed reply for a usage limit too", async () => {
@@ -248,8 +248,8 @@ describe("Pipeline", () => {
     h.t3.states.set("t1", { status: "completed", latestRunId: "r1", snoozedUntil: null });
     h.finish("t1", "5-hour limit reached - resets 3pm");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", escalatedTo: null });
-    expect(h.cards.get(id).waiting).toMatch(/usage limit/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", escalatedTo: null });
+    expect(h.tasks.get(id).waiting).toMatch(/usage limit/);
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
     await h.pipeline.tick();
     expect(h.t3.sends.map((send) => send.threadId)).toEqual(["t1"]);
@@ -261,10 +261,10 @@ describe("Pipeline", () => {
     await h.pipeline.startWork(id, "brief");
     h.finish("t1", "Blocked: the GitHub API rate limit is hit, retry later.");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
   });
 
-  it("puts a new card on the worker whose slots are free, counting held cards", async () => {
+  it("puts a new task on the worker whose slots are free, counting held tasks", async () => {
     const h = harness((config) => {
       config.factory.limits.threadsPerWorker = 1;
     });
@@ -274,13 +274,13 @@ describe("Pipeline", () => {
     expect(h.t3.launches[0]?.environmentId).toBe("w1");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
-    expect(h.cards.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
-    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    expect(h.tasks.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     await h.pipeline.startWork(second, "brief");
     expect(h.t3.launches[1]?.environmentId).toBe("w2");
   });
 
-  it("lets the lead restart a card while other cards with the lead fill the cap", async () => {
+  it("lets the lead restart a task while other tasks with the lead fill the cap", async () => {
     const h = harness((config) => {
       config.factory.limits.threads = 1;
     });
@@ -288,8 +288,8 @@ describe("Pipeline", () => {
     await h.pipeline.startWork(first, "brief");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
-    // Another card with the lead, which never got a thread.
-    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    // Another task with the lead, which never got a thread.
+    const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     await h.pipeline.escalateToOwner(second, "unclear");
     await h.pipeline.sendToLead(second, "decide");
     await h.pipeline.startWork(first, "Try the other parser.");
@@ -306,7 +306,7 @@ describe("Pipeline", () => {
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(0);
-    expect(h.cards.get(id).waiting).toBe("The factory is paused.");
+    expect(h.tasks.get(id).waiting).toBe("The factory is paused.");
     h.pipeline.setPaused(false);
     // A held send is tried again a minute later.
     await h.pipeline.tick();
@@ -336,18 +336,18 @@ describe("Pipeline", () => {
     h.t3.gone.add("t1");
     h.setClock(Date.parse("2026-11-25T13:10:00Z"));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
-    expect(h.cards.get(id).reason).toMatch(/no longer has the thread/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id).reason).toMatch(/no longer has the thread/);
   });
 
-  it("parks the lead's task on the board when the lead restarts a card on its own thread", async () => {
+  it("parks the lead's task on the board when the lead restarts a task on its own thread", async () => {
     const h = harness();
     const id = admitted(h);
-    h.cards.update(id, { hermesCardId: "t_lead" });
+    h.tasks.update(id, { hermesTaskId: "t_lead" });
     await h.pipeline.startWork(id, "brief");
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     h.board.length = 0;
 
     await h.pipeline.startWork(id, "try again");
@@ -356,7 +356,7 @@ describe("Pipeline", () => {
     expect(h.board).toEqual(["t_lead Implementing t1"]);
   });
 
-  it("counts cards with the lead and cards waiting on a usage limit apart in one message", async () => {
+  it("counts tasks with the lead and tasks waiting on a usage limit apart in one message", async () => {
     const h = harness((config) => {
       config.factory.limits.threads = 2;
       config.factory.limits.threadsPerWorker = 3;
@@ -365,21 +365,21 @@ describe("Pipeline", () => {
     await h.pipeline.startWork(limited, "brief");
     h.limit("t1");
     await h.pipeline.tick();
-    const failed = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Second" }).id;
+    const failed = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Second" }).id;
     await h.pipeline.startWork(failed, "brief");
     h.finish("t2", "", "failed");
     await h.pipeline.tick();
-    expect(h.cards.get(failed)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(failed)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
 
-    const third = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Third" }).id;
+    const third = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Third" }).id;
     await h.pipeline.startWork(third, "brief");
 
-    expect(h.cards.get(third).waiting).toBe(
+    expect(h.tasks.get(third).waiting).toBe(
       "The limit of 2 running factory threads is reached, counting 1 task with the lead and 1 waiting for a usage limit to reset.",
     );
   });
 
-  it("keeps the thread slot of a card waiting on a usage limit or on the lead", async () => {
+  it("keeps the thread slot of a task waiting on a usage limit or on the lead", async () => {
     const h = harness((config) => {
       config.factory.limits.threads = 1;
     });
@@ -387,33 +387,33 @@ describe("Pipeline", () => {
     await h.pipeline.startWork(first, "brief");
     h.limit("t1");
     await h.pipeline.tick();
-    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     await h.pipeline.startWork(second, "brief");
     expect(h.t3.launches).toHaveLength(1);
-    expect(h.cards.get(second).waiting).toBe(
+    expect(h.tasks.get(second).waiting).toBe(
       "The limit of 1 running factory threads is reached, counting 1 task waiting for a usage limit to reset.",
     );
 
-    // The first card's next run fails for another reason, so it goes to the lead and keeps its slot.
+    // The first task's next run fails for another reason, so it goes to the lead and keeps its slot.
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(1);
     h.finish("t1", "", "failed");
     await h.pipeline.tick();
-    expect(h.cards.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     expect(h.t3.launches).toHaveLength(1);
     await h.pipeline.tick();
-    expect(h.cards.get(second).waiting).toBe(
+    expect(h.tasks.get(second).waiting).toBe(
       "The limit of 1 running factory threads is reached, counting 1 task with the lead.",
     );
 
-    // Once it is with the owner, it is blocked, and the next card may start.
+    // Once it is with the owner, it is blocked, and the next task may start.
     await h.pipeline.escalateToOwner(first, "needs a decision");
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(2);
   });
 
-  it("keeps an admitted card admitted while paused, and starts it with the lead's brief on resume", async () => {
+  it("keeps an admitted task admitted while paused, and starts it with the lead's brief on resume", async () => {
     const h = harness((config) => {
       config.factory.autoStartMinutes = 10;
     });
@@ -421,10 +421,10 @@ describe("Pipeline", () => {
     h.pipeline.setPaused(true);
     h.setClock(Date.parse("2026-11-25T12:11:00Z"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Admitted");
+    expect(h.tasks.get(id).stage).toBe("Admitted");
 
     await h.pipeline.startWork(id, "Use the v2 parser.");
-    expect(h.cards.get(id)).toMatchObject({
+    expect(h.tasks.get(id)).toMatchObject({
       stage: "Admitted",
       waiting: "The factory is paused.",
       brief: "Use the v2 parser.",
@@ -433,7 +433,7 @@ describe("Pipeline", () => {
 
     h.pipeline.setPaused(false);
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(h.tasks.get(id).stage).toBe("Implementing");
     expect(h.t3.launches[0]?.message).toContain("Use the v2 parser.");
   });
 
@@ -444,7 +444,7 @@ describe("Pipeline", () => {
     h.finish("t2", reviewResult("approve", SHA2));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([]);
-    expect(h.cards.get(id).reason).toMatch(/covered/);
+    expect(h.tasks.get(id).reason).toMatch(/covered/);
   });
 
   it("stops before merging a PR that touches an escalation path, until the owner approves that head", async () => {
@@ -456,11 +456,11 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
 
     expect(h.github.merged).toEqual([]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
-    expect(h.cards.get(id).reason).toBe(
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    expect(h.tasks.get(id).reason).toBe(
       "the PR touches an escalation path: .github/workflows/ci.yml",
     );
-    expect(h.cards.notifications()[0]?.text).toBe(
+    expect(h.tasks.notifications()[0]?.text).toBe(
       `Task ${String(id)} in octo/app needs you: the PR touches an escalation path: .github/workflows/ci.yml`,
     );
 
@@ -490,11 +490,11 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA, { checks: "pending" }));
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Merging", waiting: "checks are running" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Merging", waiting: "checks are running" });
 
     h.github.prs.set(5, pr(5, SHA, { checks: "failure", failedChecks: ["test"] }));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
   });
 
   it("starts no thread while paused or at a cap, and says why", async () => {
@@ -505,16 +505,16 @@ describe("Pipeline", () => {
     h.pipeline.setPaused(true);
     await h.pipeline.startWork(first, "brief");
     expect(h.t3.launches).toHaveLength(0);
-    expect(h.cards.get(first).waiting).toBe("The factory is paused.");
+    expect(h.tasks.get(first).waiting).toBe("The factory is paused.");
 
     h.pipeline.setPaused(false);
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(1);
 
-    const second = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    const second = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     await h.pipeline.startWork(second, "brief");
     expect(h.t3.launches).toHaveLength(1);
-    expect(h.cards.get(second).waiting).toMatch(/worker's limit of 1/);
+    expect(h.tasks.get(second).waiting).toMatch(/worker's limit of 1/);
   });
 
   it("holds back a daily start cap and a missing worker", async () => {
@@ -523,13 +523,13 @@ describe("Pipeline", () => {
     });
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
-    expect(h.cards.get(id).waiting).toMatch(/per day/);
+    expect(h.tasks.get(id).waiting).toMatch(/per day/);
 
     const other = harness();
     other.ready.length = 0;
-    const card = admitted(other);
-    await other.pipeline.startWork(card, "brief");
-    expect(other.cards.get(card).waiting).toBe("No worker is ready.");
+    const task = admitted(other);
+    await other.pipeline.startWork(task, "brief");
+    expect(other.tasks.get(task).waiting).toBe("No worker is ready.");
   });
 
   it("reverts a merge whose checks fail, after reviewing the revert, reopens the issue, and starts again", async () => {
@@ -540,7 +540,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9, headSha: null });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9, headSha: null });
     expect(h.github.reverted).toEqual([5]);
 
     // Under standard, the revert PR gets its own review from the other provider.
@@ -557,15 +557,15 @@ describe("Pipeline", () => {
 
     expect(h.github.merged).toEqual([5, 9]);
     expect(h.github.reopened).toEqual([5]);
-    expect(h.cards.notifications()[0]?.text).toBe(
+    expect(h.tasks.notifications()[0]?.text).toBe(
       `Reverted PR #5 in octo/app (task ${String(id)}): its merge failed checks on the default branch. The task is back in Implementing.`,
     );
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", prNumber: null });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", prNumber: null });
 
     await h.pipeline.tick();
     expect(h.t3.launches.at(-1)?.message).toContain("reverted");
     expect(h.t3.launches.at(-1)?.workspace).toMatchObject({
-      branch: "factory/0123abcd-card-1-retry-9",
+      branch: "factory/0123abcd-task-1-retry-9",
     });
   });
 
@@ -586,7 +586,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
 
     expect(h.github.merged).toEqual([5]);
-    expect(h.cards.get(id)).toMatchObject({
+    expect(h.tasks.get(id)).toMatchObject({
       stage: "Escalated",
       ownerAction: "revert-merge",
       headSha: SHA2,
@@ -623,12 +623,12 @@ describe("Pipeline", () => {
       }
       await h.pipeline.tick();
       expect(h.github.merged).toEqual([5]);
-      expect(h.cards.get(id)).toMatchObject({
+      expect(h.tasks.get(id)).toMatchObject({
         stage: "Escalated",
         escalatedTo: "owner",
         ownerAction: "revert-merge",
       });
-      expect(h.cards.get(id).reason).toMatch(/revert PR #9 conflicts with the default branch/);
+      expect(h.tasks.get(id).reason).toMatch(/revert PR #9 conflicts with the default branch/);
     }
   });
 
@@ -650,14 +650,14 @@ describe("Pipeline", () => {
         : merge(repo, number, head);
     h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5" }));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reverting");
+    expect(h.tasks.get(id).stage).toBe("Reverting");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({
+    expect(h.tasks.get(id)).toMatchObject({
       stage: "Escalated",
       escalatedTo: "owner",
       ownerAction: "revert-merge",
     });
-    expect(h.cards.get(id).reason).toMatch(
+    expect(h.tasks.get(id).reason).toMatch(
       /revert PR #9: Merge queue required|revert PR #9.*Merge queue required/,
     );
   });
@@ -676,7 +676,7 @@ describe("Pipeline", () => {
     h.github.prs.set(9, { ...revert, mergeable: "CONFLICTING" });
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(launches);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "revert-merge" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "revert-merge" });
   });
 
   it("counts a revert PR the owner merged by hand", async () => {
@@ -694,7 +694,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5", files: ["ci/build.yml"] }));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Escalated");
+    expect(h.tasks.get(id).stage).toBe("Escalated");
 
     // The owner merges the revert on GitHub instead of approving it on the dashboard.
     h.github.prs.set(
@@ -704,19 +704,19 @@ describe("Pipeline", () => {
     h.github.reopenFailures = 1;
     h.setClock(Date.parse("2026-11-25T13:00:00Z"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reverting");
+    expect(h.tasks.get(id).stage).toBe("Reverting");
     // The issue's reopen fails once; the retry a day later keeps the revert's day and logs it once.
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reverting");
+    expect(h.tasks.get(id).stage).toBe("Reverting");
     h.setClock(Date.parse("2026-11-26T13:00:00Z"));
     await h.pipeline.tick();
 
     expect(h.github.merged).toEqual([5]);
-    expect(h.cards.revertCount()).toBe(1);
-    expect(h.cards.mergedByHephaestus("octo/app", 9)).toBe(false);
+    expect(h.tasks.revertCount()).toBe(1);
+    expect(h.tasks.mergedByHephaestus("octo/app", 9)).toBe(false);
     expect(h.github.reopened).toEqual([5]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", reverting: false });
-    expect(h.cards.events(id).filter((event) => event.kind === "foreign-merge")).toHaveLength(1);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", reverting: false });
+    expect(h.tasks.events(id).filter((event) => event.kind === "foreign-merge")).toHaveLength(1);
     expect(h.db.prepare("SELECT at FROM merges WHERE pr_number = 9").get()).toEqual({
       at: "2026-11-25T13:00:00.000Z",
     });
@@ -738,19 +738,19 @@ describe("Pipeline", () => {
     h.github.ownMerges.add("8".repeat(40));
     await h.pipeline.tick();
 
-    expect(h.cards.mergedByHephaestus("octo/app", 9)).toBe(true);
-    expect(h.cards.events(id).some((event) => event.kind === "foreign-merge")).toBe(false);
+    expect(h.tasks.mergedByHephaestus("octo/app", 9)).toBe(true);
+    expect(h.tasks.events(id).some((event) => event.kind === "foreign-merge")).toBe(false);
   });
 
-  it("lets the owner send a retried card to the lead after its earlier revert completed", async () => {
+  it("lets the owner send a retried task to the lead after its earlier revert completed", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.escalateToOwner(id, "checks failed on the retry's merge commit");
-    h.cards.update(id, { revertPr: 9, prNumber: 12, mergeSha: MERGE, reverting: false });
-    h.cards.recordMerge("octo/app", 12, MERGE, id, false);
+    h.tasks.update(id, { revertPr: 9, prNumber: 12, mergeSha: MERGE, reverting: false });
+    h.tasks.recordMerge("octo/app", 12, MERGE, id, false);
 
     await h.pipeline.sendToLead(id, "look again");
-    expect(h.cards.get(id).escalatedTo).toBe("lead");
+    expect(h.tasks.get(id).escalatedTo).toBe("lead");
   });
 
   it("finishes a revert the owner merged by hand while the checks API is down", async () => {
@@ -768,7 +768,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     h.github.prs.set(9, pr(9, SHA2, { headBranch: "revert-5", files: ["ci/build.yml"] }));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Escalated");
+    expect(h.tasks.get(id).stage).toBe("Escalated");
 
     h.github.prs.set(
       9,
@@ -778,7 +778,7 @@ describe("Pipeline", () => {
     h.setClock(Date.parse("2026-11-25T13:00:00Z"));
     await h.pipeline.tick();
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", reverting: false });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", reverting: false });
     expect(h.github.reopened).toEqual([5]);
   });
 
@@ -788,12 +788,12 @@ describe("Pipeline", () => {
     await toReview(h, id);
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Validating");
+    expect(h.tasks.get(id).stage).toBe("Validating");
     delete h.config.projects["octo/app"];
     // The merge fails its checks after the project is gone: it is still reverted.
     h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Reverting", revertPr: 9 });
     expect(h.github.reverted).toEqual([5]);
     await h.pipeline.tick();
     h.finish(`t${String(h.t3.launches.length)}`, reviewResult("approve", SHA2));
@@ -802,15 +802,15 @@ describe("Pipeline", () => {
     expect(h.github.reopened).toEqual([5]);
     // Back in Implementing, new work waits until the project is added again.
     await h.pipeline.tick();
-    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
+    expect(h.tasks.get(id).waiting).toMatch(/no longer a factory project/);
 
-    // The project comes back under GitHub's spelling; a card recorded as Octo/App still finds it.
+    // The project comes back under GitHub's spelling; a task recorded as Octo/App still finds it.
     const other = harness((config) => {
       config.projects = { "octo/app": { policy: { preset: "standard", overrides: {} } } };
     });
-    const card = other.cards.create({ repo: "Octo/App", issueNumber: 5, title: "Old casing" }).id;
+    const task = other.tasks.create({ repo: "Octo/App", issueNumber: 5, title: "Old casing" }).id;
     other.github.issues.set(5, { number: 5, title: "x", body: "", author: "x", state: "OPEN" });
-    await other.pipeline.startWork(card, "brief");
+    await other.pipeline.startWork(task, "brief");
     expect(other.t3.launches).toHaveLength(1);
   });
 
@@ -829,7 +829,7 @@ describe("Pipeline", () => {
     };
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
   });
 
   it("keeps the policy in force at approval when the project is removed during the board update", async () => {
@@ -849,7 +849,7 @@ describe("Pipeline", () => {
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
   });
 
   it("starts no new merge for a removed project, though its review approves", async () => {
@@ -859,19 +859,19 @@ describe("Pipeline", () => {
     delete h.config.projects["octo/app"];
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Reviewing");
-    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
+    expect(h.tasks.get(id).stage).toBe("Reviewing");
+    expect(h.tasks.get(id).waiting).toMatch(/no longer a factory project/);
     expect(h.github.merged).toEqual([]);
   });
 
-  it("records the policy of a card already validating, so its project's removal cannot strand it", async () => {
+  it("records the policy of a task already validating, so its project's removal cannot strand it", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    // As after an upgrade that added the snapshot: the card has none yet.
-    h.cards.update(id, { policy: null });
+    // As after an upgrade that added the snapshot: the task has none yet.
+    h.tasks.update(id, { policy: null });
     await h.pipeline.tick();
     delete h.config.projects["octo/app"];
     h.github.commits.set(MERGE, checks("failure", ["ci"], ["ci"]));
@@ -886,15 +886,15 @@ describe("Pipeline", () => {
     h.github.prs.set(6, pr(6, SHA, { headBranch: "someone/else" }));
     h.finish("t1", implementResult(6, SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id).reason).toMatch(/not the card's branch/);
+    expect(h.tasks.get(id).reason).toMatch(/not the task's branch/);
 
     const other = harness();
-    const card = admitted(other);
-    await toReview(other, card);
+    const task = admitted(other);
+    await toReview(other, task);
     other.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     other.finish("t2", reviewResult("approve", SHA));
     await other.pipeline.tick();
-    expect(other.cards.get(card)).toMatchObject({ stage: "Done", foreignMerge: true });
+    expect(other.tasks.get(task)).toMatchObject({ stage: "Done", foreignMerge: true });
     expect(other.github.reverted).toEqual([]);
   });
 
@@ -907,12 +907,12 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     h.github.commits.set(MERGE, checks("success", ["ci"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating" });
-    expect(h.cards.get(id).waiting).toMatch(/lint/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating" });
+    expect(h.tasks.get(id).waiting).toMatch(/lint/);
 
     h.github.commits.set(MERGE, checks("success", ["ci", "lint"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Done");
+    expect(h.tasks.get(id).stage).toBe("Done");
   });
 
   it("merges a repo without CI only when the policy allows no checks", async () => {
@@ -929,21 +929,21 @@ describe("Pipeline", () => {
     expect(h.github.merged).toEqual([5]);
     h.github.commits.set(MERGE, checks("none"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Validating");
+    expect(h.tasks.get(id).stage).toBe("Validating");
     h.setClock(Date.parse("2026-11-25T12:11:00Z"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Done");
+    expect(h.tasks.get(id).stage).toBe("Done");
 
     const strict = harness();
-    const card = admitted(strict);
-    await toReview(strict, card);
+    const task = admitted(strict);
+    await toReview(strict, task);
     strict.github.prs.set(5, pr(5, SHA, { checks: "none", checkNames: [] }));
     strict.finish("t2", reviewResult("approve", SHA));
     await strict.pipeline.tick();
     expect(strict.github.merged).toEqual([]);
     strict.setClock(Date.parse("2026-11-25T13:01:00Z"));
     await strict.pipeline.tick();
-    expect(strict.cards.get(card)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    expect(strict.tasks.get(task)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
   });
 
   it("retries a launch whose reply was lost without its pending launch blocking it", async () => {
@@ -955,11 +955,11 @@ describe("Pipeline", () => {
     // A launch was recorded, and its reply never came.
     h.events.recordLaunch(`hephaestus-implement-${String(id)}-0`, {
       environmentId: "w1",
-      title: "Card",
+      title: "Task",
       providerInstanceId: FACTORY_CLAUDE,
       model: "m",
       configVersion: 3,
-      cardId: String(id),
+      taskId: String(id),
       kind: "implement",
     });
     await h.pipeline.startWork(id, "brief");
@@ -978,7 +978,7 @@ describe("Pipeline", () => {
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([]);
-    expect(h.cards.get(id).waiting).toMatch(/required checks have not run: e2e/);
+    expect(h.tasks.get(id).waiting).toMatch(/required checks have not run: e2e/);
     h.github.prs.set(5, pr(5, SHA, { checkNames: ["check:ci", "check:e2e"] }));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([5]);
@@ -991,20 +991,20 @@ describe("Pipeline", () => {
     h.github.merge = (_repo, number) => Promise.reject(new MergeConflictError(number));
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1, reviewThread: null });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", rounds: 1, reviewThread: null });
     expect(h.t3.sends.at(-1)).toMatchObject({ threadId: "t1" });
     expect(h.t3.sends.at(-1)?.message).toContain("conflicts with `main`");
-    expect(h.cards.events(id)).toContainEqual(
+    expect(h.tasks.events(id)).toContainEqual(
       expect.objectContaining({
         kind: "stage:Implementing",
         detail: "the PR conflicts with its base branch",
       }),
     );
 
-    h.db.prepare("UPDATE cards SET rounds = 99, stage = 'Merging' WHERE id = ?").run(id);
+    h.db.prepare("UPDATE tasks SET rounds = 99, stage = 'Merging' WHERE id = ?").run(id);
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
-    expect(h.cards.get(id).reason).toMatch(/conflicts with main after 99 rounds/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id).reason).toMatch(/conflicts with main after 99 rounds/);
   });
 
   it("retries a merge GitHub refuses once, then escalates to the owner with GitHub's message", async () => {
@@ -1019,17 +1019,17 @@ describe("Pipeline", () => {
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
     expect(attempts).toBe(1);
-    expect(h.cards.get(id).stage).toBe("Merging");
-    expect(h.cards.get(id).waiting).toMatch(/Head branch is not up to date.*trying once more/);
-    // A pass that finds the same refusal again does not hold the card in Merging.
+    expect(h.tasks.get(id).stage).toBe("Merging");
+    expect(h.tasks.get(id).waiting).toMatch(/Head branch is not up to date.*trying once more/);
+    // A pass that finds the same refusal again does not hold the task in Merging.
     await h.pipeline.tick();
     expect(attempts).toBe(2);
-    expect(h.cards.get(id)).toMatchObject({
+    expect(h.tasks.get(id)).toMatchObject({
       stage: "Escalated",
       escalatedTo: "owner",
       ownerAction: "merge",
     });
-    expect(h.cards.get(id).reason).toMatch(/Head branch is not up to date/);
+    expect(h.tasks.get(id).reason).toMatch(/Head branch is not up to date/);
   });
 
   it("counts a refusal per head, so a new head gets its own retry", async () => {
@@ -1041,13 +1041,13 @@ describe("Pipeline", () => {
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
     // An earlier head's refusal does not count against this one.
-    h.cards.event(id, "merge-refused", `${SHA2}: Merge queue required`);
-    expect(h.cards.get(id).stage).toBe("Merging");
+    h.tasks.event(id, "merge-refused", `${SHA2}: Merge queue required`);
+    expect(h.tasks.get(id).stage).toBe("Merging");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
   });
 
-  it("leaves a card in Merging when the merge fails with a network error or a server error", async () => {
+  it("leaves a task in Merging when the merge fails with a network error or a server error", async () => {
     for (const failure of ["connection reset", "gh: Server Error (HTTP 502)"]) {
       const h = harness();
       const id = admitted(h);
@@ -1057,7 +1057,7 @@ describe("Pipeline", () => {
       await h.pipeline.tick();
       await h.pipeline.tick();
       await h.pipeline.tick();
-      expect(h.cards.get(id)).toMatchObject({ stage: "Merging", reason: null });
+      expect(h.tasks.get(id)).toMatchObject({ stage: "Merging", reason: null });
     }
   });
 
@@ -1069,7 +1069,7 @@ describe("Pipeline", () => {
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
     expect(h.github.merged).toEqual([]);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Implementing", rounds: 1 });
     expect(h.t3.sends.at(-1)?.message).toContain("conflicts with `main`");
   });
 
@@ -1082,16 +1082,16 @@ describe("Pipeline", () => {
     h.github.ownMerges.add(MERGE);
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
 
     const other = harness();
-    const card = admitted(other);
-    await toReview(other, card);
+    const task = admitted(other);
+    await toReview(other, task);
     other.github.merge = () => Promise.reject(new MergeOutcomeUnknownError(5));
     other.finish("t2", reviewResult("approve", SHA));
     await other.pipeline.tick();
-    expect(other.cards.get(card)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
-    expect(other.cards.get(card).reason).toMatch(/could not read back/);
+    expect(other.tasks.get(task)).toMatchObject({ stage: "Escalated", escalatedTo: "owner" });
+    expect(other.tasks.get(task).reason).toMatch(/could not read back/);
 
     // The merge went through after all, with Hephaestus's marker: the scan for merges made
     // elsewhere hands it to the merge step, which validates it like any of its merges.
@@ -1100,8 +1100,8 @@ describe("Pipeline", () => {
     other.setClock(Date.parse("2026-11-25T13:00:00Z"));
     await other.pipeline.tick();
     await other.pipeline.tick();
-    expect(other.cards.get(card)).toMatchObject({ stage: "Validating", foreignMerge: false });
-    expect(other.cards.mergedByHephaestus("octo/app", 5)).toBe(true);
+    expect(other.tasks.get(task)).toMatchObject({ stage: "Validating", foreignMerge: false });
+    expect(other.tasks.mergedByHephaestus("octo/app", 5)).toBe(true);
   });
 
   it("validates its own merge that a restarted implementer reports, and says when it cannot tell", async () => {
@@ -1115,7 +1115,7 @@ describe("Pipeline", () => {
     h.github.mergedWith = () => Promise.resolve(undefined);
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({
+    expect(h.tasks.get(id)).toMatchObject({
       stage: "Implementing",
       waiting: "reading back whether the merge was Hephaestus's",
     });
@@ -1123,17 +1123,17 @@ describe("Pipeline", () => {
     h.github.mergedWith = read;
     await h.pipeline.tick();
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
   });
 
-  it("skips a card abandoned while the scan for outside merges reads another, and goes on after an error", async () => {
+  it("skips a task abandoned while the scan for outside merges reads another, and goes on after an error", async () => {
     const h = harness();
-    // Three escalated cards whose PRs Hephaestus merged; the scan reads them newest first.
+    // Three escalated tasks whose PRs Hephaestus merged; the scan reads them newest first.
     const ids = [5, 6, 7].map((number) => {
-      const id = h.cards.create({ repo: "octo/app", issueNumber: number, title: "Work" }).id;
+      const id = h.tasks.create({ repo: "octo/app", issueNumber: number, title: "Work" }).id;
       const sha = String(number).repeat(40);
-      h.cards.transition(id, "Implementing", "work started", { prNumber: number, headSha: sha });
-      h.cards.transition(id, "Escalated", "to the owner: check the PR", {
+      h.tasks.transition(id, "Implementing", "work started", { prNumber: number, headSha: sha });
+      h.tasks.transition(id, "Escalated", "to the owner: check the PR", {
         escalatedTo: "owner",
         reason: "check the PR",
       });
@@ -1155,16 +1155,16 @@ describe("Pipeline", () => {
 
     await h.pipeline.tick();
     expect(reads).not.toContain(6);
-    expect(h.cards.get(middle).stage).toBe("Abandoned");
-    expect(h.cards.get(oldest).stage).not.toBe("Escalated");
+    expect(h.tasks.get(middle).stage).toBe("Abandoned");
+    expect(h.tasks.get(oldest).stage).not.toBe("Escalated");
   });
 
   it("marks the implementer's result handled when its own merge is found, whichever read sees the marker", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
-    // A restarted card still carries the PR of its earlier attempt, which the scan reads.
-    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    // A restarted task still carries the PR of its earlier attempt, which the scan reads.
+    h.tasks.update(id, { prNumber: 5, headSha: SHA });
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.github.ownMerges.add(MERGE);
     const marker = h.github.mergedWith.bind(h.github);
@@ -1178,31 +1178,31 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     await h.pipeline.tick();
 
-    expect(h.cards.get(id).stage).toBe("Validating");
-    expect(h.cards.get(id).handled.t1).toBeDefined();
+    expect(h.tasks.get(id).stage).toBe("Validating");
+    expect(h.tasks.get(id).handled.t1).toBeDefined();
   });
 
   it("records the PR and head of an outside merge a restarted implementer reports", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
-    // The card still names the PR of an earlier attempt; the implementer reports a new one,
+    // The task still names the PR of an earlier attempt; the implementer reports a new one,
     // which someone merged by hand.
-    h.cards.update(id, { prNumber: 4, headSha: SHA2 });
+    h.tasks.update(id, { prNumber: 4, headSha: SHA2 });
     h.github.prs.set(4, pr(4, SHA2));
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.finish("t1", implementResult(5, SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({
+    expect(h.tasks.get(id)).toMatchObject({
       stage: "Done",
       foreignMerge: true,
       prNumber: 5,
       headSha: SHA,
     });
-    expect(h.cards.notifications()[0]?.text).toContain("PR #5 ");
+    expect(h.tasks.notifications()[0]?.text).toContain("PR #5 ");
   });
 
-  it("keeps a card whose merge outcome is unknown from the lead, and validates the merge on approval", async () => {
+  it("keeps a task whose merge outcome is unknown from the lead, and validates the merge on approval", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
@@ -1214,26 +1214,26 @@ describe("Pipeline", () => {
     };
     h.finish("t2", reviewResult("approve", SHA));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", ownerAction: "merge" });
 
     // Sending it to the lead settles the merge instead of restarting work on top of it.
     await expect(h.pipeline.sendToLead(id, "start over")).rejects.toThrow(/validate the merge/);
-    expect(h.cards.get(id).stage).toBe("Merging");
+    expect(h.tasks.get(id).stage).toBe("Merging");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating", foreignMerge: false });
   });
 
   it("settles a restart queued before GitHub reported the merge, instead of sending it", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
-    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    h.tasks.update(id, { prNumber: 5, headSha: SHA });
     h.github.prs.set(5, pr(5, SHA));
     await h.pipeline.escalateToOwner(id, "check the PR");
     await h.pipeline.sendToLead(id, "go on");
     h.pipeline.setPaused(true);
     await h.pipeline.startWork(id, "new brief");
-    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+    expect(h.tasks.get(id).pendingMessage).not.toBeNull();
 
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.github.ownMerges.add(MERGE);
@@ -1242,7 +1242,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(sends);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
   });
 
   it("validates a queued restart's merge while paused, and keeps the message while unsure", async () => {
@@ -1253,14 +1253,14 @@ describe("Pipeline", () => {
     const marker = h.github.mergedWith.bind(h.github);
     h.github.mergedWith = () => Promise.resolve(undefined);
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Implementing");
-    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+    expect(h.tasks.get(id).stage).toBe("Implementing");
+    expect(h.tasks.get(id).pendingMessage).not.toBeNull();
     h.github.mergedWith = marker;
-    // The scan for outside merges runs every few minutes and hands on a card waiting to send.
+    // The scan for outside merges runs every few minutes and hands on a task waiting to send.
     h.setClock(Date.parse("2026-11-25T12:10:00Z"));
     await h.pipeline.tick();
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Validating", pendingMessage: null });
   });
 
   it("reads no merge state for a queued message while a pause holds it", async () => {
@@ -1279,12 +1279,12 @@ describe("Pipeline", () => {
     expect(reads).toBe(1);
   });
 
-  it("sends nothing on a read that went stale while another card held the launch queue", async () => {
+  it("sends nothing on a read that went stale while another task held the launch queue", async () => {
     const h = harness();
     const id = await queuedRestart(h);
-    h.cards.transition(id, "Escalated", "to the lead: again", { escalatedTo: "lead" });
+    h.tasks.transition(id, "Escalated", "to the lead: again", { escalatedTo: "lead" });
     h.pipeline.setPaused(false);
-    // Another card's launch holds the launch queue until released.
+    // Another task's launch holds the launch queue until released.
     let release: () => void = () => undefined;
     const held = new Promise<void>((resolve) => {
       release = resolve;
@@ -1295,7 +1295,7 @@ describe("Pipeline", () => {
       return launch(options);
     };
     h.github.issues.set(6, { number: 6, title: "Other", body: "", author: "x", state: "OPEN" });
-    const other = h.cards.create({ repo: "octo/app", issueNumber: 6, title: "Other" }).id;
+    const other = h.tasks.create({ repo: "octo/app", issueNumber: 6, title: "Other" }).id;
     const otherStart = h.pipeline.startWork(other, "brief");
     await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -1310,7 +1310,7 @@ describe("Pipeline", () => {
     await restart.catch(() => undefined);
 
     expect(h.t3.sends).toHaveLength(sends);
-    expect(h.cards.get(id).stage).not.toBe("Implementing");
+    expect(h.tasks.get(id).stage).not.toBe("Implementing");
   });
 
   it("says why a queued message waits when the PR cannot be read, and sends nothing", async () => {
@@ -1321,7 +1321,7 @@ describe("Pipeline", () => {
     const sends = h.t3.sends.length;
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(sends);
-    expect(h.cards.get(id).waiting).toBe("reading whether the PR has merged");
+    expect(h.tasks.get(id).waiting).toBe("reading whether the PR has merged");
   });
 
   it("holds a queued message when a pause lands during the merge read", async () => {
@@ -1336,16 +1336,16 @@ describe("Pipeline", () => {
     const sends = h.t3.sends.length;
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(sends);
-    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+    expect(h.tasks.get(id).pendingMessage).not.toBeNull();
   });
 
-  it("hands on a merged card from the scan while the files and checks API is down", async () => {
+  it("hands on a merged task from the scan while the files and checks API is down", async () => {
     const h = harness();
     const id = await queuedRestart(h);
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.github.pullRequest = () => Promise.reject(new Error("HTTP 503 from the checks API"));
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Done", foreignMerge: true });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Done", foreignMerge: true });
   });
 
   it("does not send a queued message to a worker that stopped being ready during the read", async () => {
@@ -1362,14 +1362,14 @@ describe("Pipeline", () => {
     h.setClock(Date.parse("2026-11-25T12:00:30Z"));
     await h.pipeline.tick();
     expect(h.t3.sends).toHaveLength(sends);
-    expect(h.cards.get(id).pendingMessage).not.toBeNull();
+    expect(h.tasks.get(id).pendingMessage).not.toBeNull();
   });
 
-  it("restarts a card whose open PR's checks cannot be read", async () => {
+  it("restarts a task whose open PR's checks cannot be read", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
-    h.cards.update(id, { prNumber: 5, headSha: SHA });
+    h.tasks.update(id, { prNumber: 5, headSha: SHA });
     h.github.prs.set(5, pr(5, SHA));
     await h.pipeline.escalateToOwner(id, "check the PR");
     await h.pipeline.sendToLead(id, "go on");
@@ -1378,11 +1378,11 @@ describe("Pipeline", () => {
     expect((await h.pipeline.startWork(id, "new brief")).stage).toBe("Implementing");
   });
 
-  it("settles an unrecorded merge when the lead restarts the card, whoever merged it", async () => {
+  it("settles an unrecorded merge when the lead restarts the task, whoever merged it", async () => {
     const h = harness();
     const ours = admitted(h);
     await h.pipeline.startWork(ours, "brief");
-    h.cards.update(ours, { prNumber: 5, headSha: SHA });
+    h.tasks.update(ours, { prNumber: 5, headSha: SHA });
     // The hand-back's read saw the PR still open; by start_work, GitHub reports the merge.
     await h.pipeline.escalateToOwner(ours, "check the PR");
     h.github.prs.set(5, pr(5, SHA));
@@ -1390,26 +1390,26 @@ describe("Pipeline", () => {
     h.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     h.github.ownMerges.add(MERGE);
     await expect(h.pipeline.startWork(ours, "new brief")).rejects.toThrow(/validate the merge/);
-    expect(h.cards.get(ours).stage).toBe("Merging");
+    expect(h.tasks.get(ours).stage).toBe("Merging");
 
-    // Merged by hand: the owner is told the card is done, not to approve it.
+    // Merged by hand: the owner is told the task is done, not to approve it.
     const other = harness();
     const theirs = admitted(other);
     await other.pipeline.startWork(theirs, "brief");
-    other.cards.update(theirs, { prNumber: 5, headSha: SHA });
+    other.tasks.update(theirs, { prNumber: 5, headSha: SHA });
     await other.pipeline.escalateToOwner(theirs, "checks fail");
     other.github.prs.set(5, pr(5, SHA, { state: "MERGED", mergeSha: MERGE }));
     await expect(other.pipeline.sendToLead(theirs, "fix it")).rejects.toThrow(
-      /outside Hephaestus, so the card is done/,
+      /outside Hephaestus, so the task is done/,
     );
-    expect(other.cards.get(theirs)).toMatchObject({ stage: "Done", foreignMerge: true });
+    expect(other.tasks.get(theirs)).toMatchObject({ stage: "Done", foreignMerge: true });
   });
 
-  it("settles a card's threads once it is done, and keeps those of an active or escalated card", async () => {
+  it("settles a task's threads once it is done, and keeps those of an active or escalated task", async () => {
     const h = harness();
     const id = admitted(h);
     await toReview(h, id);
-    // The implement thread has ended, but the card is still in review.
+    // The implement thread has ended, but the task is still in review.
     await h.pipeline.tick();
     await h.pipeline.settleThreads();
     expect(h.t3.settled).toEqual([]);
@@ -1418,7 +1418,7 @@ describe("Pipeline", () => {
     await h.pipeline.tick();
     h.github.commits.set(MERGE, checks("success", ["ci"]));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Done");
+    expect(h.tasks.get(id).stage).toBe("Done");
     await h.pipeline.settleThreads();
     expect(h.t3.settled.sort()).toEqual(["t1", "t2"]);
     // Each thread is settled once.
@@ -1426,11 +1426,11 @@ describe("Pipeline", () => {
     expect(h.t3.settled).toHaveLength(2);
 
     const other = harness();
-    const card = admitted(other);
-    await other.pipeline.startWork(card, "brief");
+    const task = admitted(other);
+    await other.pipeline.startWork(task, "brief");
     other.finish("t1", "no result block");
     await other.pipeline.tick();
-    expect(other.cards.get(card).stage).toBe("Escalated");
+    expect(other.tasks.get(task).stage).toBe("Escalated");
     await other.pipeline.settleThreads();
     expect(other.t3.settled).toEqual([]);
   });
@@ -1441,7 +1441,7 @@ describe("Pipeline", () => {
     await toReview(h, id);
     h.finish("t2", reviewResult("changes", SHA));
     // A newer review thread replaces the finished one.
-    h.cards.update(id, { reviewThread: "t9" });
+    h.tasks.update(id, { reviewThread: "t9" });
     setupThread(h, "setup-1");
     await h.pipeline.settleThreads();
     expect(h.t3.settled.sort()).toEqual(["setup-1", "t2"]);
@@ -1485,16 +1485,16 @@ describe("Pipeline", () => {
     expect(h.t3.settled).toEqual(["setup-2", "setup-1"]);
   });
 
-  it("does not settle a thread a card picked up again during the pass", async () => {
+  it("does not settle a thread a task picked up again during the pass", async () => {
     const h = harness();
     setupThread(h, "old-1");
     setupThread(h, "old-2");
-    const id = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Work" }).id;
-    h.cards.transition(id, "Implementing", "work started");
+    const id = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Work" }).id;
+    h.tasks.transition(id, "Implementing", "work started");
     const settle = h.t3.settle.bind(h.t3);
     h.t3.settle = (environmentId, threadId) => {
-      // While the first call is out, the card takes up the second thread.
-      if (threadId === "old-1") h.cards.update(id, { implementThread: "old-2" });
+      // While the first call is out, the task takes up the second thread.
+      if (threadId === "old-1") h.tasks.update(id, { implementThread: "old-2" });
       return settle(environmentId, threadId);
     };
     await h.pipeline.settleThreads();
@@ -1557,7 +1557,7 @@ describe("Pipeline", () => {
     expect(order[1]).toBe("healthy");
   });
 
-  it("does not abandon a card that started work", async () => {
+  it("does not abandon a task that started work", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
@@ -1566,18 +1566,18 @@ describe("Pipeline", () => {
     );
   });
 
-  it("refuses a send-to-lead or abandon from a form opened before the card changed", async () => {
+  it("refuses a send-to-lead or abandon from a form opened before the task changed", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.escalateToOwner(id, "first question");
     // The clock stands still: both escalations share a timestamp, and only the version tells them apart.
-    const seen = String(h.cards.get(id).version);
+    const seen = String(h.tasks.get(id).version);
     await h.pipeline.sendToLead(id, "answer", seen);
     await h.pipeline.escalateToOwner(id, "second question");
 
     await expect(h.pipeline.sendToLead(id, "late answer", seen)).rejects.toThrow(/changed/);
     await expect(h.pipeline.abandon(id, "late abandon", seen)).rejects.toThrow(/changed/);
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", reason: "second question" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", reason: "second question" });
   });
 
   it("refuses a stale send-to-lead and an approval for another action", async () => {
@@ -1588,16 +1588,16 @@ describe("Pipeline", () => {
     await expect(h.pipeline.sendToLead(id, "second note")).rejects.toThrow(
       /not waiting for the owner/,
     );
-    expect(h.cards.get(id).reason).toBe("first note");
+    expect(h.tasks.get(id).reason).toBe("first note");
 
     const other = harness();
-    const card = admitted(other);
-    await toReview(other, card);
+    const task = admitted(other);
+    await toReview(other, task);
     other.github.prs.set(5, pr(5, SHA, { files: [".github/workflows/ci.yml"] }));
     other.finish("t2", reviewResult("approve", SHA));
     await other.pipeline.tick();
-    await expect(other.pipeline.approveMerge(card, SHA, "revert-merge")).rejects.toThrow();
-    expect((await other.pipeline.approveMerge(card, SHA, "merge")).stage).toBe("Merging");
+    await expect(other.pipeline.approveMerge(task, SHA, "revert-merge")).rejects.toThrow();
+    expect((await other.pipeline.approveMerge(task, SHA, "merge")).stage).toBe("Merging");
   });
 
   it("does not start work for a repo that left the factory projects", async () => {
@@ -1606,7 +1606,7 @@ describe("Pipeline", () => {
     delete h.config.projects["octo/app"];
     await h.pipeline.startWork(id, "brief");
     expect(h.t3.launches).toHaveLength(0);
-    expect(h.cards.get(id).waiting).toMatch(/no longer a factory project/);
+    expect(h.tasks.get(id).waiting).toMatch(/no longer a factory project/);
   });
 
   it("lets a thread waiting on the lead resume within a cap of one", async () => {
@@ -1618,7 +1618,7 @@ describe("Pipeline", () => {
     await h.pipeline.startWork(id, "brief");
     h.finish("t1", "", "waiting");
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Escalated");
+    expect(h.tasks.get(id).stage).toBe("Escalated");
     await h.pipeline.startWork(id, "Use the v2 API.");
     expect(h.t3.sends.at(-1)?.message).toContain("Use the v2 API.");
   });
@@ -1631,13 +1631,13 @@ describe("Pipeline", () => {
     // Foreign merges are checked every five minutes.
     h.setClock(Date.parse("2026-11-25T12:06:00Z"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).foreignMerge).toBe(true);
-    expect(h.cards.notifications()[0]?.text).toBe(
+    expect(h.tasks.get(id).foreignMerge).toBe(true);
+    expect(h.tasks.notifications()[0]?.text).toBe(
       `PR #5 in octo/app (task ${String(id)}) was merged outside Hephaestus.`,
     );
   });
 
-  it("starts an admitted card itself when the lead has not, after the configured delay", async () => {
+  it("starts an admitted task itself when the lead has not, after the configured delay", async () => {
     const h = harness((config) => {
       config.factory.autoStartMinutes = 10;
     });
@@ -1646,24 +1646,24 @@ describe("Pipeline", () => {
     expect(h.t3.launches).toHaveLength(0);
     h.setClock(Date.parse("2026-11-25T12:11:00Z"));
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(h.tasks.get(id).stage).toBe("Implementing");
     expect(h.t3.launches).toHaveLength(1);
   });
 
-  it("lets the lead restart an escalated card in its implement thread", async () => {
+  it("lets the lead restart an escalated task in its implement thread", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.startWork(id, "brief");
     h.finish("t1", "stuck", "completed");
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Escalated");
+    expect(h.tasks.get(id).stage).toBe("Escalated");
 
     await h.pipeline.startWork(id, "Try the other parser.");
-    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(h.tasks.get(id).stage).toBe("Implementing");
     expect(h.t3.sends.at(-1)?.message).toContain("Try the other parser.");
   });
 
-  it("refuses start_work on a card that is with the owner", async () => {
+  it("refuses start_work on a task that is with the owner", async () => {
     const h = harness();
     const id = admitted(h);
     await h.pipeline.escalateToOwner(id, "needs a product decision");
@@ -1671,7 +1671,7 @@ describe("Pipeline", () => {
   });
 });
 
-/** Takes a card through a failed merge to its revert PR 9, whose review thread hits a usage limit. */
+/** Takes a task through a failed merge to its revert PR 9, whose review thread hits a usage limit. */
 async function revertReviewOnLimit(h: Harness): Promise<{ id: number; review: string }> {
   const id = admitted(h);
   await toReview(h, id);
@@ -1681,29 +1681,29 @@ async function revertReviewOnLimit(h: Harness): Promise<{ id: number; review: st
   await h.pipeline.tick();
   await h.pipeline.tick();
   const review = `t${String(h.t3.launches.length)}`;
-  expect(h.cards.get(id)).toMatchObject({ stage: "Reverting", reviewThread: review });
+  expect(h.tasks.get(id)).toMatchObject({ stage: "Reverting", reviewThread: review });
   h.limit(review);
   await h.pipeline.tick();
-  expect(h.cards.get(id).limitUntil).not.toBeNull();
+  expect(h.tasks.get(id).limitUntil).not.toBeNull();
   return { id, review };
 }
 
 describe("Pipeline usage-limit waits", () => {
-  it("keeps a limited thread's slot from an older queued card before the limit is classified", async () => {
+  it("keeps a limited thread's slot from an older queued task before the limit is classified", async () => {
     const h = harness((config) => {
       config.factory.limits.threads = 1;
     });
     const older = admitted(h);
-    const limited = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    const limited = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     await h.pipeline.startWork(limited, "brief");
     await h.pipeline.startWork(older, "brief");
     expect(h.t3.launches).toHaveLength(1);
     // The follower records the thread as failed before the next pass reads its result.
     h.limit("t1");
     await h.pipeline.tick();
-    expect(h.cards.get(limited).limitUntil).not.toBeNull();
+    expect(h.tasks.get(limited).limitUntil).not.toBeNull();
     expect(h.t3.launches).toHaveLength(1);
-    expect(h.cards.get(older).waiting).toMatch(/limit of 1 running factory threads/);
+    expect(h.tasks.get(older).waiting).toMatch(/limit of 1 running factory threads/);
   });
 
   it("follows a thread T3 resumed and finished after the read about its usage limit failed", async () => {
@@ -1713,7 +1713,7 @@ describe("Pipeline usage-limit waits", () => {
     h.t3.stateFailures = 1;
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
-    expect(h.cards.get(id).limitUntil).not.toBeNull();
+    expect(h.tasks.get(id).limitUntil).not.toBeNull();
     // T3 resumes the thread once the limit resets, and the resumed run ends before the next check.
     h.t3.states.set("t1", { status: "completed", latestRunId: "r2", snoozedUntil: null });
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
@@ -1743,7 +1743,7 @@ describe("Pipeline usage-limit waits", () => {
     h.limit("t1", undefined, "r1");
     await h.pipeline.tick();
     h.setClock(Date.parse("2026-11-25T12:31:00Z"));
-    // Another card's launch holds the launch queue while it reads its issue.
+    // Another task's launch holds the launch queue while it reads its issue.
     let release = (): void => undefined;
     const issue = h.github.issue.bind(h.github);
     h.github.issue = async (repo, number) => {
@@ -1752,7 +1752,7 @@ describe("Pipeline usage-limit waits", () => {
       });
       return issue(repo, number);
     };
-    const other = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
+    const other = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "Again" }).id;
     const starting = h.pipeline.startWork(other, "brief");
     await new Promise((resolve) => setImmediate(resolve));
     const passing = h.pipeline.tick();
@@ -1762,7 +1762,7 @@ describe("Pipeline usage-limit waits", () => {
     await starting;
     await passing;
     expect(h.t3.sends).toHaveLength(0);
-    expect(h.cards.get(id)).toMatchObject({ limitUntil: null, stage: "Implementing" });
+    expect(h.tasks.get(id)).toMatchObject({ limitUntil: null, stage: "Implementing" });
   });
 
   it("hands the lead a run cancelled before any output after a usage limit", async () => {
@@ -1787,8 +1787,8 @@ describe("Pipeline usage-limit waits", () => {
     ]);
     h.events.setStatus("w1", "t1", "cancelled");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
-    expect(h.cards.get(id).reason).toMatch(/ended cancelled/);
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id).reason).toMatch(/ended cancelled/);
   });
 
   it("hands the lead a resumed run T3 reports cancelled before it wrote any item", async () => {
@@ -1803,7 +1803,7 @@ describe("Pipeline usage-limit waits", () => {
     // Run r2 ends cancelled, and T3's activity page has no item of its own.
     h.events.setStatusIf("w1", "t1", "starting", "cancelled", "r2");
     await h.pipeline.tick();
-    expect(h.cards.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+    expect(h.tasks.get(id)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
   });
 
   it("sends no continue when the factory is paused, or T3 snoozes the thread, while T3 is read", async () => {
@@ -1834,7 +1834,7 @@ describe("Pipeline usage-limit waits", () => {
 
       expect(h.t3.sends).toHaveLength(0);
       if (change === "snooze") {
-        expect(h.cards.get(id).limitUntil).toBe("2026-11-25T13:05:00.000Z");
+        expect(h.tasks.get(id).limitUntil).toBe("2026-11-25T13:05:00.000Z");
       }
     }
   });
@@ -1853,12 +1853,12 @@ describe("Pipeline usage-limit waits", () => {
       if (end === "error") h.limit("t1", text);
       else h.finish("t1", text);
       await h.pipeline.tick();
-      const card = h.cards.get(id);
+      const task = h.tasks.get(id);
       if (outcome === "wait") {
-        expect(card, text).toMatchObject({ stage: "Implementing" });
-        expect(card.limitUntil, text).not.toBeNull();
+        expect(task, text).toMatchObject({ stage: "Implementing" });
+        expect(task.limitUntil, text).not.toBeNull();
       } else {
-        expect(card, `${end}: ${text}`).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+        expect(task, `${end}: ${text}`).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
       }
     }
   });
@@ -1872,7 +1872,7 @@ describe("Pipeline usage-limit waits", () => {
       if (end === "error") h.limit("t1", text);
       else h.finish("t1", text);
       await h.pipeline.tick();
-      expect(h.cards.get(id), end).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+      expect(h.tasks.get(id), end).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
     }
   });
 
@@ -1886,7 +1886,7 @@ describe("Pipeline usage-limit waits", () => {
       pr(9, SHA2, { headBranch: "revert-5", state: "MERGED", mergeSha: "f".repeat(40) }),
     );
     await h.pipeline.tick();
-    expect(h.cards.get(id).stage).toBe("Implementing");
+    expect(h.tasks.get(id).stage).toBe("Implementing");
     const launched = h.t3.launches.length;
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(launched + 1);
@@ -1904,7 +1904,7 @@ describe("Pipeline usage-limit waits", () => {
     await h.pipeline.tick();
     expect(h.t3.launches).toHaveLength(launched + 1);
     expect(h.t3.launches.at(-1)?.message).toContain(sha3);
-    expect(h.cards.get(id)).toMatchObject({ limitUntil: null });
-    expect(h.cards.get(id).reviewThread).not.toBe(review);
+    expect(h.tasks.get(id)).toMatchObject({ limitUntil: null });
+    expect(h.tasks.get(id).reviewThread).not.toBe(review);
   });
 });

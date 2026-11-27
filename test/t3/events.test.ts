@@ -22,11 +22,11 @@ const thread = {
   providerInstanceId: "factory-claude",
   model: "claude-sonnet-5-5",
   configVersion: 3,
-  cardId: "card-7",
+  taskId: "task-7",
 };
 
 describe("ThreadEvents", () => {
-  it("records a thread with its worker, provider instance, config version and card", () => {
+  it("records a thread with its worker, provider instance, config version and task", () => {
     const events = new ThreadEvents(openStore(":memory:"));
     events.recordThread(thread);
 
@@ -128,7 +128,7 @@ describe("ThreadEvents.setStatusIf", () => {
       providerInstanceId: "p",
       model: "m",
       configVersion: 1,
-      cardId: "1",
+      taskId: "1",
       kind: "implement",
     });
     const envOf = (): string =>

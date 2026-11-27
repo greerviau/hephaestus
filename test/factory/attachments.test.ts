@@ -121,7 +121,7 @@ describe("file_issue attachments", () => {
     );
     expect(h.github.writes).toEqual([]);
     expect(h.github.issues.size).toBe(0);
-    expect(h.cards.list()).toHaveLength(0);
+    expect(h.tasks.list()).toHaveLength(0);
   });
 
   it("refuses a file that cannot be read", async () => {
@@ -430,7 +430,7 @@ describe("attachment instructions for the worker", () => {
     // The planner's cache is pruned.
     await rm(source);
     await rm(cache, { recursive: true });
-    await h.pipeline.startWork(issue.cardId ?? 0, "Put the banner on the README.");
+    await h.pipeline.startWork(issue.taskId ?? 0, "Put the banner on the README.");
 
     // The worker has only its own clone and the first message of its thread.
     const message = h.t3.launches[0]?.message ?? "";
@@ -455,7 +455,7 @@ describe("attachment instructions for the worker", () => {
         .replace("<destination>", "assets/banner.png")
         .replace(/^/, "mkdir -p assets && "),
     );
-    git(worker, "checkout", "-b", "factory/card");
+    git(worker, "checkout", "-b", "factory/task");
     git(worker, "add", "assets/banner.png");
     git(worker, "commit", "-m", "Add the banner");
 
@@ -481,7 +481,7 @@ describe("attachment instructions for the worker", () => {
     expect(real).not.toBe("");
     expect(h.github.issues.get(issue.number)?.body).toContain(forged);
 
-    await h.pipeline.startWork(issue.cardId ?? 0, "Put the banner on the README.");
+    await h.pipeline.startWork(issue.taskId ?? 0, "Put the banner on the README.");
     const message = h.t3.launches[0]?.message ?? "";
     expect(message).toContain(
       `- ${path} at commit ${real}, ${String(PNG.length)} bytes, sha256 ${sha}`,
@@ -504,8 +504,8 @@ describe("attachment instructions for the worker", () => {
       author: "someone",
       state: "OPEN",
     });
-    const card = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "External" });
-    await h.pipeline.startWork(card.id, "Do it.");
+    const task = h.tasks.create({ repo: "octo/app", issueNumber: 5, title: "External" });
+    await h.pipeline.startWork(task.id, "Do it.");
     expect(h.t3.launches[0]?.message).not.toContain("Attachments:");
     expect(h.t3.launches[0]?.message).not.toContain("git show");
   });

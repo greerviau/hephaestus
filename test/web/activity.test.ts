@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
-import { runningCard, startDashboard, type Dashboard } from "./dashboard.js";
+import { runningTask, startDashboard, type Dashboard } from "./dashboard.js";
 
 let dashboard: Dashboard | undefined;
 
@@ -15,7 +15,7 @@ function recordCall(
   tool: string,
   ok: boolean,
   at: string,
-  args = '{"card_id":1}',
+  args = '{"task_id":1}',
 ): void {
   dashboard.h.db
     .prepare(
@@ -24,11 +24,11 @@ function recordCall(
     .run(role, tool, args, ok ? 1 : 0, ok ? "{}" : '{"error":"<bad>"}', at);
 }
 
-function notify(dashboard: Dashboard, card: number, text: string, at: string): number {
+function notify(dashboard: Dashboard, task: number, text: string, at: string): number {
   return Number(
     dashboard.h.db
-      .prepare("INSERT INTO notifications (at, card_id, text) VALUES (?, ?, ?)")
-      .run(at, card, text).lastInsertRowid,
+      .prepare("INSERT INTO notifications (at, task_id, text) VALUES (?, ?, ?)")
+      .run(at, task, text).lastInsertRowid,
   );
 }
 
@@ -48,23 +48,23 @@ async function getFor(dashboard: Dashboard, repo: string, path: string): Promise
 describe("Activity", () => {
   it("lists task events, agent calls, and notifications, newest first", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
+    const task = runningTask(dashboard.h);
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
     recordCall(dashboard, "planner", "file_issue", false, "2026-11-25T14:00:00.000Z");
-    notify(dashboard, card, "Card <1> needs you", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, task, "Task <1> needs you", "2026-11-25T15:00:00.000Z");
 
     const { status, html } = await dashboard.get("/activity");
     const page = main(html);
 
     expect(status).toBe(200);
     expect(page).toContain(
-      `<a href="/work/${String(card)}">#8 Add a cache</a>: moved to Implementing`,
+      `<a href="/work/${String(task)}">#8 Add a cache</a>: moved to Implementing`,
     );
     expect(page).toContain("lead called start_work");
     expect(page).toContain("planner called file_issue");
-    expect(page).toContain("Card &lt;1&gt; needs you");
+    expect(page).toContain("Task &lt;1&gt; needs you");
     const order = [
-      "Card &lt;1&gt; needs you",
+      "Task &lt;1&gt; needs you",
       "planner called file_issue",
       "lead called start_work",
     ];
@@ -85,13 +85,13 @@ describe("Activity", () => {
     expect(page).toMatch(/<span class="st t-bad">.*?Failed<\/span>/);
     expect(page).toContain(
       "<summary>Arguments</summary>" +
-        '<div class="fold-body"><pre class="block">{&quot;card_id&quot;:1}</pre></div>',
+        '<div class="fold-body"><pre class="block">{&quot;task_id&quot;:1}</pre></div>',
     );
   });
 
-  it("offers the kinds as a segmented control and names a card a task", async () => {
+  it("offers the kinds as a segmented control and names a task a task", async () => {
     dashboard = await startDashboard();
-    runningCard(dashboard.h);
+    runningTask(dashboard.h);
 
     const page = main((await dashboard.get("/activity?show=tasks")).html);
 
@@ -100,13 +100,13 @@ describe("Activity", () => {
     expect(page).toContain('<a href="/activity?show=tasks" aria-current="true">Tasks</a>');
     expect(page).toContain('<a href="/activity?show=calls">Agent calls</a>');
     expect(page).toContain('<a href="/activity?show=notifications">Notifications</a>');
-    expect(page).not.toMatch(/Card events|MCP calls/);
+    expect(page).not.toMatch(/Task events|MCP calls/);
     expect(page).not.toContain('name="role"');
   });
 
   it("filters agent calls to one role with a form that has an Apply button", async () => {
     dashboard = await startDashboard();
-    runningCard(dashboard.h);
+    runningTask(dashboard.h);
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
     recordCall(dashboard, "planner", "file_issue", true, "2026-11-25T14:00:00.000Z");
 
@@ -123,8 +123,8 @@ describe("Activity", () => {
 
   it("keeps only the rows of the project the sidebar picker is set to", async () => {
     dashboard = await startDashboard();
-    const app = runningCard(dashboard.h);
-    const lib = dashboard.h.cards.create({
+    const app = runningTask(dashboard.h);
+    const lib = dashboard.h.tasks.create({
       repo: "octo/lib",
       issueNumber: 3,
       title: "Lib work",
@@ -132,10 +132,10 @@ describe("Activity", () => {
     notify(dashboard, app, "App notice", "2026-11-25T15:00:00.000Z");
     notify(dashboard, lib, "Lib notice", "2026-11-25T15:01:00.000Z");
     const at = "2026-11-25T13:00:00.000Z";
-    recordCall(dashboard, "lead", "start_work", true, at, JSON.stringify({ card_id: app }));
-    recordCall(dashboard, "lead", "escalate", true, at, JSON.stringify({ card_id: lib }));
+    recordCall(dashboard, "lead", "start_work", true, at, JSON.stringify({ task_id: app }));
+    recordCall(dashboard, "lead", "escalate", true, at, JSON.stringify({ task_id: lib }));
     recordCall(dashboard, "planner", "file_issue", true, at, '{"repo":"octo/app","title":"t"}');
-    recordCall(dashboard, "planner", "list_cards", true, at, "{}");
+    recordCall(dashboard, "planner", "list_tasks", true, at, "{}");
     recordCall(dashboard, "improver", "get_config", true, at, "not json");
 
     const page = await getFor(dashboard, "octo/app", "/activity");
@@ -147,22 +147,22 @@ describe("Activity", () => {
     expect(page).not.toContain("Lib work");
     expect(page).not.toContain("Lib notice");
     expect(page).not.toContain("lead called escalate");
-    expect(page).not.toContain("planner called list_cards");
+    expect(page).not.toContain("planner called list_tasks");
     expect(page).not.toContain("improver called get_config");
     expect(page).not.toContain('name="project"');
   });
 
   it("shows a quiet project's rows however many newer rows other projects have", async () => {
     dashboard = await startDashboard();
-    const app = runningCard(dashboard.h);
+    const app = runningTask(dashboard.h);
     notify(dashboard, app, "App notice", "2026-11-25T10:00:00.000Z");
-    recordCall(dashboard, "lead", "start_work", true, "2026-11-25T10:00:00.000Z", '{"card_id":1}');
+    recordCall(dashboard, "lead", "start_work", true, "2026-11-25T10:00:00.000Z", '{"task_id":1}');
     recordCall(dashboard, "planner", "file_issue", true, "2026-11-25T10:00:00.000Z");
-    const lib = dashboard.h.cards.create({ repo: "octo/lib", issueNumber: 3, title: "Lib" }).id;
+    const lib = dashboard.h.tasks.create({ repo: "octo/lib", issueNumber: 3, title: "Lib" }).id;
     for (let index = 0; index < 201; index += 1) {
-      dashboard.h.cards.event(lib, "waiting", `busy ${String(index)}`);
+      dashboard.h.tasks.event(lib, "waiting", `busy ${String(index)}`);
       notify(dashboard, lib, `Lib notice ${String(index)}`, "2026-11-25T11:00:00.000Z");
-      recordCall(dashboard, "lead", "escalate", true, "2026-11-25T11:00:00.000Z", '{"card_id":2}');
+      recordCall(dashboard, "lead", "escalate", true, "2026-11-25T11:00:00.000Z", '{"task_id":2}');
     }
 
     const page = await getFor(dashboard, "octo/app", "/activity");
@@ -178,8 +178,8 @@ describe("Activity", () => {
 
   it("dismisses a notification and comes back to the same view", async () => {
     dashboard = await startDashboard();
-    const card = runningCard(dashboard.h);
-    const id = notify(dashboard, card, "Look at this", "2026-11-25T15:00:00.000Z");
+    const task = runningTask(dashboard.h);
+    const id = notify(dashboard, task, "Look at this", "2026-11-25T15:00:00.000Z");
 
     const before = main((await dashboard.get("/activity?show=notifications")).html);
 

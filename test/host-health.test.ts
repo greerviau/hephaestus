@@ -29,7 +29,7 @@ describe("hostHealth", () => {
     call.run(
       "start_work",
       0,
-      JSON.stringify({ error: "card is not admitted" }),
+      JSON.stringify({ error: "task is not admitted" }),
       "2026-11-25T10:00:00Z",
     );
     call.run("start_work", 1, "{}", "2026-11-25T10:30:00Z");
@@ -57,7 +57,7 @@ describe("hostHealth", () => {
     ]);
     expect(health.recentErrors.map((error) => [error.source, error.message])).toEqual([
       ["thread launch", "T3 was unreachable"],
-      ["tool call start_work", "card is not admitted"],
+      ["tool call start_work", "task is not admitted"],
     ]);
 
     const text = formatHostHealth(health);

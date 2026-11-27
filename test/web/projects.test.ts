@@ -68,8 +68,8 @@ describe("Projects", () => {
 
   it("counts a project's active tasks and puts Remove behind a menu that asks first", async () => {
     dashboard = await startDashboard({ github });
-    const id = dashboard.h.cards.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
-    dashboard.h.cards.transition(id, "Implementing", "started");
+    const id = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
+    dashboard.h.tasks.transition(id, "Implementing", "started");
     const { html } = await dashboard.get("/projects");
 
     expect(html).toContain("1 active");
@@ -281,7 +281,7 @@ describe("Projects, under concurrent changes", () => {
 
   it("re-adds a repo under the spelling its tasks were recorded with", async () => {
     dashboard = await startDashboard({ github, deploy: markDeployed });
-    dashboard.h.cards.create({ repo: "Octo/Lib", issueNumber: 1, title: "Old" });
+    dashboard.h.tasks.create({ repo: "Octo/Lib", issueNumber: 1, title: "Old" });
     await dashboard.post("/projects/save", added("octo/lib", dashboard.store.current()?.id ?? 0));
     expect(Object.keys(dashboard.store.current()?.document.projects ?? {})).toContain("Octo/Lib");
   });
@@ -311,11 +311,11 @@ describe("Projects, under concurrent changes", () => {
 
   it("removes a project with a merge in flight, and says the merge finishes under its policy", async () => {
     dashboard = await startDashboard({ github, deploy: markDeployed });
-    const id = dashboard.h.cards.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
-    dashboard.h.cards.transition(id, "Implementing", "started");
-    dashboard.h.cards.transition(id, "Reviewing", "PR #5");
-    dashboard.h.cards.transition(id, "Merging", "approved");
-    dashboard.h.cards.transition(id, "Validating", "merged");
+    const id = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 1, title: "Work" }).id;
+    dashboard.h.tasks.transition(id, "Implementing", "started");
+    dashboard.h.tasks.transition(id, "Reviewing", "PR #5");
+    dashboard.h.tasks.transition(id, "Merging", "approved");
+    dashboard.h.tasks.transition(id, "Validating", "merged");
     expect((await dashboard.get("/projects/octo/app")).html).toContain(
       "1 task is merging, validating, or reverting a merge; it finishes under the policy it started with.",
     );

@@ -30,7 +30,7 @@ export function readConfig(path: string): Config {
   return JSON.parse(readFileSync(path, "utf8")) as Config;
 }
 
-/** The short form of an install's id that names its config tags, card branches, and evidence refs. */
+/** The short form of an install's id that names its config tags, task branches, and evidence refs. */
 export function installPrefix(instanceId: string): string {
   return instanceId.slice(0, 8);
 }

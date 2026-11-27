@@ -2,7 +2,7 @@
 
 The dashboard is a set of server-rendered pages behind the dashboard password. It works without JavaScript: every owner action is a plain form that posts and returns to the page, and dialogs and the "..." menus are HTML popovers and `details` elements. The one script, which keeps live pages current, is optional.
 
-The pages follow the browser's light or dark setting. Links to GitHub open in a new tab. The pages call a card a task; "card" remains in internal names such as the `card_id` argument of an agent's tool call.
+The pages follow the browser's light or dark setting. Links to GitHub open in a new tab. The pages, the agents, and the T3 threads all call a unit of work a task, as in the `task_id` argument of an agent's tool call.
 
 ## Sidebar
 
@@ -75,7 +75,7 @@ Each thread of the task links to its transcript, as Hephaestus recorded it. The 
 
 ## Activity
 
-Activity is at `/activity`. A task's events and notifications belong to its project. An agent call belongs to the project its `repo` argument names, or else the project of the task its `card_id` argument names; a call that names neither shows only for all projects. The store applies the project and role filters before it takes the newest 200 rows of each kind, so a quiet project shows its own newest rows. Dismissing a notification returns to the same view, with a banner that says it was dismissed.
+Activity is at `/activity`. A task's events and notifications belong to its project. An agent call belongs to the project its `repo` argument names, or else the project of the task its `task_id` argument names; a call that names neither shows only for all projects. The store applies the project and role filters before it takes the newest 200 rows of each kind, so a quiet project shows its own newest rows. Dismissing a notification returns to the same view, with a banner that says it was dismissed.
 
 ## Projects
 
