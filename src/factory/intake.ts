@@ -2,7 +2,12 @@ import type { Database } from "better-sqlite3";
 import { projectFor, projectKey, type FactoryConfig } from "../config/document.js";
 import { resolvePolicy } from "../config/policy.js";
 import type { Card, CardStore } from "./cards.js";
-import { readAttachments, withAttachments, type StoredAttachment } from "./attachments.js";
+import {
+  readAttachments,
+  recordAttachments,
+  withAttachments,
+  type StoredAttachment,
+} from "./attachments.js";
 import { INTAKE_READ_TIMEOUT_MS, OPEN_ISSUES_LIMIT, type GitHub } from "./github.js";
 
 /** Issues missing from the open lists that one poll reads on their own, split among the projects; each gets at least one. */
@@ -163,13 +168,11 @@ export class Intake {
       // The config's spelling, so the same repo under another casing shares its cap and record.
       repo = projectKey(this.options.config()?.projects, repo) ?? repo;
       this.policy(repo);
+      let stored: StoredAttachment[] = [];
       if (attachments.length > 0) {
         const files = await readAttachments(attachments, attachmentRoots);
         const commits = await this.options.github.storeAttachments(repo, files);
-        const stored: StoredAttachment[] = files.map((attachment, index) => ({
-          attachment,
-          commit: commits[index] ?? "",
-        }));
+        stored = files.map((attachment, index) => ({ attachment, commit: commits[index] ?? "" }));
         body = withAttachments(repo, body, stored);
       }
       const number = await this.options.github.createIssue(repo, title, body);
@@ -181,6 +184,8 @@ export class Intake {
         provenance: "factory",
         filedBy: role,
       });
+      // Before admission gives the issue a card, so no engineer starts without them.
+      recordAttachments(this.db, repo, number, stored);
       await this.admitIfRoom(repo, number);
       const issue = this.issue(repo, number);
       if (issue === undefined) throw new Error(`Issue ${repo}#${String(number)} was not recorded.`);
@@ -306,7 +311,7 @@ export class Intake {
     }
   }
 
-  /** The owner's approval on the Work items page: the issue is admitted whatever the cap. */
+  /** The owner's approval on Work: the issue is admitted whatever the cap. */
   approve(repo: string, number: number): Promise<Card> {
     return this.serial(async () => {
       const issue = this.issue(repo, number);

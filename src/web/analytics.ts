@@ -1,196 +1,167 @@
 import type { Analytics } from "../factory/analytics.js";
-import { columns, legend, lines, tableView, type Series } from "./charts.js";
+import { columns, legend, line, tableFold, type Series } from "./charts.js";
 import { STORE_ERROR, read, type FactoryPages } from "./factory.js";
-import { card, dayLabel, empty, escapeHtml, layout, pageHead, selectField } from "./html.js";
+import { dayLabel, empty, escapeHtml, layout, pageHead, section, segmented } from "./html.js";
 import { sendHtml, type Route } from "./http.js";
-import { projects } from "./work.js";
 
-const SPANS = [
-  ["7", "Last 7 days"],
-  ["30", "Last 30 days"],
-  ["90", "Last 90 days"],
-] as const;
+/** The periods on offer, in the order shown. The first is the default. */
+const SPANS = ["30", "7", "90"] as const;
 
 function hours(value: number): string {
   return `${value.toFixed(1)} h`;
 }
 
-function kpi(value: string, label: string, sub?: string): string {
-  return `<div><span class="num">${escapeHtml(value)}</span><span class="meta">${escapeHtml(label)}</span>${sub === undefined ? "" : `<span class="meta">${escapeHtml(sub)}</span>`}</div>`;
+function total(value: string, label: string, sub?: string): string {
+  return `<li><b>${escapeHtml(value)}</b><span>${escapeHtml(label)}</span>${sub === undefined ? "" : `<span>${escapeHtml(sub)}</span>`}</li>`;
+}
+
+function totals(data: Analytics): string {
+  const { totals: sums, cycleHours } = data;
+  return `<ul class="totals">${[
+    total(String(sums.prs), "PRs"),
+    total(String(sums.merges), "Merged"),
+    total(String(sums.reverts), "Reverted"),
+    total(String(sums.abandoned), "Abandoned"),
+    total(String(sums.escalations), "Escalations"),
+    total(
+      cycleHours.median === null ? "-" : hours(cycleHours.median),
+      "Median cycle time",
+      cycleHours.p90 === null
+        ? undefined
+        : `p90 ${hours(cycleHours.p90)}, ${String(cycleHours.count)} ${cycleHours.count === 1 ? "task" : "tasks"}`,
+    ),
+  ].join("")}</ul>`;
 }
 
 function charts(data: Analytics): string {
   const labels = data.days.map((day) => dayLabel(day.day));
-  const throughput: Series[] = [
-    { name: "Merged", values: data.days.map((day) => day.merges), color: "var(--series-1)" },
+  const finished: (Series & { total: number })[] = [
+    {
+      name: "Merged",
+      values: data.days.map((day) => day.merges),
+      color: "var(--series-1)",
+      total: data.totals.merges,
+    },
     {
       name: "Reverted",
       values: data.days.map((day) => day.reverts),
       color: "var(--series-2)",
       hatch: true,
+      total: data.totals.reverts,
     },
     {
       name: "Abandoned",
       values: data.days.map((day) => day.abandoned),
       color: "var(--series-muted)",
+      total: data.totals.abandoned,
     },
   ];
-  const prs: Series[] = [
-    { name: "PRs", values: data.days.map((day) => day.prs), color: "var(--series-1)" },
-  ];
-  const escalations: Series[] = [
-    {
-      name: "Escalations",
-      values: data.days.map((day) => day.escalations),
-      color: "var(--series-2)",
-    },
-  ];
-  const cycle: Series[] = [
-    {
-      name: "Median cycle time",
-      values: data.days.map((day) => day.cycleHours),
-      color: "var(--series-3)",
-    },
-  ];
-  const throughputTotals = [data.totals.merges, data.totals.reverts, data.totals.abandoned];
-  const trend = (
-    title: string,
-    series: Series[],
-    body: string,
-    format?: (v: number) => string,
-  ): string =>
-    `<div class="mini span-6"><h3>${escapeHtml(title)}</h3>${body}${tableView(labels, series, "Day", format)}</div>`;
+  const mini = (title: string, chart: string): string =>
+    `<div><h3>${escapeHtml(title)}</h3>${chart}</div>`;
+  const table = tableFold(
+    "Show as a table",
+    "Daily numbers",
+    ["Day", "Merged", "Reverted", "Abandoned", "PRs", "Escalations", "Cycle"],
+    data.days
+      .map((day, index) => [
+        labels[index] ?? day.day,
+        String(day.merges),
+        String(day.reverts),
+        String(day.abandoned),
+        String(day.prs),
+        String(day.escalations),
+        day.cycleHours === null ? "No reading" : hours(day.cycleHours),
+      ])
+      .reverse(),
+  );
   return [
-    card({
-      title: "Throughput",
-      meta: '<span class="meta">Finished cards per day</span>',
-      body: `${legend(throughput.map((series, index) => ({ ...series, total: String(throughputTotals[index] ?? 0) })))}${columns(
-        {
-          id: "throughput",
-          width: 1100,
-          integer: true,
-          labels,
-          series: throughput,
-          aria: `Merged, reverted, and abandoned cards per day: ${String(data.totals.merges)} merged, ${String(data.totals.reverts)} reverted, ${String(data.totals.abandoned)} abandoned.`,
-        },
-      )}${tableView(labels, throughput, "Day")}`,
+    section({
+      title: "Finished tasks per day",
+      body: `${legend(finished)}${columns({
+        id: "finished",
+        labels,
+        series: finished,
+        region: "Finished tasks per day chart",
+        aria: `Merged, reverted, and abandoned tasks per day: ${String(data.totals.merges)} merged, ${String(data.totals.reverts)} reverted, ${String(data.totals.abandoned)} abandoned.`,
+      })}`,
     }),
-    `<section class="card span-12" aria-labelledby="h-trends"><div class="card-head"><h2 id="h-trends">Trends</h2></div><div class="grid mini-grid">${[
-      trend(
-        "PRs that reached the merge gate",
-        prs,
-        lines({
-          id: "prs",
-          width: 520,
-          integer: true,
-          labels,
-          series: prs,
-          aria: `PRs per day, ${String(data.totals.prs)} in all.`,
-        }),
-      ),
-      trend(
-        "Escalations",
-        escalations,
-        lines({
-          id: "escalations",
-          width: 520,
-          integer: true,
-          labels,
-          series: escalations,
-          aria: `Escalations per day, ${String(data.totals.escalations)} in all.`,
-        }),
-      ),
-      trend(
-        "Median cycle time, first thread to done",
-        cycle,
-        lines({
-          id: "cycle",
-          width: 520,
-          labels,
-          series: cycle,
-          aria: "Median hours from a card's first thread to done, per day.",
-          format: hours,
-        }),
-        hours,
-      ),
-    ].join("")}</div></section>`,
-  ].join("\n");
+    section({
+      title: "Trends",
+      body: `<div class="minis">${[
+        mini(
+          "PRs at the merge gate",
+          line({
+            labels,
+            values: data.days.map((day) => day.prs),
+            color: "var(--series-1)",
+            integer: true,
+            aria: `PRs that reached the merge gate per day, ${String(data.totals.prs)} in all.`,
+          }),
+        ),
+        mini(
+          "Escalations",
+          line({
+            labels,
+            values: data.days.map((day) => day.escalations),
+            color: "var(--series-2)",
+            integer: true,
+            aria: `Escalations per day, ${String(data.totals.escalations)} in all.`,
+          }),
+        ),
+        mini(
+          "Median cycle time, hours",
+          line({
+            labels,
+            values: data.days.map((day) => day.cycleHours),
+            color: "var(--series-3)",
+            aria: "Median hours from a task's first thread to done, per day.",
+          }),
+        ),
+      ].join("")}</div>${table}`,
+    }),
+  ].join("");
 }
 
-/** The Analytics page: throughput, merges, reverts, cycle time, and escalations over time. */
+/** The Analytics page: totals, finished tasks per day, and trends, for the sidebar's project. */
 export function analyticsRoutes(factory: FactoryPages): Route[] {
   return [
     {
       method: "GET",
       path: /^\/analytics$/,
-      handle: ({ response, url }) => {
-        const project = url.searchParams.get("project") ?? "";
-        const span = SPANS.find(([value]) => value === url.searchParams.get("days"))?.[0] ?? "30";
+      handle: ({ response, url, shell }) => {
+        const span = SPANS.find((value) => value === url.searchParams.get("days")) ?? SPANS[0];
         const days = Number(span);
-        const names = read("projects", () => projects(factory, factory.cards.list(), []));
+        const repo = shell?.project;
         const data = read("analytics", () =>
-          factory.analytics(project === "" ? { days } : { repo: project, days }),
+          factory.analytics(repo === undefined ? { days } : { repo, days }),
         );
-        // With the numbers unreadable, a different filter cannot help; reloading the same view can.
-        const broken = !(data.ok && names.ok);
-        const again = `/analytics?${new URLSearchParams({ project, days: span }).toString()}`;
-        const filters = `<form class="filterbar" method="get" action="/analytics">${selectField(
-          "project",
-          "Project",
-          [
-            ["", "All projects"],
-            ...(names.ok ? names.value : []).map((name): [string, string] => [name, name]),
-          ],
-          project,
-          broken,
-        )}${selectField("days", "Period", SPANS, span, broken)}${
-          broken
-            ? `<button type="submit" class="btn-secondary" disabled>Show</button><a class="btn btn-secondary" href="${escapeHtml(again)}">Try again</a>`
-            : '<button type="submit" class="btn-secondary">Show</button>'
-        }</form>`;
+        const filters = `<div class="bar"><div class="grp">${segmented(
+          "Period",
+          SPANS.map((value) => ({
+            href: value === SPANS[0] ? "/analytics" : `/analytics?days=${value}`,
+            label: `${value} days`,
+            current: value === span,
+          })),
+        )}</div><span class="muted">Days are UTC</span></div>`;
 
         let body: string;
-        if (!data.ok)
-          body = card({ title: "Charts", body: empty("The numbers could not be read.") });
+        if (!data.ok) body = empty("The numbers could not be read.");
         else {
-          const { totals, cycleHours } = data.value;
-          const kpis = `<div class="kpis">${[
-            kpi(String(totals.prs), "PRs"),
-            kpi(String(totals.merges), "Merges"),
-            kpi(String(totals.reverts), "Reverts"),
-            kpi(String(totals.escalations), "Escalations"),
-            kpi(String(totals.abandoned), "Abandoned"),
-            kpi(
-              cycleHours.median === null ? "-" : hours(cycleHours.median),
-              "Median cycle time",
-              cycleHours.p90 === null
-                ? undefined
-                : `p90 ${hours(cycleHours.p90)}, ${String(cycleHours.count)} cards`,
-            ),
-          ].join("")}</div>`;
+          const { totals: sums, cycleHours } = data.value;
           const nothing =
-            totals.prs + totals.merges + totals.reverts + totals.escalations + totals.abandoned ===
-              0 && cycleHours.count === 0;
+            sums.prs + sums.merges + sums.reverts + sums.escalations + sums.abandoned === 0 &&
+            cycleHours.count === 0;
           body = nothing
-            ? card({
-                title: "Charts",
-                body: empty(
-                  "Nothing to chart yet. Charts fill in as cards open PRs, merge, and finish.",
-                ),
-              })
-            : `${card({ title: "Totals", body: kpis })}${charts(data.value)}`;
+            ? empty("Nothing to chart yet. Charts fill in as tasks open PRs, merge, and finish.")
+            : `${totals(data.value)}${charts(data.value)}`;
         }
-        const scope = project === "" ? "all projects" : project;
         sendHtml(
           response,
           200,
           layout(
             "Analytics",
-            `${pageHead({
-              title: "Analytics",
-              lede: `${escapeHtml(SPANS.find(([value]) => value === span)?.[1] ?? "")}, ${escapeHtml(scope)}. Days are UTC.`,
-            })}${data.ok && names.ok ? "" : STORE_ERROR}${filters}<div class="grid">${body}</div>`,
-            { section: "/analytics" },
+            `${pageHead({ title: "Analytics" })}${data.ok ? "" : STORE_ERROR}${filters}${body}`,
+            { section: "/analytics", shell },
           ),
         );
       },

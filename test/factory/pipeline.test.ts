@@ -189,7 +189,9 @@ describe("Pipeline", () => {
     expect(h.cards.get(id).reason).toBe(
       "the PR touches an escalation path: .github/workflows/ci.yml",
     );
-    expect(h.cards.notifications()[0]?.text).toMatch(/needs you/);
+    expect(h.cards.notifications()[0]?.text).toBe(
+      `Task ${String(id)} in octo/app needs you: the PR touches an escalation path: .github/workflows/ci.yml`,
+    );
 
     await expect(h.pipeline.approveMerge(id, SHA2)).rejects.toThrow();
     await h.pipeline.approveMerge(id, SHA);
@@ -284,7 +286,9 @@ describe("Pipeline", () => {
 
     expect(h.github.merged).toEqual([5, 9]);
     expect(h.github.reopened).toEqual([5]);
-    expect(h.cards.notifications()[0]?.text).toMatch(/Reverted PR #5/);
+    expect(h.cards.notifications()[0]?.text).toBe(
+      `Reverted PR #5 in octo/app (task ${String(id)}): its merge failed checks on the default branch. The task is back in Implementing.`,
+    );
     expect(h.cards.get(id)).toMatchObject({ stage: "Implementing", prNumber: null });
 
     await h.pipeline.tick();
@@ -1357,7 +1361,9 @@ describe("Pipeline", () => {
     h.setClock(Date.parse("2026-11-25T12:06:00Z"));
     await h.pipeline.tick();
     expect(h.cards.get(id).foreignMerge).toBe(true);
-    expect(h.cards.notifications()[0]?.text).toMatch(/merged outside Hephaestus/);
+    expect(h.cards.notifications()[0]?.text).toBe(
+      `PR #5 in octo/app (task ${String(id)}) was merged outside Hephaestus.`,
+    );
   });
 
   it("starts an admitted card itself when the lead has not, after the configured delay", async () => {

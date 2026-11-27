@@ -13,7 +13,7 @@ import { AlreadyInstalledError, install, installedUnitPath, uninstall } from "./
 import { FactoryModel, spawnLogin } from "./hermes/factory-model.js";
 import { hermesModel } from "./hermes/model.js";
 import { PLUGIN_NAME } from "./hermes/plugin.js";
-import { Messaging } from "./messaging.js";
+import { Messaging, proposalAlerts } from "./messaging.js";
 import { RequestThreads } from "./request-threads.js";
 import { GATEWAY_SERVICE_NAME, resolvePaths } from "./paths.js";
 import { readPassword } from "./prompt.js";
@@ -35,11 +35,12 @@ import { T3Connection } from "./t3/connection.js";
 import { ThreadEvents } from "./t3/events.js";
 import { ThreadFollower } from "./t3/follower.js";
 import { cachedEnvironments, findExecutable, resolveT3Origin } from "./t3/origin.js";
-import { environmentRoutes } from "./web/environments.js";
+import { workersRoutes } from "./web/workers.js";
 import { dashboardRoutes } from "./web/dashboard.js";
+import type { FactoryPages } from "./web/factory.js";
+import { shellSource } from "./web/shell.js";
 import { analytics } from "./factory/analytics.js";
 import { SecretsFile } from "./config/secrets.js";
-import { settingsRoutes } from "./web/settings.js";
 import { getMeta, setMeta } from "./meta.js";
 import { ConfigRepo } from "./workers/config-repo.js";
 import { workerAlerts } from "./workers/alerts.js";
@@ -496,13 +497,7 @@ async function main(argv: string[]): Promise<number> {
               cards: engine.cards,
               dashboardUrl: () => dashboardUrl(config.host, config.port),
               extraAlerts: () => [
-                ...store
-                  .list()
-                  .filter((version) => version.author === "improver" && version.state === "draft")
-                  .map((version) => ({
-                    key: `proposal-${String(version.id)}`,
-                    text: `Config version ${String(version.id)} is proposed and waits for your approval on Improvement.`,
-                  })),
+                ...proposalAlerts(store.list()),
                 ...workerAlerts(workers.views()),
               ],
             });
@@ -552,35 +547,33 @@ async function main(argv: string[]): Promise<number> {
             followingRequests = undefined;
           });
       }, 30_000);
+      const pages: FactoryPages = {
+        cards: engine.cards,
+        intake: engine.intake,
+        pipeline: engine.pipeline,
+        events,
+        mcp: engine.mcp,
+        store,
+        analytics: (query) => analytics(db, query),
+        workers,
+        environments,
+        deploy: (id) => workers.deployVersion(id),
+        github: engine.github,
+        configRepo: () => getMeta(db, CONFIG_REPO_KEY),
+        setConfigRepo: (slug) => {
+          setMeta(db, CONFIG_REPO_KEY, slug);
+        },
+        hermesModel: () => hermesDefaultModel(paths.hermes),
+        ...(messaging === undefined ? {} : { messaging }),
+        ...(factoryModel === undefined ? {} : { model: factoryModel }),
+      };
       const server = createDashboardServer({
         db,
         instanceId: config.instanceId,
+        shell: shellSource(pages),
         routes: [
-          ...dashboardRoutes({
-            cards: engine.cards,
-            intake: engine.intake,
-            pipeline: engine.pipeline,
-            events,
-            mcp: engine.mcp,
-            store,
-            analytics: (query) => analytics(db, query),
-            workers,
-            environments,
-            deploy: (id) => workers.deployVersion(id),
-            github: engine.github,
-            configRepo: () => getMeta(db, CONFIG_REPO_KEY),
-            hermesModel: () => hermesDefaultModel(paths.hermes),
-            ...(messaging === undefined ? {} : { messaging }),
-            ...(factoryModel === undefined ? {} : { model: factoryModel }),
-          }),
-          ...settingsRoutes(store, (id) => workers.deployVersion(id)),
-          ...environmentRoutes(environments, Date.now, {
-            manager: workers,
-            configRepo: () => getMeta(db, CONFIG_REPO_KEY),
-            setConfigRepo: (slug) => {
-              setMeta(db, CONFIG_REPO_KEY, slug);
-            },
-          }),
+          ...dashboardRoutes(pages),
+          ...workersRoutes(environments, Date.now, { manager: workers }),
         ],
       });
       server.listen(config.port, config.host, () => {

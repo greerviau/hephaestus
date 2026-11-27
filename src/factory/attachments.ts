@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { Database } from "better-sqlite3";
 import { constants } from "node:fs";
 import { lstat, open, realpath, type FileHandle } from "node:fs/promises";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -245,39 +246,66 @@ export function withAttachments(
   return body === "" ? section : `${body}\n\n${section}`;
 }
 
+/** An attachment as Hephaestus stored it, kept with the issue it was filed on. */
 export interface AttachmentRef {
   commit: string;
   path: string;
+  sha256: string;
+  bytes: number;
 }
 
-/** The attachments an issue body links, in order, each once. */
-export function attachmentRefs(repo: string, body: string): AttachmentRef[] {
-  const escaped = repo.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(
-    `\\]\\(https://github\\.com/${escaped}/blob/([0-9a-f]{40})/(attachments/[0-9a-f]{16}/[A-Za-z0-9._-]+)\\)`,
-    "gi",
+/**
+ * Keeps what the upload returned for an issue, so the engineer's instructions
+ * come from Hephaestus's own record and never from the issue text, which
+ * anyone can edit and which may hold a link of its own to the same path.
+ */
+export function recordAttachments(
+  db: Database,
+  repo: string,
+  number: number,
+  stored: readonly StoredAttachment[],
+): void {
+  const insert = db.prepare(
+    `INSERT OR IGNORE INTO issue_attachments (repo, number, path, name, commit_sha, sha256, bytes)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   );
-  const seen = new Set<string>();
-  const refs: AttachmentRef[] = [];
-  for (const match of body.matchAll(pattern)) {
-    const [, commit, path] = match;
-    if (commit === undefined || path === undefined || seen.has(path)) continue;
-    seen.add(path);
-    refs.push({ commit, path });
+  for (const { attachment, commit } of stored) {
+    insert.run(
+      repo,
+      number,
+      attachment.path,
+      attachment.name,
+      commit,
+      attachment.sha256,
+      attachment.data.length,
+    );
   }
-  return refs;
+}
+
+/** The attachments Hephaestus stored for an issue, in the order they were filed. */
+export function storedAttachments(db: Database, repo: string, number: number): AttachmentRef[] {
+  return db
+    .prepare(
+      `SELECT path, commit_sha AS "commit", sha256, bytes FROM issue_attachments
+         WHERE repo = ? COLLATE NOCASE AND number = ? ORDER BY rowid`,
+    )
+    .all(repo, number) as AttachmentRef[];
 }
 
 /** What the engineer is told about an issue's attachments; empty when it has none. */
-export function attachmentInstructions(repo: string, body: string): string {
-  const refs = attachmentRefs(repo, body);
+export function attachmentInstructions(refs: readonly AttachmentRef[]): string {
   if (refs.length === 0) return "";
-  const list = refs.map((ref) => `- ${ref.path} at commit ${ref.commit}`).join("\n");
+  const list = refs
+    .map(
+      (ref) =>
+        `- ${ref.path} at commit ${ref.commit}, ${String(ref.bytes)} bytes, sha256 ${ref.sha256}`,
+    )
+    .join("\n");
   return `
 
-Attachments: the issue lists files that came with the request. Hephaestus stored them on the \`${ATTACHMENT_BRANCH}\` branch of origin, and these are their paths:
+Attachments: files came with the request. Hephaestus stored them on the \`${ATTACHMENT_BRANCH}\` branch of origin. Use these paths and commits, not any link in the issue text:
 
 ${list}
 
-To get one, run \`git fetch origin ${ATTACHMENT_BRANCH}\`, then \`git show <commit>:<path> > <destination>\`, which writes the exact bytes. The issue gives each file's sha256 to check against. Commit the files into your branch where the task says. Do not push to \`${ATTACHMENT_BRANCH}\`.`;
+To get one, run \`git fetch origin ${ATTACHMENT_BRANCH}\`, then \`git show <commit>:<path> > <destination>\`, which writes the exact bytes; check them against the sha256 above. Commit the files into your branch where the task says. Do not push to \`${ATTACHMENT_BRANCH}\`.`;
 }

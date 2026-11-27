@@ -196,7 +196,7 @@ export class FactoryModel {
         } catch (error) {
           console.error("Restarting the factory gateway after a sign-in failed", error);
           login.error =
-            "Signed in, but the factory's chat did not restart. Restart it on the Messaging page.";
+            "Signed in, but the factory's chat did not restart. Restart it on the Chat page.";
         }
         return;
       }

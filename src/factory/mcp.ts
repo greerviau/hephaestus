@@ -246,7 +246,7 @@ export class FactoryMcp {
       );
   }
 
-  /** The threads an improver proposal cites as its reason, for the Improvement page. */
+  /** The threads an improver proposal cites as its reason, for the proposal page. */
   evidence(versionId: number): { environmentId: string; threadId: string; note: string }[] {
     return this.options.db
       .prepare(
@@ -256,7 +256,15 @@ export class FactoryMcp {
   }
 
   /** Recent calls, newest first, for the Activity page. */
-  calls(limit = 200): {
+  /**
+   * The newest tool calls. `role` keeps one role's calls. `repo` keeps the
+   * calls about one project: those whose arguments name it as `repo`, or name
+   * one of its cards as `card_id`.
+   */
+  calls(
+    limit = 200,
+    only: { role?: string; repo?: string } = {},
+  ): {
     id: number;
     role: string;
     tool: string;
@@ -266,7 +274,20 @@ export class FactoryMcp {
     at: string;
   }[] {
     return (
-      this.options.db.prepare("SELECT * FROM mcp_calls ORDER BY id DESC LIMIT ?").all(limit) as {
+      this.options.db
+        .prepare(
+          `SELECT * FROM mcp_calls
+           WHERE (@role IS NULL OR role = @role)
+             AND (@repo IS NULL OR CASE
+               WHEN NOT json_valid(arguments) THEN 0
+               WHEN json_type(arguments, '$.repo') = 'text'
+                 THEN json_extract(arguments, '$.repo') = @repo
+               WHEN json_type(arguments, '$.card_id') IN ('integer', 'real')
+                 THEN json_extract(arguments, '$.card_id') IN (SELECT id FROM cards WHERE repo = @repo)
+               ELSE 0 END)
+           ORDER BY id DESC LIMIT @limit`,
+        )
+        .all({ limit, role: only.role ?? null, repo: only.repo ?? null }) as {
         id: number;
         role: string;
         tool: string;

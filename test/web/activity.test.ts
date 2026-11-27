@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { PROJECT_COOKIE } from "../../src/web/shell.js";
 import { runningCard, startDashboard, type Dashboard } from "./dashboard.js";
 
 let dashboard: Dashboard | undefined;
@@ -14,58 +15,206 @@ function recordCall(
   tool: string,
   ok: boolean,
   at: string,
+  args = '{"card_id":1}',
 ): void {
   dashboard.h.db
     .prepare(
       "INSERT INTO mcp_calls (role, tool, arguments, ok, result, at) VALUES (?, ?, ?, ?, ?, ?)",
     )
-    .run(role, tool, '{"card_id":1}', ok ? 1 : 0, ok ? "{}" : '{"error":"<bad>"}', at);
+    .run(role, tool, args, ok ? 1 : 0, ok ? "{}" : '{"error":"<bad>"}', at);
+}
+
+function notify(dashboard: Dashboard, card: number, text: string, at: string): number {
+  return Number(
+    dashboard.h.db
+      .prepare("INSERT INTO notifications (at, card_id, text) VALUES (?, ?, ?)")
+      .run(at, card, text).lastInsertRowid,
+  );
+}
+
+/** The page's main region, so the sidebar's own links and forms do not match. */
+function main(html: string): string {
+  return html.slice(html.indexOf('<main id="main"'));
+}
+
+/** Fetches a page with the sidebar's project picker set to `repo`. */
+async function getFor(dashboard: Dashboard, repo: string, path: string): Promise<string> {
+  const response = await fetch(`${dashboard.base}${path}`, {
+    headers: { cookie: `${dashboard.cookie}; ${PROJECT_COOKIE}=${encodeURIComponent(repo)}` },
+  });
+  return main(await response.text());
 }
 
 describe("Activity", () => {
-  it("lists card events, MCP calls, and notifications, newest first", async () => {
+  it("lists task events, agent calls, and notifications, newest first", async () => {
     dashboard = await startDashboard();
     const card = runningCard(dashboard.h);
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
     recordCall(dashboard, "planner", "file_issue", false, "2026-11-25T14:00:00.000Z");
-    dashboard.h.db
-      .prepare("INSERT INTO notifications (at, card_id, text) VALUES (?, ?, ?)")
-      .run("2026-11-25T15:00:00.000Z", card, "Card <1> needs you");
+    notify(dashboard, card, "Card <1> needs you", "2026-11-25T15:00:00.000Z");
 
     const { status, html } = await dashboard.get("/activity");
+    const page = main(html);
 
     expect(status).toBe(200);
-    expect(html).toContain(`href="/work/${String(card)}"`);
-    expect(html).toContain("Moved to Implementing");
-    expect(html).toContain("lead called start_work");
-    expect(html).toContain("planner called file_issue");
-    expect(html).toContain("Card &lt;1&gt; needs you");
+    expect(page).toContain(
+      `<a href="/work/${String(card)}">#8 Add a cache</a>: moved to Implementing`,
+    );
+    expect(page).toContain("lead called start_work");
+    expect(page).toContain("planner called file_issue");
+    expect(page).toContain("Card &lt;1&gt; needs you");
     const order = [
       "Card &lt;1&gt; needs you",
       "planner called file_issue",
       "lead called start_work",
     ];
-    const positions = order.map((text) => html.indexOf(text));
+    const positions = order.map((text) => page.indexOf(text));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
+    expect(page.match(/<li class="row kinded act-row">/g)).toHaveLength(5);
+    expect(page).toContain("5 shown, newest first. The page lists at most 200.");
   });
 
-  it("filters to the MCP calls of one role", async () => {
+  it("shows each row's status as text, and a call's raw arguments under a fold", async () => {
+    dashboard = await startDashboard();
+    recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
+    recordCall(dashboard, "planner", "file_issue", false, "2026-11-25T14:00:00.000Z");
+
+    const page = main((await dashboard.get("/activity")).html);
+
+    expect(page).toMatch(/<span class="st t-done">.*?OK<\/span>/);
+    expect(page).toMatch(/<span class="st t-bad">.*?Failed<\/span>/);
+    expect(page).toContain(
+      "<summary>Arguments</summary>" +
+        '<div class="fold-body"><pre class="block">{&quot;card_id&quot;:1}</pre></div>',
+    );
+  });
+
+  it("offers the kinds as a segmented control and names a card a task", async () => {
+    dashboard = await startDashboard();
+    runningCard(dashboard.h);
+
+    const page = main((await dashboard.get("/activity?show=tasks")).html);
+
+    expect(page).toContain('<div class="seg" role="group" aria-label="Kind">');
+    expect(page).toContain('<a href="/activity">Everything</a>');
+    expect(page).toContain('<a href="/activity?show=tasks" aria-current="true">Tasks</a>');
+    expect(page).toContain('<a href="/activity?show=calls">Agent calls</a>');
+    expect(page).toContain('<a href="/activity?show=notifications">Notifications</a>');
+    expect(page).not.toMatch(/Card events|MCP calls/);
+    expect(page).not.toContain('name="role"');
+  });
+
+  it("filters agent calls to one role with a form that has an Apply button", async () => {
     dashboard = await startDashboard();
     runningCard(dashboard.h);
     recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
     recordCall(dashboard, "planner", "file_issue", true, "2026-11-25T14:00:00.000Z");
 
-    const { html } = await dashboard.get("/activity?show=mcp&role=lead");
+    const page = main((await dashboard.get("/activity?show=calls&role=lead")).html);
 
-    expect(html).toContain("lead called start_work");
-    expect(html).not.toContain("planner called file_issue");
-    expect(html).not.toContain("Moved to Implementing");
+    expect(page).toContain("lead called start_work");
+    expect(page).not.toContain("planner called file_issue");
+    expect(page).not.toContain("moved to Implementing");
+    expect(page).toContain('<form class="grp" method="get" action="/activity">');
+    expect(page).toContain('<input type="hidden" name="show" value="calls">');
+    expect(page).toContain('<option value="lead" selected>lead</option>');
+    expect(page).toContain('<button type="submit">Apply</button>');
+  });
+
+  it("keeps only the rows of the project the sidebar picker is set to", async () => {
+    dashboard = await startDashboard();
+    const app = runningCard(dashboard.h);
+    const lib = dashboard.h.cards.create({
+      repo: "octo/lib",
+      issueNumber: 3,
+      title: "Lib work",
+    }).id;
+    notify(dashboard, app, "App notice", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, lib, "Lib notice", "2026-11-25T15:01:00.000Z");
+    const at = "2026-11-25T13:00:00.000Z";
+    recordCall(dashboard, "lead", "start_work", true, at, JSON.stringify({ card_id: app }));
+    recordCall(dashboard, "lead", "escalate", true, at, JSON.stringify({ card_id: lib }));
+    recordCall(dashboard, "planner", "file_issue", true, at, '{"repo":"octo/app","title":"t"}');
+    recordCall(dashboard, "planner", "list_cards", true, at, "{}");
+    recordCall(dashboard, "improver", "get_config", true, at, "not json");
+
+    const page = await getFor(dashboard, "octo/app", "/activity");
+
+    expect(page).toContain("#8 Add a cache</a>: moved to Implementing");
+    expect(page).toContain("App notice");
+    expect(page).toContain("lead called start_work");
+    expect(page).toContain("planner called file_issue");
+    expect(page).not.toContain("Lib work");
+    expect(page).not.toContain("Lib notice");
+    expect(page).not.toContain("lead called escalate");
+    expect(page).not.toContain("planner called list_cards");
+    expect(page).not.toContain("improver called get_config");
+    expect(page).not.toContain('name="project"');
+  });
+
+  it("shows a quiet project's rows however many newer rows other projects have", async () => {
+    dashboard = await startDashboard();
+    const app = runningCard(dashboard.h);
+    notify(dashboard, app, "App notice", "2026-11-25T10:00:00.000Z");
+    recordCall(dashboard, "lead", "start_work", true, "2026-11-25T10:00:00.000Z", '{"card_id":1}');
+    recordCall(dashboard, "planner", "file_issue", true, "2026-11-25T10:00:00.000Z");
+    const lib = dashboard.h.cards.create({ repo: "octo/lib", issueNumber: 3, title: "Lib" }).id;
+    for (let index = 0; index < 201; index += 1) {
+      dashboard.h.cards.event(lib, "waiting", `busy ${String(index)}`);
+      notify(dashboard, lib, `Lib notice ${String(index)}`, "2026-11-25T11:00:00.000Z");
+      recordCall(dashboard, "lead", "escalate", true, "2026-11-25T11:00:00.000Z", '{"card_id":2}');
+    }
+
+    const page = await getFor(dashboard, "octo/app", "/activity");
+
+    expect(page).toContain("#8 Add a cache</a>: moved to Implementing");
+    expect(page).toContain("App notice");
+    expect(page).toContain("lead called start_work");
+    expect(page).not.toContain("Lib notice");
+
+    const calls = main((await dashboard.get("/activity?show=calls&role=planner")).html);
+    expect(calls).toContain("planner called file_issue");
+  });
+
+  it("dismisses a notification and comes back to the same view", async () => {
+    dashboard = await startDashboard();
+    const card = runningCard(dashboard.h);
+    const id = notify(dashboard, card, "Look at this", "2026-11-25T15:00:00.000Z");
+
+    const before = main((await dashboard.get("/activity?show=notifications")).html);
+
+    expect(before).toMatch(/<span class="st t-you">.*?Notified you<\/span>/);
+    expect(before).toContain(
+      `<form class="inline" method="post" action="/notifications/${String(id)}/dismiss">` +
+        '<input type="hidden" name="back" value="/activity?show=notifications">' +
+        '<button type="submit">Dismiss</button></form>',
+    );
+
+    const response = await dashboard.post(`/notifications/${String(id)}/dismiss`, {
+      back: "/activity?show=notifications",
+    });
+    const after = main((await dashboard.get(response.headers.get("location") ?? "")).html);
+
+    expect(response.headers.get("location")).toBe("/activity?show=notifications&notice=dismissed");
+    expect(after).toContain("Notification dismissed");
+    expect(after).toMatch(/<span class="st t-off">.*?Dismissed<\/span>/);
+    expect(after).not.toContain(">Dismiss</button>");
+  });
+
+  it("reloads itself every 10 seconds", async () => {
+    dashboard = await startDashboard();
+
+    const { html } = await dashboard.get("/activity?show=calls");
+
+    expect(html).toContain('<meta http-equiv="refresh" content="10;url=/activity?show=calls">');
   });
 
   it("says when nothing has happened", async () => {
     dashboard = await startDashboard();
 
-    expect((await dashboard.get("/activity")).html).toContain("Nothing has happened yet.");
+    expect((await dashboard.get("/activity")).html).toContain(
+      "Nothing has happened yet. Task events, agent calls, and notifications appear here.",
+    );
   });
 
   it("shows the store error banner when the store cannot be read", async () => {

@@ -89,16 +89,16 @@ test "$(status --header "cookie: $cookie" "$base/")" = 200 || fail "/ with a ses
 test "$(status --header "cookie: $cookie" "$base/api/session")" = 200 \
   || fail "/api/session with a session was not 200"
 
-echo "== settings"
-settings=$(curl --silent --header "cookie: $cookie" "$base/settings")
-echo "$settings" | grep -q 'href="/settings/versions/1"' || fail "settings does not list version 1"
+echo "== config"
+versions=$(curl --silent --header "cookie: $cookie" "$base/config/versions")
+echo "$versions" | grep -q 'href="/config/versions/1"' || fail "config does not list version 1"
 curl --silent --header "cookie: $cookie" "$base/api/config/versions/1" | grep -q '"triage"' \
   || fail "first version lacks the imported skill"
-test "$(status "$base/settings")" = 303 || fail "/settings without a session did not redirect"
+test "$(status "$base/config")" = 303 || fail "/config without a session did not redirect"
 test "$(status "$base/api/config/versions")" = 401 || fail "/api/config/versions without a session was not 401"
 
-echo "== environments (no T3 in this container)"
-test "$(status --header "cookie: $cookie" "$base/environments")" = 502 || fail "/environments did not report T3 unreachable"
+echo "== workers (no T3 in this container)"
+test "$(status --header "cookie: $cookie" "$base/workers")" = 502 || fail "/workers did not report T3 unreachable"
 curl --silent --header "cookie: $cookie" "$base/" | grep -q "T3 could not be reached" || fail "overview did not say T3 is unreachable"
 test "$(status "$base/api/environments")" = 401 || fail "/api/environments without a session was not 401"
 

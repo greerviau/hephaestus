@@ -39,7 +39,7 @@ beforeEach(async () => {
         method: "GET",
         path: /^\/$/,
         handle: ({ response }) => {
-          sendHtml(response, 200, layout("Overview", "<h1>Overview</h1>"));
+          sendHtml(response, 200, layout("Home", "<h1>Home</h1>"));
         },
       },
     ],
@@ -69,7 +69,7 @@ async function sessionCookie(): Promise<string> {
 }
 
 describe("dashboard without a session", () => {
-  it.each(["/", "/environments", "/anything/else"])(
+  it.each(["/", "/workers", "/anything/else"])(
     "redirects page %s to the login page",
     async (path) => {
       const response = await fetch(`${base}${path}`, { redirect: "manual" });
@@ -206,6 +206,26 @@ describe("login", () => {
 
     expect(response.status).toBe(401);
     expect(response.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("shows a wrong password as an error tied to the password field", async () => {
+    const html = await (await login("wrong horse battery")).text();
+
+    expect(html).toContain('<main class="login" id="main">');
+    expect(html).toMatch(
+      /<input id="password" name="password"[^>]* aria-describedby="password-err">/,
+    );
+    expect(html).toMatch(
+      /<p class="err" id="password-err" role="alert"><svg.*<\/svg>Wrong password\.<\/p>/,
+    );
+  });
+
+  it("shows no error before a password is sent", async () => {
+    const html = await (await fetch(`${base}/login`)).text();
+
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain("aria-describedby");
+    expect(html).toContain('<button type="submit" class="primary">Sign in</button>');
   });
 
   it("sets an HttpOnly, SameSite=Strict session cookie for the right password", async () => {

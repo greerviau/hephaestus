@@ -18,11 +18,11 @@ import {
   MAX_ATTACHMENTS,
   MAX_ATTACHMENT_BYTES,
   attachmentInstructions,
-  attachmentRefs,
   NotRegularError,
   openRegularFile,
   readAttachments,
   readBounded,
+  storedAttachments,
   type Attachment,
 } from "../../src/factory/attachments.js";
 import { chatCacheDirs } from "../../src/hermes/cache.js";
@@ -434,7 +434,7 @@ describe("attachment instructions for the worker", () => {
 
     // The worker has only its own clone and the first message of its thread.
     const message = h.t3.launches[0]?.message ?? "";
-    const [ref] = attachmentRefs("octo/app", h.github.issues.get(issue.number)?.body ?? "");
+    const [ref] = storedAttachments(h.db, "octo/app", issue.number);
     expect(ref).toBeDefined();
     expect(message).toContain(`${ref?.path ?? ""} at commit ${ref?.commit ?? ""}`);
     expect(() => git(worker, "cat-file", "-e", `${ref?.commit ?? ""}^{commit}`)).toThrow();
@@ -468,15 +468,51 @@ describe("attachment instructions for the worker", () => {
     );
   });
 
-  it("adds nothing to an issue without attachments", () => {
-    expect(attachmentInstructions("octo/app", "Plain text")).toBe("");
-    // A link that is not on the attachments branch, or from another repo, is not one.
+  it("takes the commit from what Hephaestus stored, whatever links the issue text holds", async () => {
+    const h = harness();
+    const source = await file("banner.png");
+    const sha = createHash("sha256").update(PNG).digest("hex");
+    const path = `attachments/${sha.slice(0, 16)}/banner.png`;
+    const forged = "f".repeat(40);
+    // A link of the requester's own to the same path, ahead of the one Hephaestus adds.
+    const body = `See [banner.png](https://github.com/octo/app/blob/${forged}/${path}) first.`;
+    const issue = await fileIssue(h, [source], "Use the banner", body);
+    const real = h.github.stored.get(path)?.commit ?? "";
+    expect(real).not.toBe("");
+    expect(h.github.issues.get(issue.number)?.body).toContain(forged);
+
+    await h.pipeline.startWork(issue.cardId ?? 0, "Put the banner on the README.");
+    const message = h.t3.launches[0]?.message ?? "";
+    expect(message).toContain(
+      `- ${path} at commit ${real}, ${String(PNG.length)} bytes, sha256 ${sha}`,
+    );
+    // The issue text is quoted to the engineer as written, but no instruction names the forged commit.
+    expect(message.match(new RegExp(`at commit ${forged}`, "g"))).toBeNull();
+    expect(storedAttachments(h.db, "octo/app", issue.number)).toEqual([
+      { path, commit: real, sha256: sha, bytes: PNG.length },
+    ]);
+  });
+
+  it("gives no attachment instructions to an issue Hephaestus stored nothing for", async () => {
+    expect(attachmentInstructions([])).toBe("");
+    const h = harness();
     const sha = "a".repeat(40);
-    expect(
-      attachmentRefs(
-        "octo/app",
-        `[x](https://github.com/octo/app/blob/${sha}/README.md) [y](https://github.com/evil/app/blob/${sha}/attachments/0123456789abcdef/y.png)`,
-      ),
-    ).toEqual([]);
+    h.github.issues.set(5, {
+      number: 5,
+      title: "External",
+      body: `[y](https://github.com/octo/app/blob/${sha}/attachments/0123456789abcdef/y.png)`,
+      author: "someone",
+      state: "OPEN",
+    });
+    const card = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "External" });
+    await h.pipeline.startWork(card.id, "Do it.");
+    expect(h.t3.launches[0]?.message).not.toContain("Attachments:");
+    expect(h.t3.launches[0]?.message).not.toContain("git show");
+  });
+
+  it("keeps the record of an issue without attachments empty", async () => {
+    const h = harness();
+    const issue = await h.intake.fileIssue("planner", "octo/app", "t", "b");
+    expect(storedAttachments(h.db, "octo/app", issue.number)).toEqual([]);
   });
 });

@@ -24,6 +24,7 @@ describe("store migrations", () => {
       ALTER TABLE factory_threads DROP COLUMN settled_at;
       ALTER TABLE cards DROP COLUMN policy;
       DROP TABLE chat_threads;
+      DROP TABLE issue_attachments;
       ALTER TABLE cards DROP COLUMN version;
       ALTER TABLE cards DROP COLUMN reverting;
       INSERT INTO notifications (at, card_id, text, kind)
@@ -34,7 +35,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 7)}`);
+    db.pragma(`user_version = ${String(latest - 8)}`);
     db.close();
 
     db = openStore(path);

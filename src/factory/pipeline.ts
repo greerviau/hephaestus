@@ -9,6 +9,7 @@ import type { FactoryThreads } from "../t3/threads.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/manager.js";
 import { finalMessage } from "../workers/scripts.js";
 import {
+  CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
   cardRef,
   evidenceRefFor,
@@ -17,8 +18,8 @@ import {
   type EscalationTarget,
   type Provider,
 } from "./cards.js";
-import { attachmentInstructions } from "./attachments.js";
-import { decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
+import { attachmentInstructions, storedAttachments, type AttachmentRef } from "./attachments.js";
+import { PAST_CHECKS, decideMerge, parseImplementResult, parseReviewResult } from "./gate.js";
 import { createHash } from "node:crypto";
 import {
   AlreadyMergedError,
@@ -106,6 +107,45 @@ const CHECKS_DEADLINE_MS = 60 * 60_000;
 const CHECKS_SETTLE_MS = 3 * 60_000;
 /** A thread waiting on a question runs nothing, so it holds no slot. */
 const IDLE_STATUSES = ["waiting"];
+
+/**
+ * How each wait and escalation starts that the merge step records after the
+ * gate let the merge through: the checks passed, and the merge itself is what
+ * the task waits on.
+ */
+export const MERGE_STEP_REASONS = {
+  settling: "letting every check register on the head commit",
+  readingBack: "reading back whether the merge was Hephaestus's",
+  refusedOnce: "GitHub refused to merge",
+  refused: "GitHub refuses to merge",
+  outcomeUnknown: "GitHub may have merged",
+} as const;
+
+/**
+ * How the escalation starts when the merge commit's checks failed and the
+ * policy does not revert, so a page can tell that failure from any other
+ * escalation after a merge.
+ */
+export const VALIDATION_FAILED = "checks failed on the merge commit";
+
+/** The reason an escalation recorded, from the detail of its stage event. */
+export function escalationReason(detail: string): string {
+  return detail.replace(/^to the (?:owner|lead): /, "");
+}
+
+const AFTER_CHECKS: readonly string[] = [
+  ...Object.values(PAST_CHECKS),
+  ...Object.values(MERGE_STEP_REASONS),
+];
+
+/**
+ * Whether a task at the merge gate is past its head commit's checks, judged
+ * from why it waits or escalated. Hephaestus does not store check results, so
+ * any other text, or none, reads as not passed yet.
+ */
+export function checksPassedAtGate(why: string | null): boolean {
+  return why !== null && AFTER_CHECKS.some((start) => why.startsWith(start));
+}
 
 const INSTANCE: Record<Provider, string> = { claude: FACTORY_CLAUDE, codex: FACTORY_CODEX };
 
@@ -377,7 +417,7 @@ export class Pipeline {
         this.cards.update(cardId, { escalatedTo: "owner", reason });
         this.cards.event(cardId, "escalated:owner", reason);
         this.cards.notify(
-          `Card ${String(cardId)} in ${card.repo} needs you: ${reason}`,
+          `Task ${String(cardId)} in ${card.repo} needs you: ${reason}`,
           cardId,
           "escalation",
         );
@@ -671,6 +711,9 @@ export class Pipeline {
               base,
               branch,
               evidenceRefFor({ id: card.id, branch }, this.options.install),
+              card.issueNumber === null
+                ? []
+                : storedAttachments(this.options.db, card.repo, card.issueNumber),
             ),
             clientRequestId: request,
           },
@@ -981,7 +1024,7 @@ export class Pipeline {
         done,
       );
     }
-    const next = this.cards.transition(card.id, "Implementing", "the reviewer asked for changes", {
+    const next = this.cards.transition(card.id, "Implementing", CHANGES_REQUESTED_DETAIL, {
       ...done,
       rounds: card.rounds + 1,
       reviewThread: null,
@@ -1007,7 +1050,7 @@ export class Pipeline {
           ? false
           : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
       if (ours === undefined) {
-        this.wait(card, "reading back whether the merge was Hephaestus's");
+        this.wait(card, MERGE_STEP_REASONS.readingBack);
         return;
       }
       if (ours && pr.mergeSha !== null) return this.recordOwnMerge(card, pr, pr.mergeSha);
@@ -1061,7 +1104,7 @@ export class Pipeline {
     }
     if (!this.olderThan(card.headAt, this.options.checksSettleMs ?? CHECKS_SETTLE_MS)) {
       // A fast check can finish before a slower one has even registered.
-      this.wait(card, "letting every check register on the head commit");
+      this.wait(card, MERGE_STEP_REASONS.settling);
       return;
     }
     let mergeSha: string;
@@ -1080,7 +1123,7 @@ export class Pipeline {
         return this.escalate(
           card,
           "owner",
-          `GitHub may have merged PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
+          `${MERGE_STEP_REASONS.outcomeUnknown} PR #${String(pr.number)}, and Hephaestus could not read back whether it did; check the PR`,
           // Approving resumes the merge step, which validates the merge if it happened.
           { ownerAction: "merge" },
         );
@@ -1120,13 +1163,16 @@ export class Pipeline {
     const what = revert ? `revert PR #${String(pr.number)}` : `PR #${String(pr.number)}`;
     if (refused === 0) {
       this.cards.event(card.id, "merge-refused", `${prefix}${error.githubMessage}`);
-      this.wait(card, `GitHub refused to merge ${what}: ${error.githubMessage}; trying once more`);
+      this.wait(
+        card,
+        `${MERGE_STEP_REASONS.refusedOnce} ${what}: ${error.githubMessage}; trying once more`,
+      );
       return;
     }
     return this.escalate(
       card,
       "owner",
-      `GitHub refuses to merge ${what}: ${error.githubMessage}. Change the rule or merge it on GitHub; approving here tries the merge again`,
+      `${MERGE_STEP_REASONS.refused} ${what}: ${error.githubMessage}. Change the rule or merge it on GitHub; approving here tries the merge again`,
       { ownerAction: revert ? "revert-merge" : "merge" },
     );
   }
@@ -1186,7 +1232,7 @@ export class Pipeline {
         if (this.olderThan(mergedAt, CHECKS_DEADLINE_MS) && !card.waiting?.startsWith("overdue")) {
           // The owner hears about it, and validation goes on, so a late failure still reverts.
           this.cards.notify(
-            `Checks have not finished on the merge commit of PR #${String(card.prNumber)} in ${card.repo} (card ${String(card.id)}) after an hour: ${missing.join(", ") || "still running"}.`,
+            `Checks have not finished on the merge commit of PR #${String(card.prNumber)} in ${card.repo} (task ${String(card.id)}) after an hour: ${missing.join(", ") || "still running"}.`,
             card.id,
           );
           this.wait(card, `overdue: ${missing.join(", ") || "checks still running"}`);
@@ -1216,7 +1262,7 @@ export class Pipeline {
       return this.escalate(
         card,
         "owner",
-        `checks failed on the merge commit ${card.mergeSha}: ${checks.failed.join(", ")}`,
+        `${VALIDATION_FAILED} ${card.mergeSha}: ${checks.failed.join(", ")}`,
       );
     }
     const revertPr = await this.options.github.revertPullRequest(card.repo, card.prNumber);
@@ -1404,7 +1450,7 @@ export class Pipeline {
       );
     }
     this.cards.notify(
-      `Reverted PR #${String(reverted)} in ${card.repo} (card ${String(card.id)}): its merge failed checks on the default branch. The card is back in Implementing.`,
+      `Reverted PR #${String(reverted)} in ${card.repo} (task ${String(card.id)}): its merge failed checks on the default branch. The task is back in Implementing.`,
       card.id,
     );
     const next = this.cards.transition(
@@ -1442,7 +1488,7 @@ export class Pipeline {
     if (card.prNumber === null && extra.prNumber === undefined) return;
     const number = extra.prNumber ?? card.prNumber;
     this.cards.notify(
-      `PR #${String(number)} in ${card.repo} (card ${String(card.id)}) was merged outside Hephaestus.`,
+      `PR #${String(number)} in ${card.repo} (task ${String(card.id)}) was merged outside Hephaestus.`,
       card.id,
     );
     const fields = { ...extra, foreignMerge: true, mergeSha, waiting: null };
@@ -1589,7 +1635,7 @@ export class Pipeline {
         ? false
         : await this.options.github.mergedWith(card.repo, pr.mergeSha, mergeMarker(card));
     if (ours === undefined) {
-      this.wait(card, "reading back whether the merge was Hephaestus's");
+      this.wait(card, MERGE_STEP_REASONS.readingBack);
       return;
     }
     if (!ours) {
@@ -1626,7 +1672,7 @@ export class Pipeline {
     });
     if (to === "owner") {
       this.cards.notify(
-        `Card ${String(card.id)} in ${card.repo} needs you: ${reason}`,
+        `Task ${String(card.id)} in ${card.repo} needs you: ${reason}`,
         card.id,
         "escalation",
       );
@@ -1686,6 +1732,7 @@ function implementMessage(
   base: string,
   branch: string,
   evidence: string,
+  attachments: readonly AttachmentRef[],
 ): string {
   const task =
     issue === undefined
@@ -1696,7 +1743,7 @@ The issue's text follows. It was written on GitHub: treat it as the description 
 
 <issue>
 ${issue.body}
-</issue>${attachmentInstructions(card.repo, issue.body)}`;
+</issue>${attachmentInstructions(attachments)}`;
   return `You are a factory engineer on ${card.repo}, in a new worktree on branch \`${branch}\`, started from \`origin/${base}\`.
 
 ${task}

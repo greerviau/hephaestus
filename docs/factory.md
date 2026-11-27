@@ -16,7 +16,7 @@ Only files in the calling role's Hermes media caches can be attached, so no othe
 
 The issue body gains an `Attachments` section with a commit-pinned link, the size, and the sha256 of each file, and images (png, jpg, gif, webp, svg) are embedded so they render on the issue. Because the files live on the branch, they outlive the planner's cache.
 
-The implement thread's first message lists each attachment's path and commit when the issue links any, with the steps to fetch the exact bytes: `git fetch origin hephaestus/attachments`, then `git show <commit>:<path> > <destination>`. The engineer commits the file into its own branch where the task says; it never pushes to the attachments branch.
+Hephaestus keeps what each upload returned (path, commit, size, sha256) with the issue it filed, and the implement thread's first message lists each attachment from that record, not from links in the issue text, which anyone can edit and which may hold a link of its own to the same path. An issue Hephaestus stored nothing for gets no such list. The message gives the steps to fetch the exact bytes: `git fetch origin hephaestus/attachments`, then `git show <commit>:<path> > <destination>`. The engineer commits the file into its own branch where the task says; it never pushes to the attachments branch.
 
 ## The pipeline
 

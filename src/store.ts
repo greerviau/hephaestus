@@ -230,6 +230,17 @@ const MIGRATIONS = [
    );`,
   // The newest card event the thread's catch-up covered; 0 until the catch-up is sent.
   `ALTER TABLE chat_threads ADD COLUMN after_event INTEGER NOT NULL DEFAULT 0;`,
+  // What the upload of each file attached to a factory-filed issue returned, for the engineer's instructions.
+  `CREATE TABLE issue_attachments (
+     repo TEXT NOT NULL COLLATE NOCASE,
+     number INTEGER NOT NULL,
+     path TEXT NOT NULL,
+     name TEXT NOT NULL,
+     commit_sha TEXT NOT NULL,
+     sha256 TEXT NOT NULL,
+     bytes INTEGER NOT NULL,
+     PRIMARY KEY (repo, number, path)
+   );`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */
