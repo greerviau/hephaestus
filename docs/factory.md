@@ -46,13 +46,13 @@ After a merge, Hephaestus watches the merge commit's checks on the default branc
 
 The factory profiles reach Hephaestus through an MCP server on `127.0.0.1`, on the port after the dashboard's. Each profile has its own bearer token, kept in `~/.hephaestus/secrets.json` and in the profile's `.env`, and each role gets only its tools:
 
-| Role     | Tools                                                                                      |
-| -------- | ------------------------------------------------------------------------------------------ |
-| planner  | `file_issue`, `get_status`, `list_cards`, `read_thread`, and the change tools below        |
-| lead     | `start_work`, `escalate`, `file_issue`, `get_status`, `list_cards`, `read_thread`          |
-| improver | `propose_version`, `get_config`, `get_status`, `list_cards`, `list_threads`, `read_thread` |
+| Role     | Tools                                                                                                      |
+| -------- | ---------------------------------------------------------------------------------------------------------- |
+| planner  | `file_issue`, `get_status`, `list_cards`, `read_thread`, the stats tools below, and the change tools below |
+| lead     | `start_work`, `escalate`, `file_issue`, `get_status`, `list_cards`, `read_thread`                          |
+| improver | `propose_version`, `get_config`, `get_status`, `list_cards`, `list_threads`, `read_thread`                 |
 
-The planner is the chat agent. It is a general communicator: it talks, answers questions about the factory from `get_status`, `list_cards`, and `read_thread` (a card carries `merged_at`, its recorded merge time, which is not its last update), and uses `file_issue` only when the user asks for work. It has no write tool besides `file_issue`.
+The planner is the chat agent. It is a general communicator: it talks, answers questions about the factory from `get_status`, `list_cards`, and `read_thread` (a card carries `merged_at`, its recorded merge time, which is not its last update), and uses `file_issue` only when the user asks for work. Besides `file_issue` its only write tools are the change tools below.
 
 Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with the factory threads it cites as evidence; it changes nothing until the owner approves it.
 
@@ -66,3 +66,13 @@ The profile that talks to people in chat can change the factory's own skills, in
 - Every change is a row with its target, summary, conversation, the approval, the config version, and when it was proposed and applied, and its before and after text. The versions appear on the Settings page with author `chat`.
 - `revert_change` puts an applied change's target back as it was, as a new version, when the person asks for it. It is refused when the target has changed since, because reverting would overwrite the later edit.
 - Hephaestus reads the deployed version live, so `autoStartMinutes`, the limits, and the models apply to the next card or thread after the deploy, with no restart. Skills for factory threads reach each worker with the deploy. A role's persona, and the skills a role loads, are written to its Hermes profile at deploy, and the deploy does not restart the factory gateway, so a conversation already running may keep its earlier instructions until Hermes reloads the profile.
+
+### Stats tools
+
+The chat agent answers questions about the factory with three read-only tools. Each returns the numbers and a `report` of bullet lines with no tables, and takes `window` (hours or days, such as `24h`, `7d`, or `30d`; the default is `7d`, and `24h` for host errors).
+
+- `get_factory_stats` (also `repo` to limit it to one project) gives cards by stage as they stand now, cards that reached Done in the window and per day, cycle time from the first thread to Done (median and 90th percentile), review rounds of those cards, escalations with their targets and reasons, and held issues per project.
+- `get_usage_stats` (also `repo`) gives the engineer and reviewer threads started in the window, with token counts and cost by role, model, and card. Hephaestus does not capture usage from T3 yet, so a thread has token counts and a cost only when something recorded them, and the report never estimates either. When none is recorded, the report says tokens and cost are not recorded and still gives thread counts. A total that covers only some threads says how many.
+- `get_host_health` gives CPU cores and load average, memory, disk, host uptime, the state of the Hephaestus and Hermes gateway services as systemd reports it, each worker's config version and problem, and the failed tool calls, worker tasks, and thread launches recorded in the window.
+
+When data is missing the report says so, and the chat agent is told never to fill a gap with a number it did not get from a tool.

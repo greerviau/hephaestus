@@ -46,12 +46,24 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
     now: () => new Date(clock.now),
     tokens: () => TOKENS,
     attachmentRoots: (role) => chatCacheDirs(join(caches ?? tmpdir(), role)),
+    health: () => FAKE_HEALTH,
   });
   server = mcp.listen(0);
   await new Promise<void>((resolve) => server?.once("listening", resolve));
   const port = (server.address() as AddressInfo).port;
   return { h, url: `http://127.0.0.1:${String(port)}/mcp`, store, mcp };
 }
+
+const FAKE_HEALTH = {
+  cpu: { cores: 4, load: { oneMinute: 0.1, fiveMinutes: 0.2, fifteenMinutes: 0.3 } },
+  memory: { totalBytes: 8 * 1024 ** 3, freeBytes: 4 * 1024 ** 3, usedPercent: 50 },
+  disk: null,
+  uptimeSeconds: 120,
+  hephaestus: { processUptimeSeconds: 60, service: "active", hermesGateway: "active" },
+  workers: [],
+  recentErrors: [],
+  errorWindow: "24h",
+};
 
 async function client(url: string, token: string): Promise<Client> {
   const transport = new StreamableHTTPClientTransport(new URL(url), {
@@ -431,5 +443,110 @@ describe("FactoryMcp", () => {
       await c.close();
     }
     expect(store.count()).toBe(1);
+  });
+
+  it("gives the planner read-only stats tools that return a report and change nothing", async () => {
+    const { h, url, mcp } = await start();
+    const card = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "t" });
+    const before = JSON.stringify([
+      h.db.prepare("SELECT * FROM cards").all(),
+      h.db.prepare("SELECT * FROM card_events").all(),
+      h.db.prepare("SELECT * FROM factory_threads").all(),
+      h.db.prepare("SELECT * FROM issues").all(),
+    ]);
+    const c = await client(url, TOKENS.planner);
+
+    const factory = json(
+      await c.callTool({
+        name: "get_factory_stats",
+        arguments: { window: "30d", repo: "octo/app" },
+      }),
+    );
+    expect(factory.cardsByStage).toEqual({ [card.stage]: 1 });
+    expect(factory.report).toContain("Factory stats for octo/app, last 30d");
+    expect(factory.report).toContain("Cycle time: not available");
+
+    const usage = json(await c.callTool({ name: "get_usage_stats", arguments: {} }));
+    expect(usage.report).toContain("No engineer or reviewer threads");
+
+    const host = json(await c.callTool({ name: "get_host_health", arguments: {} }));
+    expect(host.report).toContain("CPU: 4 cores");
+    expect(host.report).toContain("Disk: could not be read.");
+
+    const bad = await c.callTool({ name: "get_factory_stats", arguments: { window: "soon" } });
+    expect(bad.isError).toBe(true);
+
+    expect(mcp.calls().map((call) => [call.tool, call.ok])).toEqual([
+      ["get_factory_stats", false],
+      ["get_host_health", true],
+      ["get_usage_stats", true],
+      ["get_factory_stats", true],
+    ]);
+    const after = JSON.stringify([
+      h.db.prepare("SELECT * FROM cards").all(),
+      h.db.prepare("SELECT * FROM card_events").all(),
+      h.db.prepare("SELECT * FROM factory_threads").all(),
+      h.db.prepare("SELECT * FROM issues").all(),
+    ]);
+    expect(after).toBe(before);
+    await c.close();
+  });
+
+  it("answers a stats question in chat from real tool output, with no tables and the gaps stated", async () => {
+    const { h, url, mcp } = await start();
+    const done = h.cards.create({ repo: "octo/app", issueNumber: 5, title: "Add a flag" });
+    h.cards.update(done.id, {
+      startedAt: new Date(Date.now() - 3_600_000).toISOString(),
+      rounds: 1,
+    });
+    h.cards.transition(done.id, "Implementing", "work started");
+    h.cards.transition(done.id, "Done", "merged outside Hephaestus");
+    const stuck = h.cards.create({ repo: "octo/lib", issueNumber: 6, title: "Fix a bug" });
+    h.cards.transition(stuck.id, "Escalated", "to the owner: needs a decision on the API");
+    h.events.recordThread({
+      environmentId: "w1",
+      threadId: "t1",
+      title: "Implement",
+      providerInstanceId: "i",
+      model: "m1",
+      configVersion: 1,
+      cardId: String(done.id),
+      kind: "implement",
+    });
+
+    // "How did the factory do this week?" The chat agent calls each stats tool and relays the report.
+    const chat = await client(url, TOKENS.planner);
+    const reports: string[] = [];
+    for (const name of ["get_factory_stats", "get_usage_stats", "get_host_health"]) {
+      const result = json(await chat.callTool({ name, arguments: { window: "7d" } }));
+      reports.push(String(result.report));
+    }
+    const reply = reports.join("\n\n");
+
+    // Real numbers from the card log.
+    expect(reply).toContain("Cards by stage: Done 1, Escalated 1.");
+    expect(reply).toContain("1 card reached Done");
+    expect(reply).toContain("Card 2 (octo/lib): needs a decision on the API");
+    // A thread with no recorded usage is counted, and its tokens and cost are said to be missing.
+    expect(reply).toContain("Total: 1 thread, tokens not recorded, cost not recorded");
+    expect(reply).not.toMatch(/\$\d/);
+    expect(reply).toContain("CPU: 4 cores");
+    // Chat formatting: bullets and labeled lines, no tables.
+    expect(reply).not.toMatch(/\|/);
+    expect(reply.split("\n").some((line) => line.startsWith("- "))).toBe(true);
+    expect(mcp.calls().every((call) => call.role === "planner" && call.ok)).toBe(true);
+    await chat.close();
+  });
+
+  it("does not offer the stats tools to the lead or the improver", async () => {
+    const { url } = await start();
+    for (const token of [TOKENS.lead, TOKENS.improver]) {
+      const c = await client(url, token);
+      const names = (await c.listTools()).tools.map((tool) => tool.name);
+      expect(names).not.toContain("get_factory_stats");
+      expect(names).not.toContain("get_usage_stats");
+      expect(names).not.toContain("get_host_health");
+      await c.close();
+    }
   });
 });

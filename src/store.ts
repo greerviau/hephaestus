@@ -263,6 +263,10 @@ const MIGRATIONS = [
      bytes INTEGER NOT NULL,
      PRIMARY KEY (repo, number, path)
    );`,
+  // What T3 reported a thread used. NULL means T3 did not report it, which is not zero.
+  `ALTER TABLE factory_threads ADD COLUMN input_tokens INTEGER;
+   ALTER TABLE factory_threads ADD COLUMN output_tokens INTEGER;
+   ALTER TABLE factory_threads ADD COLUMN cost_usd REAL;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */
