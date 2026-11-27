@@ -274,17 +274,18 @@ export class Pipeline {
    * Tasks that hold a thread slot with no thread running: a task with the lead, whose work is
    * not finished, a task whose thread stopped on a usage limit and waits for it to reset, and
    * a task whose thread ended with a result not acted on yet. A task with the owner is blocked
-   * on the owner, so it holds none.
+   * on the owner, so it holds none. A task with the lead or waiting for a usage limit whose
+   * project was removed can never start a thread again, so it holds one only while its merge
+   * or rollback is in flight, as for the task limit.
    */
   private heldTasks(environmentId?: string): Held {
     const ended = [...ENDED_STATUSES, ...IDLE_STATUSES];
     const kinds = FACTORY_KINDS.map(() => "?").join(", ");
     const env = environmentId === undefined ? "" : " AND c.worker_env = ?";
     const envArgs = environmentId === undefined ? [] : [environmentId];
-    const row = this.options.db
+    const rows = this.options.db
       .prepare(
-        `SELECT COALESCE(SUM(c.stage = 'Escalated'), 0) AS lead,
-           COALESCE(SUM(c.stage <> 'Escalated'), 0) AS limited
+        `SELECT c.id AS id
          FROM tasks c
          WHERE ((c.stage = 'Escalated' AND c.escalated_to = 'lead')
            OR (c.limit_until IS NOT NULL AND c.stage IN ('Implementing', 'Reviewing', 'Reverting')))
@@ -294,17 +295,12 @@ export class Pipeline {
          AND NOT EXISTS (SELECT 1 FROM factory_launches l WHERE l.task_id = CAST(c.id AS TEXT)
            AND l.kind IN (${kinds}) AND l.status = 'pending')`,
       )
-      .get(...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as {
-      lead: number;
-      limited: number;
-    };
+      .all(...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as { id: number }[];
+    const holding = rows.map((row) => this.tasks.get(row.id)).filter((task) => this.works(task));
+    const lead = holding.filter((task) => task.stage === "Escalated").length;
+    const limited = holding.length - lead;
     const finished = this.unhandledTasks(environmentId);
-    return {
-      lead: row.lead,
-      limited: row.limited,
-      finished,
-      total: row.lead + row.limited + finished,
-    };
+    return { lead, limited, finished, total: lead + limited + finished };
   }
 
   /**

@@ -7,6 +7,7 @@ import {
 import type { LaunchOptions } from "../../src/t3/adapter.js";
 import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
+import { PRESETS } from "../../src/config/policy.js";
 import {
   MERGE,
   SHA,
@@ -2104,6 +2105,96 @@ describe("Pipeline task limit", () => {
 
     expect(h.tasks.get(task).workerEnv).toBe("w2");
     expect(h.t3.launches.at(-1)?.environmentId).toBe("w2");
+  });
+
+  it("frees the thread slot of a task with the lead whose project was removed", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threadsPerWorker = 1;
+      config.factory.limits.tasksPerWorker = 3;
+    });
+    const first = admitted(h);
+    await h.pipeline.queue(first, "brief");
+    h.finish("t1", "", "failed");
+    await h.pipeline.tick();
+    expect(h.tasks.get(first)).toMatchObject({ stage: "Escalated", escalatedTo: "lead" });
+
+    delete h.config.projects["octo/app"];
+    h.config.projects["octo/other"] = { policy: { preset: "standard", overrides: {} } };
+    const next = h.tasks.create({ repo: "octo/other", issueNumber: 5, title: "Next" }).id;
+    await h.pipeline.queue(next, "brief next");
+
+    expect(h.tasks.get(next)).toMatchObject({ stage: "Implementing", waiting: null });
+    expect(h.t3.launches).toHaveLength(2);
+  });
+
+  it("frees the thread slot of a task waiting on a usage limit whose project was removed", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threadsPerWorker = 1;
+      config.factory.limits.tasksPerWorker = 3;
+    });
+    const first = admitted(h);
+    await h.pipeline.queue(first, "brief");
+    h.limit("t1");
+    await h.pipeline.tick();
+    expect(h.tasks.get(first).limitUntil).not.toBeNull();
+
+    delete h.config.projects["octo/app"];
+    h.config.projects["octo/other"] = { policy: { preset: "standard", overrides: {} } };
+    const next = h.tasks.create({ repo: "octo/other", issueNumber: 5, title: "Next" }).id;
+    await h.pipeline.queue(next, "brief next");
+
+    expect(h.tasks.get(next)).toMatchObject({ stage: "Implementing", waiting: null });
+  });
+
+  it("keeps the thread slot of a task with the lead whose project was removed while its rollback is in flight", async () => {
+    const h = harness((config) => {
+      config.factory.limits.threadsPerWorker = 1;
+      config.factory.limits.tasksPerWorker = 3;
+    });
+    const held = another(h, "Rolling back");
+    h.db
+      .prepare(
+        "UPDATE tasks SET stage = 'Escalated', escalated_to = 'lead', worker_env = 'w1' WHERE id = ?",
+      )
+      .run(held);
+    h.tasks.update(held, { reverting: true, policy: PRESETS.standard });
+
+    delete h.config.projects["octo/app"];
+    h.config.projects["octo/other"] = { policy: { preset: "standard", overrides: {} } };
+    const next = h.tasks.create({ repo: "octo/other", issueNumber: 5, title: "Next" }).id;
+    await h.pipeline.queue(next, "brief next");
+
+    expect(h.tasks.get(next).waiting).toBe(
+      "The worker's limit of 1 running factory threads is reached, counting 1 task with the lead.",
+    );
+  });
+
+  it("puts a started task on the worker whose only held task has a removed project", async () => {
+    const h = harness((config) => {
+      config.factory.limits.tasksPerWorker = 3;
+      config.factory.limits.threadsPerWorker = 1;
+    });
+    h.ready.push({ environmentId: "w2", label: "w2", home: "/home/w2" });
+    h.config.projects["octo/gone"] = { policy: { preset: "standard", overrides: {} } };
+    // w1 has a task with the lead whose project is removed below, so it holds no thread slot;
+    // w2 has one with the lead in a project still configured, which holds its one slot.
+    const place = (repo: string, env: string): void => {
+      const id = h.tasks.create({ repo, issueNumber: 7, title: repo }).id;
+      h.db
+        .prepare(
+          "UPDATE tasks SET stage = 'Escalated', worker_env = ?, escalated_to = 'lead' WHERE id = ?",
+        )
+        .run(env, id);
+    };
+    place("octo/gone", "w1");
+    place("octo/app", "w2");
+    delete h.config.projects["octo/gone"];
+    const task = admitted(h);
+
+    await h.pipeline.queue(task, "brief");
+
+    expect(h.tasks.get(task).workerEnv).toBe("w1");
+    expect(h.t3.launches.at(-1)?.environmentId).toBe("w1");
   });
 
   it("moves a task whose worker went away before its first launch", async () => {
