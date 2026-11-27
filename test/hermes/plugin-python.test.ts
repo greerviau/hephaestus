@@ -106,6 +106,35 @@ def _apply_main_assignment_sync(cfg, provider, model, base_url, api_key, prepare
     _state.save(state)
     return {"ok": True}
 `,
+  "hermes_cli/kanban_db.py": `
+from types import SimpleNamespace
+from hermes_cli import _state
+def get_task(conn, task_id):
+    task = _state.load().get("tasks", {}).get(task_id)
+    return None if task is None else SimpleNamespace(status=task["status"])
+`,
+  "plugins/__init__.py": "",
+  "plugins/kanban/dashboard/plugin_api.py": `
+from hermes_cli import _state
+class Conn:
+    def __init__(self, board):
+        self.board = board
+    def close(self):
+        state = _state.load()
+        state.setdefault("closed", []).append(self.board)
+        _state.save(state)
+def _conn(board=None):
+    return Conn(board)
+def _set_status_direct(conn, task_id, new_status):
+    state = _state.load()
+    task = state.get("tasks", {}).get(task_id)
+    if task is None or (new_status == "ready" and not task.get("parents_done", True)):
+        return False
+    task["status"] = new_status
+    state.setdefault("moves", []).append([conn.board, task_id, new_status])
+    _state.save(state)
+    return True
+`,
   "hermes_cli/web_server_oauth.py": `
 import threading
 _oauth_sessions = {"s1": {"status": "approved"}}
@@ -165,6 +194,9 @@ interface State {
   missing?: string[];
   warn_in?: Record<string, string>;
   prepared?: [string, string, string][];
+  tasks?: Record<string, { status: string; parents_done?: boolean }>;
+  moves?: [string, string, string][];
+  closed?: string[];
 }
 
 function seed(extra: Partial<State> = {}): void {
@@ -360,5 +392,41 @@ describe.skipIf(PYTHON === undefined)("the Hephaestus Hermes plugin", () => {
     const [result] = run(["add-key", "--provider", "deepseek", ...PROFILES], "k");
 
     expect(result?.outdated).toMatch(/^ModuleNotFoundError|^ImportError/);
+  });
+
+  it("moves a task Hermes parked in triage on the named board, and closes the board", () => {
+    seed({ tasks: { t_1: { status: "triage" }, t_2: { status: "triage" } } });
+
+    expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_1"])).toEqual([
+      { ok: true, status: "ready" },
+    ]);
+    expect(run(["move-task", "--board=factory", "--to=scheduled", "--", "t_2"])).toEqual([
+      { ok: true, status: "scheduled" },
+    ]);
+    expect(state().moves).toEqual([
+      ["factory", "t_1", "ready"],
+      ["factory", "t_2", "scheduled"],
+    ]);
+    expect(state().closed).toEqual(["factory", "factory"]);
+  });
+
+  it("leaves a task with an unfinished parent in todo, where Hermes readies it later", () => {
+    seed({ tasks: { t_1: { status: "triage", parents_done: false } } });
+
+    expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_1"])).toEqual([
+      { ok: true, status: "todo" },
+    ]);
+  });
+
+  it("moves only a task in triage, and refuses a task that does not exist", () => {
+    seed({ tasks: { t_1: { status: "running" } } });
+
+    expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_1"])).toEqual([
+      { ok: true, status: "running" },
+    ]);
+    expect(state().moves).toBeUndefined();
+    expect(run(["move-task", "--board=factory", "--to=ready", "--", "t_9"])).toEqual([
+      { refused: "Task t_9 is not on board factory." },
+    ]);
   });
 });

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { ROLE_NAMES } from "../config/document.js";
-import type { HermesRun } from "./cli.js";
+import { jsonLine, lastJsonLine, type HermesRun } from "./cli.js";
 
 /** One provider as Hermes's own model picker lists it. */
 export interface ProviderRow {
@@ -166,7 +166,7 @@ export class FactoryModel {
     };
 
     process.onLine((line) => {
-      const message = parseJson(line) as
+      const message = jsonLine(line) as
         (Outcome & { url?: string; code?: string; status?: string; error?: string }) | undefined;
       if (message === undefined || !current()) return;
       if (message.url !== undefined && message.code !== undefined) {
@@ -226,7 +226,7 @@ export class FactoryModel {
       console.error("A factory Hermes model action failed", error);
       throw new ModelError(OUT_OF_DATE);
     }
-    const result = lastJson(output) as (Outcome & Record<string, unknown>) | undefined;
+    const result = lastJsonLine(output) as (Outcome & Record<string, unknown>) | undefined;
     if (result === undefined) throw this.outdated(output);
     if (typeof result.refused === "string") throw new ModelError(result.refused);
     if (typeof result.warning === "string") throw new ModelWarning(result.warning);
@@ -247,26 +247,6 @@ interface Outcome {
   partial?: string;
   warning?: string;
   outdated?: string;
-}
-
-function parseJson(line: string): unknown {
-  const trimmed = line.trim();
-  if (!trimmed.startsWith("{")) return undefined;
-  try {
-    return JSON.parse(trimmed) as unknown;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The last line of output that is a JSON object; Hermes may print warnings before it. */
-function lastJson(output: string): unknown {
-  const lines = output.split("\n").reverse();
-  for (const line of lines) {
-    const value = parseJson(line);
-    if (value !== undefined) return value;
-  }
-  return undefined;
 }
 
 /** Runs `hermes hephaestus login` with HERMES_HOME set to the factory root. */

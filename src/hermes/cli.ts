@@ -14,6 +14,26 @@ const ANSI = /\u001b\[[0-9;]*m/g;
 /** A warning some Hermes installs print on every command; it never explains a failure. */
 const NOISE = /install out of sync/;
 
+/** A line of JSON a `hermes hephaestus` action printed, or undefined for any other line. */
+export function jsonLine(line: string): unknown {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("{")) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The last JSON line in a `hermes hephaestus` action's output; Hermes may print other lines around it. */
+export function lastJsonLine(output: string): unknown {
+  for (const line of output.split("\n").reverse()) {
+    const value = jsonLine(line);
+    if (value !== undefined) return value;
+  }
+  return undefined;
+}
+
 export function stripAnsi(text: string): string {
   return text.replace(ANSI, "");
 }

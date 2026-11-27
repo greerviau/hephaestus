@@ -22,6 +22,18 @@ class FakeT3 {
   launches: LaunchOptions[] = [];
   refuse = false;
   hang = false;
+  /** When T3 wakes each snoozed thread, by thread id. */
+  snoozes: Record<string, string> = {};
+  threadState(
+    _environmentId: string,
+    threadId: string,
+  ): Promise<{ status: string; latestRunId: null; snoozedUntil: string | null }> {
+    return Promise.resolve({
+      status: "failed",
+      latestRunId: null,
+      snoozedUntil: this.snoozes[threadId] ?? null,
+    });
+  }
   launchThread(
     options: LaunchOptions,
   ): Promise<{ threadId: string; runId: null; projectId: string }> {
@@ -191,6 +203,38 @@ describe("WorkerManager", () => {
     finishThread(`t${String(launches + 1)}`, "FACTORY-READY");
     await manager.tick();
     expect(viewOf("env-1")).toMatchObject({ codex: "signed-in", ready: true });
+  });
+
+  it("checks again just after the usage limit resets when T3 says when", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    finishThread("t2", "FACTORY-READY");
+    t3.snoozes.t3 = new Date(clock + 10 * 60_000).toISOString();
+    finishThread("t3", "You've hit your usage limit. Try again at 12:10 PM.", "failed");
+    events.upsertItems("env-1", "t3", [
+      {
+        itemId: "limit",
+        position: 5,
+        type: "error",
+        status: "failed",
+        text: "You've hit your usage limit. Try again at 12:10 PM.",
+      },
+    ]);
+    await manager.tick();
+    expect(viewOf("env-1").codex).toBe("limited");
+    expect(viewOf("env-1").blocker).toMatch(
+      /Factory Codex reached its provider's usage limit, so its check could not run\. Hephaestus checks again at 2026-11-25 12:11 UTC\./,
+    );
+
+    const launches = t3.launches.length;
+    clock += 10 * 60_000 + 30_000;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(launches);
+    clock += 60_000;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(launches + 1);
+    expect(t3.launches.at(-1)?.providerInstanceId).toBe(FACTORY_CODEX);
   });
 
   it("still asks for a sign-in when the other provider's check hit a limit", async () => {

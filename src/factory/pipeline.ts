@@ -10,6 +10,7 @@ import type { FactoryThreads } from "../t3/threads.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX, type WorkerManager } from "../workers/manager.js";
 import { finalMessage, limitText } from "../workers/scripts.js";
 import { THREAD_RULES, branchRule } from "../config/shipped.js";
+import { utcMinute } from "../time.js";
 import {
   CHANGES_REQUESTED_DETAIL,
   MERGE_CONFLICT_DETAIL,
@@ -262,27 +263,29 @@ export class Pipeline {
    * not finished, and a card whose thread stopped on a usage limit and waits for it to reset.
    * A card with the owner is blocked on the owner, so it holds none.
    */
-  private heldCards(environmentId?: string): number {
+  private heldCards(environmentId?: string): Held {
     const ended = [...ENDED_STATUSES, ...IDLE_STATUSES];
     const kinds = FACTORY_KINDS.map(() => "?").join(", ");
     const env = environmentId === undefined ? "" : " AND c.worker_env = ?";
     const envArgs = environmentId === undefined ? [] : [environmentId];
-    return (
-      this.options.db
-        .prepare(
-          `SELECT COUNT(*) AS n FROM cards c
-           WHERE ((c.stage = 'Escalated' AND c.escalated_to = 'lead')
-             OR (c.limit_until IS NOT NULL AND c.stage IN ('Implementing', 'Reviewing', 'Reverting')))
-           ${env}
-           AND NOT EXISTS (SELECT 1 FROM factory_threads t WHERE t.card_id = CAST(c.id AS TEXT)
-             AND t.kind IN (${kinds}) AND t.status NOT IN (${ended.map(() => "?").join(", ")}))
-           AND NOT EXISTS (SELECT 1 FROM factory_launches l WHERE l.card_id = CAST(c.id AS TEXT)
-             AND l.kind IN (${kinds}) AND l.status = 'pending')`,
-        )
-        .get(...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as {
-        n: number;
-      }
-    ).n;
+    const row = this.options.db
+      .prepare(
+        `SELECT COALESCE(SUM(c.stage = 'Escalated'), 0) AS lead,
+           COALESCE(SUM(c.stage <> 'Escalated'), 0) AS limited
+         FROM cards c
+         WHERE ((c.stage = 'Escalated' AND c.escalated_to = 'lead')
+           OR (c.limit_until IS NOT NULL AND c.stage IN ('Implementing', 'Reviewing', 'Reverting')))
+         ${env}
+         AND NOT EXISTS (SELECT 1 FROM factory_threads t WHERE t.card_id = CAST(c.id AS TEXT)
+           AND t.kind IN (${kinds}) AND t.status NOT IN (${ended.map(() => "?").join(", ")}))
+         AND NOT EXISTS (SELECT 1 FROM factory_launches l WHERE l.card_id = CAST(c.id AS TEXT)
+           AND l.kind IN (${kinds}) AND l.status = 'pending')`,
+      )
+      .get(...envArgs, ...FACTORY_KINDS, ...ended, ...FACTORY_KINDS) as {
+      lead: number;
+      limited: number;
+    };
+    return { lead: row.lead, limited: row.limited, total: row.lead + row.limited };
   }
 
   /** The worker a launch went to whose reply never came, if any. */
@@ -329,14 +332,14 @@ export class Pipeline {
     if (resuming === undefined && !replaying && this.startsToday() >= limits.startsPerDay) {
       return `The limit of ${String(limits.startsPerDay)} factory thread starts per day is reached.`;
     }
-    const held = resuming === undefined ? this.heldCards() : 0;
-    if (this.runningThreads(undefined, resuming, request) + held >= limits.threads) {
+    const held = resuming === undefined ? this.heldCards() : NONE_HELD;
+    if (this.runningThreads(undefined, resuming, request) + held.total >= limits.threads) {
       return `The limit of ${String(limits.threads)} running factory threads is reached${heldNote(held)}.`;
     }
     if (environmentId !== undefined) {
-      const heldHere = resuming === undefined ? this.heldCards(environmentId) : 0;
+      const heldHere = resuming === undefined ? this.heldCards(environmentId) : NONE_HELD;
       if (
-        this.runningThreads(environmentId, resuming, request) + heldHere >=
+        this.runningThreads(environmentId, resuming, request) + heldHere.total >=
         limits.threadsPerWorker
       ) {
         return `The worker's limit of ${String(limits.threadsPerWorker)} running factory threads is reached${heldNote(heldHere)}.`;
@@ -621,7 +624,8 @@ export class Pipeline {
       .filter((worker) => worker.home !== null)
       .map((worker) => ({
         worker,
-        load: this.runningThreads(worker.environmentId) + this.heldCards(worker.environmentId),
+        load:
+          this.runningThreads(worker.environmentId) + this.heldCards(worker.environmentId).total,
       }))
       .sort((a, b) => a.load - b.load || a.worker.label.localeCompare(b.worker.label));
     const best = candidates[0]?.worker;
@@ -2038,15 +2042,26 @@ function replyLimit(text: string): string | undefined {
     : undefined;
 }
 
-/** Says how many of the slots a thread cap counts are held by cards with no thread running. */
-function heldNote(held: number): string {
-  if (held === 0) return "";
-  return `, counting ${held === 1 ? "1 task" : `${String(held)} tasks`} with the lead or waiting for a usage limit to reset`;
+/** Cards that hold a thread slot with no thread running, by why they hold it. */
+interface Held {
+  lead: number;
+  limited: number;
+  total: number;
 }
 
-/** A time as "2026-11-27 16:28 UTC". */
-function utcMinute(ms: number): string {
-  return `${new Date(ms).toISOString().slice(0, 16).replace("T", " ")} UTC`;
+const NONE_HELD: Held = { lead: 0, limited: 0, total: 0 };
+
+/** Says how many of the slots a thread cap counts are held by cards with no thread running, and why. */
+function heldNote(held: Held): string {
+  if (held.total === 0) return "";
+  const tasks = (n: number): string => (n === 1 ? "1 task" : `${String(n)} tasks`);
+  const parts = [
+    held.lead > 0 ? `${tasks(held.lead)} with the lead` : "",
+    held.limited > 0
+      ? `${held.lead > 0 ? String(held.limited) : tasks(held.limited)} waiting for a usage limit to reset`
+      : "",
+  ].filter((part) => part !== "");
+  return `, counting ${parts.join(" and ")}`;
 }
 
 /** A card whose merge is in flight: merging, validating, or reverting it. */

@@ -1,9 +1,10 @@
-"""Hephaestus model setup for the factory Hermes.
+"""Hephaestus model setup and board repair for the factory Hermes.
 
 Hephaestus installs this plugin in the factory's own Hermes home and runs
 `hermes hephaestus <action>` with HERMES_HOME set to that home. Each action
 calls the same Hermes code that Hermes's own dashboard uses, so every
-provider Hermes supports works here too.
+provider Hermes supports works here too, and a task moves the way a drag on
+the dashboard's kanban board moves it.
 
 Every action prints JSON lines on stdout. A refusal is `{"refused": ...}`, a
 refusal after some scopes were written is `{"partial": ...}`, a warning that
@@ -233,7 +234,37 @@ def _set_model(args):
     _emit({"ok": True, "provider": result.target_provider, "model": result.new_model})
 
 
-ACTIONS = {"catalog": _catalog, "add-key": _add_key, "login": _login, "set-model": _set_model}
+def _move_task(args):
+    """Moves a task out of triage, where Hermes's unblock-loop breaker parks it and
+    no CLI command but a model-driven one moves it again."""
+    from hermes_cli import kanban_db
+    from plugins.kanban.dashboard import plugin_api
+
+    conn = plugin_api._conn(board=args.board)
+    try:
+        task = kanban_db.get_task(conn, args.task)
+        if task is None:
+            raise Refused(f"Task {args.task} is not on board {args.board}.")
+        if task.status == "triage":
+            moved = plugin_api._set_status_direct(conn, args.task, args.to)
+            # Hermes refuses ready while a parent is unfinished; todo waits for the parent instead.
+            if not moved and args.to == "ready":
+                moved = plugin_api._set_status_direct(conn, args.task, "todo")
+            if not moved:
+                raise Refused(f"Hermes did not move task {args.task} to {args.to}.")
+            task = kanban_db.get_task(conn, args.task)
+        _emit({"ok": True, "status": task.status})
+    finally:
+        conn.close()
+
+
+ACTIONS = {
+    "catalog": _catalog,
+    "add-key": _add_key,
+    "login": _login,
+    "set-model": _set_model,
+    "move-task": _move_task,
+}
 
 
 def _setup(parser):
@@ -252,6 +283,12 @@ def _setup(parser):
     set_model.add_argument("--model", required=True)
     set_model.add_argument("--force", action="store_true", help="Save even when Hermes warns")
     set_model.add_argument("--profiles", default="")
+    move_task = actions.add_parser(
+        "move-task", help="Move a kanban task out of triage, as a drag on Hermes's dashboard does",
+    )
+    move_task.add_argument("--board", required=True)
+    move_task.add_argument("--to", required=True, choices=("ready", "scheduled"))
+    move_task.add_argument("task")
 
 
 def _neutral(text, args):
@@ -284,6 +321,6 @@ def _handle(args):
 
 def register(ctx):
     ctx.register_cli_command(
-        "hephaestus", "Model setup for the Hephaestus factory", _setup, _handle,
+        "hephaestus", "Model setup and board repair for the Hephaestus factory", _setup, _handle,
         description="Used by the Hephaestus dashboard; not meant to be run by hand.",
     )
