@@ -24,7 +24,8 @@ describe("defaultConfig", () => {
     expect(config.roles.planner.persona).toBe("");
     expect(config.roles.lead.persona).toBe("");
     expect(config.roles.improver.persona).toBe("");
-    expect(config.instructions.factory).toContain("hephaestus-result");
+    // The coding threads' own rules ship in the messages that start them.
+    expect(config.instructions.factory).toBe("");
     expect(config.projects).toEqual({});
   });
 
