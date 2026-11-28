@@ -12,6 +12,8 @@ Hephaestus turns your repos into a software factory. You ask for work, AI agents
 - The nightly self-improvement loop proposes improvements for you to approve.
 - A dashboard to show you what needs you, what is running, and the full history.
 
+## [Demo](/docs/images/demo.gif)
+
 ## Requirements
 
 On the host that runs Hephaestus:
