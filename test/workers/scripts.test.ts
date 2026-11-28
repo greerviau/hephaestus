@@ -280,6 +280,27 @@ describe("worker scripts", () => {
     expect(existsSync(join(home, ".hephaestus"))).toBe(false);
   });
 
+  it("deploy.sh and cleanup.sh report an unset HOME", () => {
+    for (const [script, marker] of [
+      [scriptOf(deployMessage(1, sha, remote, "p-v1")), "DEPLOY-FAILED"],
+      [scriptOf(cleanupMessage()), "CLEANUP-FAILED"],
+    ] as const) {
+      const path = join(home, "no-home.sh");
+      writeFileSync(path, script);
+      let output = "";
+      try {
+        execFileSync("bash", [path, "1", sha, remote, "p-v1"], {
+          encoding: "utf8",
+          env: { PATH: `${account}:${process.env.PATH ?? ""}` },
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        output = (error as { stdout?: string }).stdout ?? "";
+      }
+      expect(output).toMatch(new RegExp(`^${marker} HOME is unset`, "m"));
+    }
+  });
+
   it("deploy.sh reports a failed lookup of the account's home folder", () => {
     writeFileSync(join(account, "getent"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
     const output = runSplit(

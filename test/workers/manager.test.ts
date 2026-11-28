@@ -673,6 +673,56 @@ describe("WorkerManager", () => {
     expect(manager.worker("env-1")?.instances).toEqual({});
   });
 
+  it("drops a provider list answer that a later check overtook", async () => {
+    await makeReady();
+    let answer: (reports: InstanceReport[]) => void = () => undefined;
+    const probed = { asked: false };
+    probe = () => {
+      probed.asked = true;
+      probe = undefined;
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    };
+    clock += 11 * 60_000;
+    const slow = manager.tick();
+    while (!probed.asked) await new Promise((resolve) => setImmediate(resolve));
+    reports = [{ providerInstanceId: FACTORY_CLAUDE, constraints: [] }];
+    await manager.tick();
+    // A passed test turn clears the check time so the list is read again soon.
+    db.prepare("UPDATE workers SET checked_at = NULL WHERE environment_id = 'env-1'").run();
+    answer([
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints: [] },
+    ]);
+    await slow;
+
+    expect(viewOf("env-1").codex).toBe("missing");
+  });
+
+  it("does not count a signed-out instance as working when deciding to repair again", async () => {
+    await makeReady();
+    const codex = (constraints: string[]): InstanceReport[] => [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints },
+    ];
+    const broken = "Codex App Server process exited with code 1";
+    reports = codex([broken]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    await finishRepair();
+    reports = codex(["Provider is not authenticated."]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    reports = codex([broken]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    const launched = t3.launches.length;
+    await manager.tick();
+
+    expect(t3.launches).toHaveLength(launched);
+  });
+
   it("times out a task whose thread never ends", async () => {
     const task = await manager.startCodexSignIn("env-1");
     clock += 31 * 60_000;

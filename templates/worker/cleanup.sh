@@ -5,6 +5,10 @@
 set -euo pipefail
 # T3 gives its threads T3CODE_HOME, so a run under a scratch HOME would remove
 # T3's real factory instances and leave the real ~/.hephaestus behind.
+if [ -z "${HOME-}" ]; then
+  echo "CLEANUP-FAILED HOME is unset"
+  exit 1
+fi
 account_home=$(getent passwd "$(id -un)" | cut -d: -f6) || account_home=
 if [ -z "$account_home" ] || [ "${HOME%/}" != "${account_home%/}" ]; then
   echo "CLEANUP-FAILED HOME is $HOME, not this account's home folder ${account_home:-(getent found none)}"

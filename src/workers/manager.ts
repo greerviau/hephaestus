@@ -70,7 +70,7 @@ export interface InstanceCheck {
   at: string;
   /** Where the check falls in the sequence tasks use. */
   seq: number;
-  /** The seq of the latest check since the last deploy that found the instance present, enabled, and without a problem. */
+  /** The seq of the latest check since the last deploy that found the instance present, enabled, signed in, and without a problem. */
   healthySeq?: number;
 }
 
@@ -1052,6 +1052,8 @@ export class WorkerManager {
       if (
         now === undefined ||
         now.checked_at !== row.checked_at ||
+        // A passed test turn clears checked_at, but a newer check always writes new seqs here.
+        now.instance_problem !== row.instance_problem ||
         this.latestTask(row.environment_id, "deploy")?.id !== deploy?.id
       ) {
         continue;
@@ -1080,7 +1082,8 @@ export class WorkerManager {
           at: at.toISOString(),
           seq,
         };
-        const healthySeq = isBroken(check) ? previous[provider]?.healthySeq : seq;
+        const working = !isBroken(check) && check.authenticated;
+        const healthySeq = working ? seq : previous[provider]?.healthySeq;
         checks[provider] = healthySeq === undefined ? check : { ...check, healthySeq };
       }
       const problem = JSON.stringify(checks);
