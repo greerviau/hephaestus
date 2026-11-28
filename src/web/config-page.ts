@@ -34,8 +34,7 @@ const TABS: readonly (readonly [ConfigTab, string, string])[] = [
 const REPO_DIALOG = "config-repo";
 const REPO_PATH = "/config/repo";
 const REPO = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
-const REPO_HINT =
-  "As owner/name. Workers fetch config versions from it. Hephaestus creates it, private, on the first deploy.";
+const REPO_HINT = "As owner/name. Created, private, on the first deploy.";
 
 /** What every form that edits the config posts at most, besides a whole config. */
 export const MAX_FORM_BYTES = 64 * 1024;
@@ -56,7 +55,7 @@ function repoRow(factory: FactoryPages, back: string): string {
     return callout(
       "warn",
       "Name the config repo",
-      "Hephaestus pushes each deployed config version to a private GitHub repo, and workers fetch it from there. Nothing deploys until one is named. Hephaestus creates the repo, private, on the first deploy.",
+      "Workers fetch config versions from a private GitHub repo. Nothing deploys until one is named. It is created on the first deploy.",
       canChange
         ? `<form class="repo-form" method="post" action="${REPO_PATH}"><input type="hidden" name="back" value="${escapeHtml(back)}">${input("slug", "Private config repo, as owner/name", { placeholder: "owner/hephaestus-config" })}<button type="submit" class="primary">Save repo</button></form>`
         : "",
@@ -85,10 +84,7 @@ export function configTab(
   const here = TABS.find(([name]) => name === tab)?.[1] ?? "/config";
   return layout(
     "Config",
-    `${pageHead({
-      title: "Config",
-      lede: "Limits, models, instructions, and schedules. Every save is a numbered version you can revert.",
-    })}${repoRow(factory, here)}${tabs(
+    `${pageHead({ title: "Config" })}${repoRow(factory, here)}${tabs(
       TABS.map(([name, href, label]) => ({ href, label, current: name === tab })),
       "Config sections",
     )}${body}${UNCHANGED_SCRIPT_TAG}`,
@@ -189,7 +185,7 @@ export function versionSaveBar(
   fresh = true,
 ): string {
   return saveBar(
-    `<button type="submit" class="primary"${fresh ? unchangedAttributes(base, submitted) : ""}>${escapeHtml(label)}</button>${deployChoice(submitted)}<span class="hint">Creates a config version built from version ${String(base.id)}.</span>`,
+    `<button type="submit" class="primary"${fresh ? unchangedAttributes(base, submitted) : ""}>${escapeHtml(label)}</button>${deployChoice(submitted)}<span class="hint">Builds on v${String(base.id)}.</span>`,
   );
 }
 

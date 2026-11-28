@@ -115,7 +115,7 @@ export function configRoutes(factory: FactoryPages): Route[] {
         factory,
         context,
         "json",
-        `${savedNotice(context.url)}${problems("The draft was not saved", draft?.errors)}<form class="form wide" method="post" action="/config/json"><p class="muted">The whole config as JSON, for changes the other tabs do not cover. Saving creates a draft built from version ${parentId === "" ? "none" : escapeHtml(parentId)}. Nothing changes until the draft is approved and deployed.</p><input type="hidden" name="parentId" value="${escapeHtml(parentId)}">${input("message", "What changed", { value: draft?.message ?? "" })}${editor}<div><button type="submit" class="primary"${current === undefined || draft !== undefined ? "" : unchangedAttributes(current, undefined)}>Save as a draft</button></div></form>`,
+        `${savedNotice(context.url)}${problems("The draft was not saved", draft?.errors)}<form class="form wide" method="post" action="/config/json"><p class="muted">Saves a draft built on v${parentId === "" ? "none" : escapeHtml(parentId)}.</p><input type="hidden" name="parentId" value="${escapeHtml(parentId)}">${input("message", "What changed", { value: draft?.message ?? "" })}${editor}<div><button type="submit" class="primary"${current === undefined || draft !== undefined ? "" : unchangedAttributes(current, undefined)}>Save as a draft</button></div></form>`,
       ),
     );
   }

@@ -48,47 +48,47 @@ const SETTINGS: { name: SettingName; label: string; help: string }[] = [
   {
     name: "autoMerge",
     label: "Merge on its own",
-    help: "Hephaestus merges a PR itself once every other condition holds.",
+    help: "Once every other condition holds.",
   },
   {
     name: "requireReview",
     label: "Require a review from the other provider",
-    help: "An approving review of the exact head commit, from the provider that did not write it.",
+    help: "On the exact head commit.",
   },
   {
     name: "ownerApprovesEveryMerge",
     label: "You approve every merge",
-    help: "Every PR waits under Needs you before it merges.",
+    help: "",
   },
   {
     name: "escalationPaths",
     label: "Paths that need you",
-    help: "A PR that touches a matching path waits for you. One glob per line, such as .github/workflows/**.",
+    help: "One glob per line.",
   },
   {
     name: "requiredChecks",
     label: "Checks that must pass",
-    help: "Check names that must have passed on the PR's head, besides every check that ran. One per line.",
+    help: "On top of every check that ran. One name per line.",
   },
   {
     name: "allowNoChecks",
     label: "Allow merging with no checks",
-    help: "For a repo without CI. Without it, a PR with no checks waits for you.",
+    help: "Otherwise a PR with no checks waits for you.",
   },
   {
     name: "autoRevert",
     label: "Revert a merge whose checks fail",
-    help: "Hephaestus opens, reviews, and merges a revert PR, then reopens the issue.",
+    help: "Merges a revert PR and reopens the issue.",
   },
   {
     name: "maxReviewRounds",
     label: "Review rounds before the lead steps in",
-    help: "How often review findings go back to the implementer before the task escalates.",
+    help: "",
   },
   {
     name: "openIssueCap",
     label: "Factory-filed issues waiting for work",
-    help: "More issues the factory files than this wait for you to admit them.",
+    help: "Beyond this, new ones wait for you to admit them.",
   },
 ];
 
@@ -98,9 +98,8 @@ const NUMBER_SETTINGS = new Set<SettingName>(["maxReviewRounds", "openIssueCap"]
 /** What each preset does, as the form describes it. */
 const PRESET_TEXT: Record<PresetName, string> = {
   strict: "Every merge waits for you, after checks and a review.",
-  standard:
-    "Merges when checks pass and the other provider approved the head. Workflow changes wait for you.",
-  yolo: "Merges on green checks with no review. For throwaway repos.",
+  standard: "Merges on green checks and a review. Workflow changes wait for you.",
+  yolo: "Merges on green checks with no review.",
 };
 
 /** The presets in the order the form offers them, each with what it does. */
@@ -202,7 +201,7 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
         autocomplete: "off",
         autofocus: true,
         ...(repos.length === 0 ? {} : { list: "repos" }),
-        hint: "As owner/name. The gh account on this host must be able to read and merge in it.",
+        hint: "This host's gh account needs merge access.",
       })}${
         repos.length === 0
           ? ""
@@ -267,13 +266,16 @@ export function projectsRoutes(factory: FactoryPages): Route[] {
     const body = `${pageHead({
       title: repo,
       lede: `${active.ok ? `${plural(active.value.length, "active task")}<span aria-hidden="true"> &middot; </span>` : ""}${externalLink(`https://github.com/${repo}`, "Open on GitHub")}`,
-    })}${notSaved(problem?.errors ?? [])}${pending()}<form class="sec" method="post" action="/projects/save">
+    })}${notSaved(problem?.errors ?? [])}${pending()}${section({
+      title: "Merge policy",
+      body: `<form class="sec-body" method="post" action="/projects/save">
 <input type="hidden" name="mode" value="edit">
 <input type="hidden" name="parentId" value="${escapeHtml(String(parentId ?? ""))}">
 <input type="hidden" name="repo" value="${escapeHtml(repo)}">
-${policyControls(problem?.policy ?? project.policy)}${saveBar(
-      `<button type="submit" class="primary">Save policy</button>${deployChoice(problem?.deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
-    )}</form>${section({
+${policyControls(problem?.policy ?? project.policy, true)}${saveBar(
+        `<button type="submit" class="primary">Save policy</button>${deployChoice(problem?.deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
+      )}</form>`,
+    })}${section({
       title: "Skills",
       body: skillControls(
         version.value?.document,
@@ -284,7 +286,7 @@ ${policyControls(problem?.policy ?? project.policy)}${saveBar(
       ),
     })}${section({
       title: "Remove project",
-      body: `<div class="row"><div class="main"><span class="subline">The factory stops reading the repo's issues and starts no new work on it. The repo itself is not changed.</span></div><div class="aside">${dialogButton(removeId, "Remove project", { variant: "danger" })}</div></div>`,
+      body: `<div class="row"><div class="main"><span class="subline">Stops new work on the repo. The repo itself is not changed.</span></div><div class="aside">${dialogButton(removeId, "Remove project", { variant: "danger" })}</div></div>`,
     })}${removeDialog(removeId, repo, parentId, active.ok ? active.value : undefined)}`;
     const crumbs: Crumb[] = [["Projects", "/projects"], [repo]];
     sendHtml(
@@ -567,7 +569,7 @@ function plural(count: number, noun: string): string {
 }
 
 function savingHint(parentId: number | undefined): string {
-  return `Saving creates a config version built from version ${String(parentId ?? "none")}. Unticked, it stays a draft.`;
+  return `Builds on v${String(parentId ?? "none")}.`;
 }
 
 function deployChoice(deploy: boolean | undefined): string {
@@ -627,14 +629,12 @@ function skillControls(
     })
     .join("");
   const shared =
-    every.length === 0
-      ? ""
-      : ` Every factory thread loads ${escapeHtml(every.join(", "))} already.`;
-  const intro = `<p class="hint">Factory threads for ${escapeHtml(repo)} load the skills ticked here, and threads for other projects do not.${shared} A worker gives a thread the skills of the version deployed when the thread starts.</p>`;
+    every.length === 0 ? "" : ` Every thread already loads ${escapeHtml(every.join(", "))}.`;
+  const intro = `<p class="hint">Loaded only by threads for ${escapeHtml(repo)}.${shared}</p>`;
   if (names.length === 0) {
-    return `${intro}<p class="hint">No other skills yet. Add one on <a href="/config/agents">Agents</a>.</p>`;
+    return `<div class="sec-body">${intro}<p class="hint">No other skills yet. Add one on <a href="/config/agents">Agents</a>.</p></div>`;
   }
-  return `<form method="post" action="/projects/skills"><input type="hidden" name="parentId" value="${escapeHtml(String(parentId ?? ""))}"><input type="hidden" name="repo" value="${escapeHtml(repo)}">${intro}<fieldset><legend>Skills</legend>${choices}</fieldset>${saveBar(
+  return `<form class="sec-body" method="post" action="/projects/skills"><input type="hidden" name="parentId" value="${escapeHtml(String(parentId ?? ""))}"><input type="hidden" name="repo" value="${escapeHtml(repo)}">${intro}<fieldset><legend class="sr-only">Skills</legend>${choices}</fieldset>${saveBar(
     `<button type="submit" class="primary">Save skills</button>${deployChoice(deploy)}<span class="hint">${escapeHtml(savingHint(parentId))}</span>`,
   )}</form>`;
 }
@@ -666,14 +666,17 @@ function presetHint(name: SettingName): string {
     : `By preset: ${PRESET_CHOICES.map(([preset], index) => `${preset}: ${values[index] ?? ""}`).join("; ")}.`;
 }
 
-/** The preset choices, and each setting that can differ from the preset behind a fold. */
-function policyControls(policy: Policy): string {
+/**
+ * The preset choices, and each setting that can differ from the preset behind a fold.
+ * `inSection` hides the legend where a section heading already names the form.
+ */
+function policyControls(policy: Policy, inSection = false): string {
   const choices = PRESET_CHOICES.map(
     ([name, text]) =>
       `<label class="choice"><input type="radio" name="preset" value="${name}"${name === policy.preset ? " checked" : ""}><strong>${name}</strong><span class="hint">${escapeHtml(text)}</span></label>`,
   ).join("");
   const changed = Object.keys(policy.overrides).length;
-  return `<fieldset><legend>Policy preset</legend><div class="choices">${choices}</div></fieldset>${fold(
+  return `<fieldset><legend${inSection ? ' class="sr-only"' : ""}>Policy preset</legend><div class="choices">${choices}</div></fieldset>${fold(
     `Customize the preset${changed === 0 ? "" : ` (${String(changed)} changed)`}`,
     SETTINGS.map((entry) => settingRow(entry, policy)).join(""),
     changed > 0,
@@ -684,7 +687,7 @@ function settingRow(entry: (typeof SETTINGS)[number], policy: Policy): string {
   const { name } = entry;
   const override = policy.overrides[name];
   const id = `s-${name}`;
-  const hint = `${escapeHtml(entry.help)} ${escapeHtml(presetHint(name))}`;
+  const hint = `${entry.help === "" ? "" : `${escapeHtml(entry.help)} `}${escapeHtml(presetHint(name))}`;
   if (LIST_SETTINGS.has(name)) {
     const custom = Array.isArray(override);
     const shown = custom ? override.join("\n") : "";

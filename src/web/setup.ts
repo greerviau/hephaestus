@@ -39,7 +39,7 @@ function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[] | unde
     {
       title: "Name the config repo",
       done: configRepo !== undefined && configRepo !== "",
-      next: "Name a private repo for config versions. Hephaestus creates it if it does not exist.",
+      next: "A private repo for config versions. Created if missing.",
       href: "/config",
       link: "Open config",
     },
@@ -112,6 +112,6 @@ export function setupChecklist(
   return {
     done: steps.filter((step) => step.done).length,
     total: steps.length,
-    html: `<ol class="setup">${items}</ol><p class="empty">Optional: <a href="/chat">connect a chat</a> to ask for work and get alerts there.</p>`,
+    html: `<ol class="setup">${items}</ol><p class="empty">Optional: <a href="/chat">connect a chat</a>.</p>`,
   };
 }

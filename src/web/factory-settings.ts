@@ -18,26 +18,26 @@ const NUMBERS = [
     key: "tasksPerWorker",
     label: "Tasks per worker",
     full: "Tasks in progress per worker",
-    hint: "Tasks one machine works on at once, from implementing until verified, and tasks being replanned. A task waiting on you does not count.",
+    hint: "Tasks waiting on you do not count.",
   },
   {
     key: "threadsPerWorker",
     label: "Threads per worker",
     // The refusal names the limit in full, as it did before the row had a short label.
     full: "Running factory threads per worker",
-    hint: "Implement and review threads running on one machine.",
+    hint: "",
   },
   {
     key: "threads",
-    label: "Threads in all",
+    label: "Threads in total",
     full: "Running factory threads in all",
-    hint: "Across every worker.",
+    hint: "",
   },
   {
     key: "startsPerDay",
     label: "Thread starts per day",
     full: "Factory threads started per day",
-    hint: "Per UTC day, across every worker. A cap on spend.",
+    hint: "Across all workers, by UTC day.",
   },
 ] as const;
 
@@ -77,7 +77,7 @@ export function limitsAndSchedulesFields(
       "f-triage-alert",
       "triageAlertMinutes",
       "Tell me after (minutes)",
-      "Tells you about a task the lead has neither queued nor deferred after this long. 0 never tells you.",
+      "Alerts you when the lead leaves a task untriaged this long. 0 turns it off.",
       value("triageAlertMinutes", String(factory.triageAlertMinutes)),
     ),
   ].join("");
@@ -203,19 +203,19 @@ const JOBS = [
   {
     key: "claude",
     job: "Implement",
-    does: "Writes the change, runs the tests, and opens the PR.",
+    does: "",
     provider: "Factory Claude",
   },
   {
     key: "codex",
     job: "Review",
-    does: "Reads the PR, runs the tests, and approves or asks for changes.",
+    does: "",
     provider: "Factory Codex",
   },
   {
     key: "setup",
     job: "Housekeeping",
-    does: "Deploys config to workers, signs them in, and checks them.",
+    does: "Deploys config to workers and signs them in. Runs on one of your T3 provider instances.",
     provider: undefined,
   },
 ] as const;
@@ -234,7 +234,7 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
       provider === undefined
         ? `<input type="text" class="w-144" name="setup.instanceId" value="${escapeHtml(value("setup.instanceId", config.factory.setup.instanceId))}" aria-label="Housekeeping provider instance" placeholder="claudeAgent" required>`
         : `<span class="muted">${provider}</span>`;
-    return `<li class="row job"><div class="main"><span class="title">${job}</span><span class="subline">${does}</span></div><div class="aside">${where}<input type="text" name="${key}.model" value="${escapeHtml(value(`${key}.model`, choiceOf(config, key).model))}" aria-label="${job} model" required></div></li>`;
+    return `<li class="row job"><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${where}<input type="text" name="${key}.model" value="${escapeHtml(value(`${key}.model`, choiceOf(config, key).model))}" aria-label="${job} model" required></div></li>`;
   }).join("");
   const options = JOBS.map(({ key, job }) => {
     const saved = Object.entries(choiceOf(config, key).options ?? {})
@@ -243,16 +243,16 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
     return setting(
       `f-${key}-options`,
       `${job} options`,
-      "Provider options by T3 option id, one id=value per line. true and false are switches.",
+      "",
       `<textarea class="w-220" id="f-${key}-options" name="${key}.options" rows="2" placeholder="effort=high">${escapeHtml(value(`${key}.options`, saved))}</textarea>`,
     );
   }).join("");
   return section({
     title: "Coding",
     right: '<span class="muted">run on workers</span>',
-    body: `<ul class="rows">${rows}</ul><p class="hint note">The provider of Implement and Review is fixed. Housekeeping runs on one of your own T3 provider instances, such as claudeAgent.</p>${fold(
+    body: `<ul class="rows">${rows}</ul>${fold(
       "Provider options",
-      options,
+      `<p class="hint">T3 option ids, one id=value per line.</p>${options}`,
       // A refused form opens the fold, or what was typed there would be hidden.
       submitted !== undefined,
     )}`,

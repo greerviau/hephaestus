@@ -179,14 +179,13 @@ describe("Work", () => {
     expect(html).toContain('<meta http-equiv="refresh" content="10;url=/work?tab=needs">');
   });
 
-  it("says how many threads run against the limits", async () => {
+  it("says how many threads run against the limit", async () => {
     dashboard = await startDashboard();
     runningTask(dashboard.h);
 
     const { html } = await dashboard.get("/work");
 
     expect(html).toContain("1 of 4 threads running");
-    expect(html).toContain("limit 2 tasks and 2 threads per worker, 40 starts per day");
     expect(html).not.toContain("No thread starts now");
   });
 
@@ -428,7 +427,7 @@ describe("Work", () => {
 
     const { html } = await dashboard.get("/work?tab=all");
 
-    expect(html).toContain("No tasks yet. An issue gets a task when it is admitted.");
+    expect(html).toContain("No tasks yet. Request work to file the first one.");
   });
 
   it("shows the store error and no actions when the store cannot be read", async () => {
@@ -984,7 +983,7 @@ describe("Task page", () => {
     expect(html).not.toContain('aria-current="step"');
     expect(html).toContain("<strong>Complete.</strong>");
     expect(html).toContain(`Merged as <code title="${MERGE}">${MERGE.slice(0, 7)}</code>`);
-    expect(html).toContain("not sent back");
+    expect(html).not.toContain("sent back");
     expect(html).toContain(">Proof<");
     expect(html).toContain("Review by the other provider");
     expect(html).toContain("Approved");

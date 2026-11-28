@@ -99,7 +99,7 @@ function planning(factory: FactoryPages): string {
     : `<div class="aside">${planningAside({ state: model === undefined ? "absent" : "not-ready" })}</div>`;
   return section({
     title: "Planning and chat",
-    body: `<ul class="rows"><li class="row job"><div class="main"><span class="title">Plan, brief, and chat</span><span class="subline">Decides what to work on, writes each task's brief, and answers you in chat. Runs on this host.</span></div>${aside}</li></ul><p class="hint note">Saved on its own and takes effect at once. It is not part of a config version.</p>`,
+    body: `<ul class="rows"><li class="row job"><div class="main"><span class="title">Plan, brief, and chat</span><span class="subline">Runs on this host. Takes effect at once, outside config versions.</span></div>${aside}</li></ul>`,
   });
 }
 

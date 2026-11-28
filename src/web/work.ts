@@ -476,8 +476,7 @@ function elapsed(from: string, to: string): string {
 
 /** The line under the tracker: how the task ended, or that it has not started. */
 function trackNote(item: Task, step: string, events: TaskEvent[], now: number): string {
-  const sentBack =
-    item.rounds > 0 ? `after being sent back ${times(item.rounds)}` : "not sent back";
+  const sentBack = item.rounds > 0 ? `, sent back ${times(item.rounds)}` : "";
   if (item.stage === "Done") {
     const done = events.findLast((event) => event.kind === "stage:Done");
     const took =
@@ -487,7 +486,7 @@ function trackNote(item: Task, step: string, events: TaskEvent[], now: number): 
       : item.mergeSha === null
         ? "Finished"
         : `Merged as ${sha(item.mergeSha)}`;
-    return `<strong>Complete.</strong> ${merged}${done === undefined ? "" : ` ${when(done.at, now)}`}${took === "" ? "" : `, ${took} after it started`}, ${sentBack}.`;
+    return `<strong>Complete.</strong> ${merged}${done === undefined ? "" : ` ${when(done.at, now)}`}${took === "" ? "" : `, ${took} after it started`}${sentBack}.`;
   }
   if (item.stage === "Abandoned") {
     return `<strong>Stopped at ${step}.</strong>${item.mergeSha === null ? " Nothing was merged." : ""}`;
@@ -571,7 +570,7 @@ function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string
     item.policy?.requireReview === false
       ? "This project's policy merges without a review."
       : item.implementer === null
-        ? "A provider other than the implementer reviews the head commit."
+        ? ""
         : `${providerName(`hephaestus-${other(item.implementer)}`)} reviews what ${providerName(`hephaestus-${item.implementer}`)} wrote.`;
   const review = !approved.ok
     ? undefined
@@ -585,7 +584,7 @@ function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string
   const afterNote = item.foreignMerge
     ? "The PR was merged outside Hephaestus, which does not check such a merge."
     : item.mergeSha === null
-      ? "Run on the merge commit once the PR is merged."
+      ? ""
       : `On merge commit ${sha(item.mergeSha)}${names.length === 0 ? "" : `: ${escapeHtml(names.join(", "))}`}.`;
   return section({
     title: "Proof",
@@ -833,7 +832,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         value: values.title,
         maxlength: MAX_TITLE,
         autofocus: true,
-        hint: "Becomes the title of a GitHub issue.",
+        hint: "The issue title.",
         error: errors.title,
       })}${textarea("body", "Details (optional)", {
         value: values.body,
@@ -841,7 +840,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         maxlength: MAX_DETAILS,
         required: false,
         error: errors.body,
-        hint: "What done looks like, and anything the engineer should know. Past the project's cap of factory-filed issues, the request waits for you to admit it.",
+        hint: "What done looks like.",
       })}`,
       submit: "File the issue",
       back,
@@ -925,7 +924,6 @@ export function workRoutes(factory: FactoryPages): Route[] {
         rows: 4,
         maxlength: MAX_NOTE,
         autofocus: true,
-        hint: "What to change. The lead picks the task up with it.",
         error,
       }),
       submit: "Send to lead",
@@ -969,7 +967,6 @@ export function workRoutes(factory: FactoryPages): Route[] {
           rows: 3,
           maxlength: MAX_NOTE,
           required: false,
-          hint: "Why you set it aside, for when it comes back.",
           error: errors.note,
         },
       )}`,
@@ -1006,7 +1003,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         rows: 4,
         maxlength: MAX_NOTE,
         autofocus: true,
-        hint: "Work already started goes on from its branch and PR with your answer. A task with no work started is queued again as new.",
+        hint: "Started work resumes on its branch. Otherwise the task is queued again.",
         error,
       }),
       submit: "Resume task",
@@ -1150,9 +1147,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         } else if (tab === "parked") {
           body =
             parked.length === 0
-              ? empty(
-                  "No task is parked. Park a task that waits on your answer to be alerted again later.",
-                )
+              ? empty("No parked tasks.")
               : gridRows(
                   [...parked].sort((a, b) =>
                     (a.deferUntil ?? "").localeCompare(b.deferUntil ?? ""),
@@ -1186,11 +1181,6 @@ export function workRoutes(factory: FactoryPages): Route[] {
                 : `${String(running.value)} ${running.value === 1 ? "thread" : "threads"} running`,
             );
           }
-          if (limits.ok && limits.value !== undefined) {
-            capacity.push(
-              `limit ${String(limits.value.tasksPerWorker)} ${limits.value.tasksPerWorker === 1 ? "task" : "tasks"} and ${String(limits.value.threadsPerWorker)} ${limits.value.threadsPerWorker === 1 ? "thread" : "threads"} per worker, ${String(limits.value.startsPerDay)} starts per day`,
-            );
-          }
           const why =
             blocked.ok && blocked.value !== undefined
               ? callout("warn", "No thread starts now", escapeHtml(blocked.value))
@@ -1206,7 +1196,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
                   lines,
                   now(),
                   all.length === 0
-                    ? "No tasks yet. An issue gets a task when it is admitted. Request work to file the first one."
+                    ? "No tasks yet. Request work to file the first one."
                     : "No task is in progress.",
                 )
           }`;
@@ -1216,7 +1206,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             lines,
             now(),
             all.length === 0
-              ? "No tasks yet. An issue gets a task when it is admitted. Request work to file the first one."
+              ? "No tasks yet. Request work to file the first one."
               : "No task has finished yet.",
           );
         }
@@ -1710,7 +1700,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             })}${section({
               title: "Transcript",
               count: items.value.length,
-              right: `<span class="muted">Started ${when(record.createdAt, now())}, as Hephaestus recorded it</span>`,
+              right: `<span class="muted">Started ${when(record.createdAt, now())}</span>`,
               body: transcript,
             })}`,
             {

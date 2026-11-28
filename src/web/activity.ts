@@ -151,14 +151,14 @@ export function activityRoutes(factory: FactoryPages): Route[] {
                 )
                 .join(
                   "\n",
-                )}</ul><p class="empty muted">${String(shown.length)} shown, newest first. The page lists at most ${String(LIMIT)}.</p>`;
+                )}</ul><p class="empty muted">${String(shown.length)} shown, up to ${String(LIMIT)}.</p>`;
 
         sendHtml(
           response,
           200,
           layout(
             "Activity",
-            `${pageHead({ title: "Activity", lede: "What the factory did and what it told you, newest first." })}${notice(url)}${failed ? STORE_ERROR : ""}<div class="bar"><div class="grp">${kinds}</div>${roles}</div>${list}`,
+            `${pageHead({ title: "Activity" })}${notice(url)}${failed ? STORE_ERROR : ""}<div class="bar"><div class="grp">${kinds}</div>${roles}</div>${list}`,
             { section: "/activity", shell, refreshSeconds: 10 },
           ),
         );

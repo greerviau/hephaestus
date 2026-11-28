@@ -468,7 +468,7 @@ export function rowList(rows: readonly Row[]): string {
           : row.href === undefined || whole
             ? `<span class="title">${escapeHtml(row.title)}</span>`
             : `<a class="title" href="${escapeHtml(row.href)}">${escapeHtml(row.title)}</a>`;
-      const inner = `${row.kind === undefined ? "" : `<span class="kind">${escapeHtml(row.kind)}</span>`}<div class="main">${title}${row.sub === undefined ? "" : `<span class="subline">${row.sub}</span>`}</div>${row.aside === undefined ? "" : `<div class="aside">${row.aside}</div>`}`;
+      const inner = `${row.kind === undefined ? "" : `<span class="kind">${escapeHtml(row.kind)}</span>`}<div class="main">${title}${row.sub === undefined || row.sub === "" ? "" : `<span class="subline">${row.sub}</span>`}</div>${row.aside === undefined ? "" : `<div class="aside">${row.aside}</div>`}`;
       const classes = `row${row.kind === undefined ? "" : " kinded"}`;
       return whole
         ? `<li><a class="${classes}" href="${escapeHtml(row.href ?? "")}">${inner}</a></li>`
@@ -784,9 +784,10 @@ export function checkbox(
 /**
  * A settings row: the label and hint at the left, the control at the right.
  * `label` is escaped; `hint` and `control` must already be safe, and `control` carries `id`.
+ * An empty hint is left out.
  */
 export function setting(id: string, label: string, hint: string, control: string): string {
-  return `<div class="setting"><div><label for="${escapeHtml(id)}">${escapeHtml(label)}</label><span class="hint">${hint}</span></div>${control}</div>`;
+  return `<div class="setting"><div><label for="${escapeHtml(id)}">${escapeHtml(label)}</label>${hint === "" ? "" : `<span class="hint">${hint}</span>`}</div>${control}</div>`;
 }
 
 /** The row at the foot of a form that holds its submit button and what saving does. */

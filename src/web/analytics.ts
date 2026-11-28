@@ -157,7 +157,7 @@ export function analyticsRoutes(factory: FactoryPages): Route[] {
             sums.prs + sums.merges + sums.reverts + sums.escalations + sums.abandoned === 0 &&
             cycleHours.count === 0;
           body = nothing
-            ? empty("Nothing to chart yet. Charts fill in as tasks open PRs, merge, and finish.")
+            ? empty("Nothing to chart yet.")
             : `${totals(data.value)}${charts(data.value)}${CHART_TIP_SCRIPT_TAG}`;
         }
         sendHtml(

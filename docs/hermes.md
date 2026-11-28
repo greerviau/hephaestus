@@ -36,7 +36,7 @@ Each platform has these channel settings, on its connect form and, once it is co
 
 Discord has three:
 
-- Channels the bot reads: one choice. Either "Only the channels I list", with up to 50 channel IDs separated by commas, or "Every channel it can see". The list hides while every channel is chosen, and is not used then. An empty list means the bot reads no channel, only your direct messages. Either way the bot answers only when you mention it.
+- Channels the bot reads: one choice. Either "Only the channels I list", with up to 50 channel IDs separated by commas, or "Every channel it is in". The list hides while every channel is chosen, and is not used then. An empty list means the bot reads no channel, only your direct messages. Either way the bot answers only when you mention it.
 - Status channel: required. Where the factory's own notices go, such as scheduled job results, gateway restarts, and the test message. The bot reads it only when it is listed.
 - Alerts channel: where alerts go (see below). Empty uses the status channel.
 

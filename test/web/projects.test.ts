@@ -234,7 +234,7 @@ describe("Projects", () => {
     expect(page).toContain("Write a schema migration.");
     expect(page).toContain(">Save skills</button>");
     // A skill every thread loads already is shown as such, not offered again.
-    expect(page).toContain("Every factory thread loads triage already.");
+    expect(page).toContain("Every thread already loads triage.");
     expect(page).not.toContain('value="triage"');
 
     const post = (fields: [string, string][]): Promise<Response> =>
