@@ -467,6 +467,38 @@ describe("Home", () => {
     expect(unknown).not.toContain("usage limit reached");
   });
 
+  it("counts a worker as signed in when the one provider both coding jobs use is", async () => {
+    const claudeOnly: WorkerView = { ...readyWorker(), codex: "signed-out" };
+    dashboard = await startDashboard({ workers: [{ ...claudeOnly, ready: false }] });
+    // Under the default config Review runs on Codex, so the step still waits for it.
+    let html = (await dashboard.get("/")).html;
+    expect(html).not.toContain('<li class="done"><div><strong>Sign the worker in</strong>');
+
+    const document = sampleConfig();
+    document.factory.models.codex = { model: "claude-haiku-5-5", provider: "claude" };
+    const only = dashboard.store.createVersion({ document, author: "t", message: "", parentId: 1 });
+    dashboard.store.approve(only.id);
+    dashboard.store.markDeployed(only.id);
+    html = (await dashboard.get("/")).html;
+    expect(html).toContain('<li class="done"><div><strong>Sign the worker in</strong>');
+    expect(html).not.toContain("Factory Codex");
+    await dashboard.close();
+
+    // Before any worker signs in, the step names only the instance the jobs use.
+    dashboard = await startDashboard({ workers: [{ ...signInWorker(), blocker: undefined }] });
+    const fresh = dashboard.store.createVersion({
+      document,
+      author: "t",
+      message: "",
+      parentId: 1,
+    });
+    dashboard.store.approve(fresh.id);
+    dashboard.store.markDeployed(fresh.id);
+    html = (await dashboard.get("/")).html;
+    expect(html).toContain("Sign in Factory Claude.");
+    expect(html).not.toContain("Sign in Factory Claude and Factory Codex.");
+  });
+
   it("dismisses a notification", async () => {
     dashboard = await startDashboard();
     dashboard.h.tasks.notify("Something happened");

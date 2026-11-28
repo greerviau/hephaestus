@@ -524,10 +524,6 @@ function attempts(item: Task, events: TaskEvent[], now: number): string {
   });
 }
 
-function other(provider: "claude" | "codex"): "claude" | "codex" {
-  return provider === "claude" ? "codex" : "claude";
-}
-
 function checkName(id: string): string {
   return id.replace(/^(?:check|status):/, "");
 }
@@ -556,19 +552,27 @@ function checksAfterMerge(item: Task, events: TaskEvent[]): string {
 }
 
 /**
- * What Hephaestus holds as proof for the head commit: whether the other
- * provider approved it, and how the merge commit's checks ended. It stores no
+ * What Hephaestus holds as proof for the head commit: whether the review
+ * approved it, and which factory instance reviewed it, and how the merge commit's checks ended. It stores no
  * result for single checks, so the page shows none. `evidence` is the row
  * that lists the screenshots and links on the PR, or empty.
  */
-function proof(item: Task, approved: Read<boolean>, events: TaskEvent[], evidence: string): string {
+function proof(
+  item: Task,
+  approved: Read<boolean>,
+  events: TaskEvent[],
+  threads: StoredThread[],
+  evidence: string,
+): string {
   if (item.prNumber === null || item.headSha === null) return "";
+  // The latest review thread names the instance that reviewed, which may be the author's own.
+  const reviewer = threads.findLast((thread) => thread.kind === "review")?.providerInstanceId;
   const reviewNote =
     item.policy?.requireReview === false
       ? "This project's policy merges without a review."
-      : item.implementer === null
+      : item.implementer === null || reviewer === undefined
         ? ""
-        : `${providerName(`hephaestus-${other(item.implementer)}`)} reviews what ${providerName(`hephaestus-${item.implementer}`)} wrote.`;
+        : `${providerName(reviewer)} reviews what ${providerName(`hephaestus-${item.implementer}`)} wrote.`;
   const review = !approved.ok
     ? undefined
     : approved.value
@@ -587,7 +591,7 @@ function proof(item: Task, approved: Read<boolean>, events: TaskEvent[], evidenc
     title: "Proof",
     right: `<span class="muted">for head ${sha(item.headSha)}</span>`,
     body: rowList([
-      { title: "Review by the other provider", sub: escapeHtml(reviewNote), aside: review },
+      { title: "Review", sub: escapeHtml(reviewNote), aside: review },
       { title: "Checks after the merge", sub: afterNote, aside: after },
     ]).replace(/<\/ul>$/, `${evidence}</ul>`),
   });
@@ -1604,7 +1608,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
               title: "Threads",
               count: threads.ok ? threads.value.length : undefined,
               body: threadRows,
-            })}</div>${proof(item, approved, events.ok ? events.value : [], evidenceRow(factory, item))}${events.ok ? attempts(item, events.value, now()) : ""}${section(
+            })}</div>${proof(item, approved, events.ok ? events.value : [], threads.ok ? threads.value : [], evidenceRow(factory, item))}${events.ok ? attempts(item, events.value, now()) : ""}${section(
               {
                 title: "History",
                 body: !events.ok

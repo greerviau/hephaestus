@@ -5,7 +5,7 @@ export type PresetName = (typeof PRESET_NAMES)[number];
 export interface PolicySettings {
   /** Hephaestus merges a PR itself once the gates pass. */
   autoMerge: boolean;
-  /** An approving review from a different provider on the head commit is required. */
+  /** An approving review by the Review job on the head commit is required. */
   requireReview: boolean;
   /** Every merge waits for the owner. */
   ownerApprovesEveryMerge: boolean;

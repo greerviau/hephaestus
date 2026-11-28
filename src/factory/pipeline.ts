@@ -1,6 +1,7 @@
 import type { Database } from "better-sqlite3";
 import { projectFor, type FactoryConfig } from "../config/document.js";
-import { launchModel } from "../config/effort.js";
+import { launchModel, providerOfInstance } from "../config/effort.js";
+import { jobProvider, modelFor, type FactoryJob } from "../config/jobs.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
@@ -217,15 +218,11 @@ export function checksPassedAtGate(why: string | null): boolean {
 
 const INSTANCE: Record<Provider, string> = { claude: FACTORY_CLAUDE, codex: FACTORY_CODEX };
 
-function other(provider: Provider): Provider {
-  return provider === "claude" ? "codex" : "claude";
-}
-
 type Worker = { environmentId: string; home: string };
 
 /**
- * Takes each admitted task through implementation, review on the other
- * provider, the merge gate, and validation on the default branch, reverting
+ * Takes each admitted task through implementation, review on the provider
+ * the Review job uses, the merge gate, and validation on the default branch, reverting
  * a merge whose checks fail. Every thread start and resume checks the pause
  * switch, the worker, and the thread caps just before it is sent, and a task
  * that cannot start says why. Work on one task runs one step at a time, and
@@ -1293,10 +1290,32 @@ export class Pipeline {
     return projectFor(this.options.config()?.document.projects, repo) !== undefined;
   }
 
-  private modelOptions(provider: Provider): Pick<LaunchOptions, "model" | "options"> {
-    const model = this.options.config()?.document.factory.models[provider];
-    if (model === undefined) throw new Error("No config version is deployed.");
-    return launchModel(model, provider);
+  private modelOptions(
+    job: FactoryJob,
+    provider: Provider,
+  ): Pick<LaunchOptions, "model" | "options"> {
+    const factory = this.options.config()?.document.factory;
+    if (factory === undefined) throw new Error("No config version is deployed.");
+    return launchModel(modelFor(factory, job, provider), provider);
+  }
+
+  /** The provider a new thread of `job` starts on, as the deployed config sets it. */
+  private jobProvider(job: FactoryJob): Provider {
+    const factory = this.options.config()?.document.factory;
+    if (factory === undefined) throw new Error("No config version is deployed.");
+    return jobProvider(factory, job);
+  }
+
+  /**
+   * The provider that ran a task's review thread, read from the thread's instance, since the
+   * config may have moved the Review job to another provider since the thread started.
+   */
+  private reviewerOf(task: Task, threadId: string): Provider {
+    const thread =
+      task.workerEnv === null ? undefined : this.options.events.thread(task.workerEnv, threadId);
+    const ran = thread === undefined ? undefined : providerOfInstance(thread.providerInstanceId);
+    const factory = this.options.config()?.document.factory;
+    return ran ?? (factory === undefined ? "codex" : jobProvider(factory, "review"));
   }
 
   /**
@@ -1305,7 +1324,8 @@ export class Pipeline {
    * meanwhile stops the launch, so that task starts first.
    */
   private async launchImplement(task: Task, ahead?: ReadonlySet<number>): Promise<void> {
-    const implementer: Provider = task.implementer ?? "claude";
+    // A task keeps the provider it was first implemented on; a new one takes the configured one.
+    const implementer: Provider = task.implementer ?? this.jobProvider("implement");
     // A launch replayed after a lost reply keeps the branch it was first given; a revert retry
     // starts with no branch and gets a new name.
     const branch =
@@ -1341,7 +1361,7 @@ export class Pipeline {
             projectId,
             title: `Task ${String(task.id)}: ${task.title}`.slice(0, 120),
             providerInstanceId: INSTANCE[implementer],
-            ...this.modelOptions(implementer),
+            ...this.modelOptions("implement", implementer),
             runtimeMode: "full-access",
             workspace: { type: "worktree", baseRef: `origin/${base}`, branch },
             message: implementMessage(
@@ -1753,7 +1773,7 @@ export class Pipeline {
     if (prNumber === null || task.headSha === null) {
       return this.escalate(task, "lead", "the task is in review without a PR");
     }
-    const reviewer = other(task.implementer ?? "claude");
+    const reviewer = this.jobProvider("review");
     const attempt = this.tasks
       .events(task.id)
       .filter((event) => event.kind === "thread:review").length;
@@ -1775,7 +1795,7 @@ export class Pipeline {
             projectId: task.projectId ?? "",
             title: `Review task ${String(task.id)}: ${task.title}`.slice(0, 120),
             providerInstanceId: INSTANCE[reviewer],
-            ...this.modelOptions(reviewer),
+            ...this.modelOptions("review", reviewer),
             runtimeMode: "full-access",
             workspace: {
               type: "worktree",
@@ -1803,7 +1823,7 @@ export class Pipeline {
     if (result.status === "waiting") {
       return this.escalate(task, "lead", "the review thread asked a question", done);
     }
-    const reviewer = other(task.implementer ?? "claude");
+    const reviewer = this.reviewerOf(task, thread);
     if (result.status !== "completed") {
       if (await this.waitOnLimit(task, thread, reviewer, result, done)) return;
       return this.escalate(task, "lead", `the review thread ended ${result.status}`, done);
@@ -1817,7 +1837,7 @@ export class Pipeline {
     this.tasks.recordReview({
       taskId: task.id,
       headSha: review.headSha,
-      reviewer: other(author),
+      reviewer,
       author,
       verdict: review.verdict,
       threadId: thread,
@@ -2124,7 +2144,7 @@ export class Pipeline {
 
   /**
    * Merges the revert PR under the same conditions as any factory PR: its
-   * checks pass, the other provider approved its head when the policy needs a
+   * checks pass, the Review job approved its head when the policy needs a
    * review, and the owner approved it when it touches an escalation path.
    * Then the task and the issue reopen.
    */
@@ -2213,7 +2233,7 @@ export class Pipeline {
       }
       const done = this.handled(task, task.reviewThread, result.itemId);
       const review = result.status === "completed" ? parseReviewResult(result.text) : undefined;
-      const reviewer = other(task.implementer ?? "claude");
+      const reviewer = this.reviewerOf(task, task.reviewThread);
       if (
         review === undefined &&
         (await this.waitOnLimit(task, task.reviewThread, reviewer, result, done))
@@ -2231,7 +2251,7 @@ export class Pipeline {
       this.tasks.recordReview({
         taskId: task.id,
         headSha: review.headSha,
-        reviewer: other(task.implementer ?? "claude"),
+        reviewer,
         author: task.implementer ?? "claude",
         verdict: "approve",
         threadId: task.reviewThread,
@@ -2711,7 +2731,13 @@ export class Pipeline {
     const updated = this.tasks.transition(task.id, "Implementing", "work started", {
       workerEnv: thread.environmentId,
       projectId: projectId ?? null,
-      implementer: task.implementer ?? "claude",
+      implementer:
+        task.implementer ??
+        providerOfInstance(
+          this.options.events.thread(thread.environmentId, thread.threadId)?.providerInstanceId ??
+            "",
+        ) ??
+        this.jobProvider("implement"),
       implementThread: thread.threadId,
       waiting: null,
       queueOrder: null,

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../../src/config/document.js";
 import { EFFORT, MODELS, MODEL_EFFORT } from "../../src/config/effort.js";
+import { jobChoice, jobProvider, providersInUse } from "../../src/config/jobs.js";
+import type { WorkerView } from "../../src/workers/manager.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { startDashboard, type Dashboard, type DashboardOptions } from "./dashboard.js";
 
@@ -822,10 +824,10 @@ describe("Models tab providers", () => {
     expect(selected(html, "Implement provider")).toBe("claude");
     expect(selected(html, "Review provider")).toBe("codex");
     expect(selected(html, "Housekeeping provider")).toBe("claude");
-    // The factory instances are installed as one provider each, so the other cannot be chosen.
-    expect(optionValues(html, "Implement provider")).toEqual(["claude"]);
-    expect(optionValues(html, "Review provider")).toEqual(["codex"]);
-    expect(optionValues(html, "Housekeeping provider")).toEqual(["claude", "codex"]);
+    // No row's choice limits another's: every row can pick either provider.
+    for (const job of ["Implement", "Review", "Housekeeping"]) {
+      expect(optionValues(html, `${job} provider`)).toEqual(["claude", "codex"]);
+    }
     expect(html).toContain('<script src="/assets/provider-choice.js" defer></script>');
   });
 
@@ -1002,20 +1004,164 @@ describe("Models tab providers", () => {
   });
 
   it.each([
-    ["claude", "Implement", "codex", "Factory Claude runs Claude only"],
-    ["codex", "Review", "claude", "Factory Codex runs Codex only"],
-  ])("refuses switching the %s row to another provider", async (key, job, other, reason) => {
+    ["Claude", "claude", "claude-opus-5-5", "max"],
+    ["Codex", "codex", "gpt-6.1-sol", "ultra"],
+  ])(
+    "saves Implement and Review both on %s, and shows it back",
+    async (_name, provider, model, effort) => {
+      await start();
+
+      const response = await dashboard.post("/config/models", {
+        ...MODEL_FIELDS,
+        "claude.provider": provider,
+        "claude.model": model,
+        "claude.effort": effort,
+        "codex.provider": provider,
+        "codex.model": model,
+        "codex.effort": effort,
+      });
+
+      expect(response.status).toBe(303);
+      const saved = dashboard.store.list()[0]?.document;
+      if (saved === undefined) throw new Error("no saved version");
+      expect(jobProvider(saved.factory, "implement")).toBe(provider);
+      expect(jobProvider(saved.factory, "review")).toBe(provider);
+      expect(jobChoice(saved.factory, "implement")).toEqual({ model, effort });
+      expect(jobChoice(saved.factory, "review")).toEqual({ model, effort });
+      deployVersion(saved);
+      const { html } = await dashboard.get("/config/models");
+      for (const job of ["Implement", "Review"]) {
+        expect(selected(html, `${job} provider`)).toBe(provider);
+        expect(selected(html, `${job} model`)).toBe(model);
+        expect(selected(html, `${job} effort`)).toBe(effort);
+        expect(optionValues(html, `${job} provider`)).toEqual(["claude", "codex"]);
+      }
+    },
+  );
+
+  it("switches either row's provider in any order and back, keeping the saved format", async () => {
+    await start({}, true);
+    const save = async (fields: Record<string, string>): Promise<FactoryConfig> => {
+      const { html } = await dashboard.get("/config/models");
+      const response = await dashboard.post("/config/models", { ...renderedForm(html), ...fields });
+      expect(response.status).toBe(303);
+      const latest = dashboard.store.list()[0];
+      if (latest === undefined) throw new Error("no saved version");
+      dashboard.store.approve(latest.id);
+      dashboard.store.markDeployed(latest.id);
+      return latest.document;
+    };
+    const providers = (config: FactoryConfig): string[] => [
+      jobProvider(config.factory, "implement"),
+      jobProvider(config.factory, "review"),
+    ];
+
+    // Review first moves onto Implement's provider, then Implement moves onto Codex: swapped.
+    let config = await save({ "codex.provider": "claude", "codex.model": "claude-opus-5-5" });
+    expect(providers(config)).toEqual(["claude", "claude"]);
+    config = await save({ "claude.provider": "codex", "claude.model": "gpt-6.2-astra" });
+    expect(providers(config)).toEqual(["codex", "claude"]);
+    // Then the other way round, back to where it started.
+    config = await save({ "claude.provider": "claude", "claude.model": "claude-sonnet-5-5" });
+    expect(providers(config)).toEqual(["claude", "claude"]);
+    config = await save({ "codex.provider": "codex", "codex.model": "gpt-6.2-sol" });
+    expect(providers(config)).toEqual(["claude", "codex"]);
+    // A two-provider setup saves as it always did, with no provider written.
+    expect(config.factory.models.claude).not.toHaveProperty("provider");
+    expect(config.factory.models.codex).not.toHaveProperty("provider");
+    expect(config.factory.models.claude.model).toBe("claude-sonnet-5-5");
+    expect(config.factory.models.codex.model).toBe("gpt-6.2-sol");
+  });
+
+  it("refuses a model of another provider than the one a row chose", async () => {
     await start();
 
     const bad = await dashboard.post("/config/models", {
       ...MODEL_FIELDS,
-      [`${key}.provider`]: other,
+      "codex.provider": "claude",
     });
     const html = await bad.text();
 
     expect(bad.status).toBe(400);
-    expect(html).toContain(`${job} provider: ${reason}.`);
+    expect(html).toContain("Review model: gpt-6.2-sol is a Codex model, not a Claude one.");
     expect(dashboard.store.list()).toHaveLength(1);
+  });
+
+  it("shows a provider no worker has signed in as unavailable in every row, and saves the other everywhere", async () => {
+    const worker: WorkerView = {
+      environmentId: "w1",
+      label: "worker one",
+      enabled: true,
+      home: "/home/w",
+      deployedVersion: 1,
+      deployedSha: "abc",
+      instances: {},
+      tasks: {},
+      claude: "signed-in",
+      codex: "signed-out",
+      ready: true,
+      blocker: undefined,
+      ownerStep: false,
+    };
+    await start({ workers: [worker] });
+
+    let { html } = await dashboard.get("/config/models");
+    expect(html).toContain("Codex is not signed in on any worker, so it is unavailable.");
+    // Review still runs on Codex, so its row shows that choice; it cannot newly pick Codex anywhere else.
+    expect(selectOf(html, "Review provider")).toContain(
+      '<option value="codex" selected>Codex</option>',
+    );
+    for (const job of ["Implement", "Housekeeping"]) {
+      expect(optionValues(html, `${job} provider`)).toEqual(["claude"]);
+      expect(selectOf(html, `${job} provider`)).toContain(
+        '<option value="codex" disabled>Codex</option>',
+      );
+    }
+
+    const response = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      "claude.provider": "claude",
+      "codex.provider": "claude",
+      "codex.model": "claude-haiku-5-5",
+      "setup.provider": "claude",
+    });
+    expect(response.status).toBe(303);
+    const saved = dashboard.store.list()[0]?.document;
+    if (saved === undefined) throw new Error("no saved version");
+    expect(providersInUse(saved.factory)).toEqual(["claude"]);
+    deployVersion(saved);
+    html = (await dashboard.get("/config/models")).html;
+    for (const job of ["Implement", "Review", "Housekeeping"]) {
+      expect(selected(html, `${job} provider`)).toBe("claude");
+      expect(optionValues(html, `${job} provider`)).toEqual(["claude"]);
+    }
+  });
+
+  it("keeps every provider open until a worker has signed one in", async () => {
+    const worker = {
+      environmentId: "w1",
+      label: "worker one",
+      enabled: true,
+      home: "/home/w",
+      deployedVersion: null,
+      deployedSha: null,
+      instances: {},
+      tasks: {},
+      claude: "unknown",
+      codex: "unknown",
+      ready: false,
+      blocker: "Sign in Factory Claude.",
+      ownerStep: true,
+    } satisfies WorkerView;
+    await start({ workers: [worker] });
+
+    const { html } = await dashboard.get("/config/models");
+
+    expect(html).not.toContain("is unavailable");
+    expect(html).not.toMatch(/<option value="(claude|codex)" disabled>/);
+    for (const job of ["Implement", "Review", "Housekeeping"]) {
+      expect(optionValues(html, `${job} provider`)).toEqual(["claude", "codex"]);
+    }
   });
 });
 

@@ -23,6 +23,8 @@ import {
   section,
   setting,
 } from "./html.js";
+import { jobChoice, jobProvider, type FactoryJob } from "../config/jobs.js";
+import type { InstanceState, WorkerView } from "../workers/manager.js";
 
 /** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
 type Value = (name: string, saved: string) => string;
@@ -217,26 +219,31 @@ function applyJob(role: string, job: CronJob, form: URLSearchParams, errors: str
 }
 
 /**
- * The coding jobs, each a model setting that exists today. Implement and Review run on the
- * factory instances, which deploy installs as one provider each, so their provider is fixed.
- * Housekeeping runs on one of the owner's instances, whose provider its id names, and the
- * save picks that instance from the provider chosen, so every row shows the same controls.
+ * The coding jobs, each a model setting that exists today. Implement and Review each run on the
+ * factory instance of the provider chosen for them, and both may choose the same one. Their form
+ * keys are the config slots that hold their choices. Housekeeping runs on one of the owner's
+ * instances, whose provider its id names, and the save picks that instance from the provider
+ * chosen, so every row shows the same controls.
  */
 const JOBS = [
-  { key: "claude", job: "Implement", does: "", instance: "Factory Claude" },
-  { key: "codex", job: "Review", does: "", instance: "Factory Codex" },
+  { key: "claude", job: "Implement", does: "" },
+  { key: "codex", job: "Review", does: "" },
   {
     key: "setup",
     job: "Housekeeping",
     does: "Deploys config to workers and signs them in. Runs on one of your T3 provider instances.",
-    instance: undefined,
   },
 ] as const;
 
 type JobKey = (typeof JOBS)[number]["key"];
 
 function choiceOf(config: FactoryConfig, key: JobKey): ModelChoice {
-  return key === "setup" ? config.factory.setup : config.factory.models[key];
+  return key === "setup" ? config.factory.setup : jobChoice(config.factory, slotJob(key));
+}
+
+/** The coding job whose choice a factory slot holds. */
+function slotJob(key: "claude" | "codex"): FactoryJob {
+  return key === "claude" ? "implement" : "review";
 }
 
 /** A provider named in a form, or undefined for any other text. */
@@ -279,17 +286,23 @@ function providerOptions(
 }
 
 /**
- * A job's provider selector. A factory job offers only its instance's provider; the other
- * stays listed, so every row lists the same providers. A housekeeping instance of a provider
- * the factory does not know shows as Other.
+ * A job's provider selector, listing every provider in every row. A provider no worker has
+ * signed in is disabled, unless the row already uses it, so the saved choice still shows and
+ * saves back; a note above the rows says why. Its label stays as is, so the selector keeps the
+ * width it has in every other state. Another row's choice never limits this one. A
+ * housekeeping instance of a provider the factory does not know shows as Other.
  */
-function providerSelect(key: JobKey, job: string, provider: EffortProvider | undefined): string {
-  const fixed = key === "setup" ? undefined : key;
+function providerSelect(
+  key: JobKey,
+  job: string,
+  provider: EffortProvider | undefined,
+  unavailable: readonly EffortProvider[],
+): string {
   const other = provider === undefined ? '<option value="" selected>Other</option>' : "";
-  const options = PROVIDERS.map(
-    (each) =>
-      `<option value="${each}"${fixed !== undefined && fixed !== each ? " disabled" : ""}${each === provider ? " selected" : ""}>${PROVIDER_LABELS[each]}</option>`,
-  ).join("");
+  const options = PROVIDERS.map((each) => {
+    const off = unavailable.includes(each);
+    return `<option value="${each}"${off && each !== provider ? " disabled" : ""}${each === provider ? " selected" : ""}>${PROVIDER_LABELS[each]}</option>`;
+  }).join("");
   return `<select name="${key}.provider" aria-label="${job} provider" data-provider>${other}${options}</select>`;
 }
 
@@ -335,8 +348,30 @@ function modelChoice(
   );
 }
 
-/** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */
-export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchParams): string {
+/**
+ * The providers no enabled worker has signed in, while another provider is. Before any worker
+ * has signed in a provider nothing is known, so none is unavailable. A provider whose check is
+ * running or hit a usage limit counts as signed in, since its sign-in may well be fine.
+ */
+export function unavailableProviders(
+  workers: readonly (Pick<WorkerView, "enabled"> & Record<EffortProvider, InstanceState>)[],
+): EffortProvider[] {
+  const enabled = workers.filter((worker) => worker.enabled);
+  const available = PROVIDERS.filter((provider) =>
+    enabled.some((worker) => ["signed-in", "limited", "checking"].includes(worker[provider])),
+  );
+  return available.length === 0 ? [] : PROVIDERS.filter((each) => !available.includes(each));
+}
+
+/**
+ * The Models tab's Coding section: a row per job, and each job's provider options in a fold.
+ * `unavailable` lists the providers no worker can run, from `unavailableProviders`.
+ */
+export function codingModelsFields(
+  config: FactoryConfig,
+  submitted?: URLSearchParams,
+  unavailable: readonly EffortProvider[] = [],
+): string {
   const value = valueFrom(submitted);
   const rows = JOBS.map(({ key, job, does }) => {
     // A refused form shows the provider it chose, with that provider's choices.
@@ -345,7 +380,10 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
         ? submitted?.has("setup.provider") === true
           ? asProvider(submitted.get("setup.provider") ?? "")
           : providerOfInstance(value("setup.instanceId", config.factory.setup.instanceId))
-        : key;
+        : submitted?.has(`${key}.provider`) === true
+          ? (asProvider(submitted.get(`${key}.provider`) ?? "") ??
+            jobProvider(config.factory, slotJob(key)))
+          : jobProvider(config.factory, slotJob(key));
     const modelName = value(`${key}.model`, choiceOf(config, key).model);
     const model = modelChoice(key, job, provider, modelName);
     const effort = effortSelect(
@@ -355,7 +393,7 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
       modelName,
       value(`${key}.effort`, choiceOf(config, key).effort ?? ""),
     );
-    return `<li class="row job" data-provider-row><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${providerSelect(key, job, provider)}${model}${effort}</div></li>`;
+    return `<li class="row job" data-provider-row><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${providerSelect(key, job, provider, unavailable)}${model}${effort}</div></li>`;
   }).join("");
   const options = JOBS.map(({ key, job }) => {
     const saved = Object.entries(choiceOf(config, key).options ?? {})
@@ -371,7 +409,11 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
   return section({
     title: "Coding",
     right: '<span class="muted">run on workers</span>',
-    body: `<ul class="rows">${rows}</ul>${fold(
+    body: `${
+      unavailable.length === 0
+        ? ""
+        : `<p class="note">${unavailable.map((each) => PROVIDER_LABELS[each]).join(" and ")} is not signed in on any worker, so it is unavailable. Sign it in on <a href="/workers">Workers</a> to choose it.</p>`
+    }<ul class="rows">${rows}</ul>${fold(
       "Provider options",
       `<p class="hint">T3 option ids, one id=value per line.</p>${options}`,
       // A refused form opens the fold, or what was typed there would be hidden.
@@ -387,17 +429,26 @@ export function applyCodingModels(
 ): { config: FactoryConfig; errors: string[] } {
   const next = structuredClone(config);
   const errors: string[] = [];
-  for (const { key, job, instance } of JOBS) {
+  for (const { key, job } of JOBS) {
     const saved = choiceOf(next, key);
     const posted = form.get(`${key}.provider`);
     if (key !== "setup") {
-      // Deploy installs each factory instance as one provider, so another cannot run there.
-      if (posted !== null && posted !== key) {
-        errors.push(`${job} provider: ${instance} runs ${PROVIDER_LABELS[key]} only.`);
+      const savedProvider = jobProvider(next.factory, slotJob(key));
+      // A form without the provider selector, such as one posted by a script, keeps the provider.
+      const chosen = posted === null ? savedProvider : asProvider(posted);
+      if (chosen === undefined) {
+        errors.push(
+          `${job} provider: choose ${PROVIDERS.map((each) => PROVIDER_LABELS[each]).join(" or ")}.`,
+        );
+        continue;
       }
-      const choice = model(form, key, job, errors, saved, key);
-      modelProblem(job, key, choice, saved, false, errors);
-      next.factory.models[key] = choice;
+      const savedChoice = jobChoice(next.factory, slotJob(key));
+      const choice = model(form, key, job, errors, savedChoice, chosen);
+      // The config checks effort against the provider saved with the choice.
+      modelProblem(job, chosen, choice, savedChoice, chosen !== savedProvider, errors);
+      // The provider the slot is named after is left unwritten, so a two-provider config saved
+      // before jobs could choose their provider reads back the same.
+      next.factory.models[key] = chosen === key ? choice : { ...choice, provider: chosen };
       continue;
     }
     const savedInstance = next.factory.setup.instanceId;

@@ -1011,6 +1011,30 @@ describe("Task page", () => {
     expect(html).not.toContain("Merge conflict");
   });
 
+  it("names the instance that reviewed, even when it is the author's own provider", async () => {
+    dashboard = await startDashboard();
+    const { h } = dashboard;
+    const task = doneTask(h);
+    h.tasks.update(task, { implementer: "claude" });
+    h.events.recordThread({
+      environmentId: "w1",
+      threadId: "t-rev",
+      title: "Review task",
+      providerInstanceId: "hephaestus-claude",
+      model: "claude-opus-5-5",
+      configVersion: 1,
+      taskId: String(task),
+      kind: "review",
+    });
+
+    const { html } = await dashboard.get(`/work/${String(task)}`);
+
+    const proof = /<h2>Proof<\/h2>.*?<\/section>/s.exec(html)?.[0] ?? "";
+    expect(proof).toContain("Factory Claude reviews what Factory Claude wrote.");
+    expect(proof).not.toContain("other provider");
+    expect(proof).toContain("Approved");
+  });
+
   it("shows a done task with every step checked and the proof Hephaestus stores", async () => {
     dashboard = await startDashboard();
     const task = doneTask(dashboard.h);
@@ -1033,7 +1057,7 @@ describe("Task page", () => {
     expect(html).toContain(`Merged as <code title="${MERGE}">${MERGE.slice(0, 7)}</code>`);
     expect(html).not.toContain("sent back");
     expect(html).toContain(">Proof<");
-    expect(html).toContain("Review by the other provider");
+    expect(html).toContain('<span class="title">Review</span>');
     expect(html).toContain("Approved");
     expect(html).toContain("Checks after the merge");
     expect(html).toContain("unit, lint");

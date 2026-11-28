@@ -5,6 +5,7 @@ import {
   normalizeConfig,
   validateConfig,
 } from "../../src/config/document.js";
+import { jobChoice, jobProvider, modelFor, providersInUse } from "../../src/config/jobs.js";
 import { sampleConfig } from "./fixtures.js";
 
 function problems(value: unknown): string[] {
@@ -127,6 +128,46 @@ describe("coding model effort", () => {
     expect(problems(config)).toEqual([
       "factory.models.codex sets effort twice: remove options.reasoningEffort or effort",
     ]);
+  });
+});
+
+describe("coding job providers", () => {
+  it("reads a config without providers as Implement on Claude and Review on Codex", () => {
+    const config = validateConfig(normalizeConfig(sampleConfig()));
+    expect(jobProvider(config.factory, "implement")).toBe("claude");
+    expect(jobProvider(config.factory, "review")).toBe("codex");
+    expect(providersInUse(config.factory)).toEqual(["claude", "codex"]);
+  });
+
+  it.each(["claude", "codex"] as const)("accepts both jobs on %s alone", (provider) => {
+    const config = sampleConfig();
+    const effort = provider === "claude" ? "ultrathink" : "ultra";
+    config.factory.models.claude = { model: "m1", provider, effort };
+    config.factory.models.codex = { model: "m2", provider, effort };
+    expect(problems(config)).toEqual([]);
+    expect(providersInUse(config.factory)).toEqual([provider]);
+    expect(jobChoice(config.factory, "review")).toEqual({ model: "m2", effort });
+  });
+
+  it("checks a job's effort against the provider it names, and refuses an unknown provider", () => {
+    const config = sampleConfig();
+    config.factory.models.codex = { model: "m", provider: "claude", effort: "ultra" };
+    expect(problems(config)).toEqual([
+      'factory.models.codex.effort must be one of low, medium, high, xhigh, max, ultrathink for Claude, not "ultra"',
+    ]);
+    config.factory.models.codex = { model: "m", provider: "gemini" as "claude" };
+    expect(problems(config)).toEqual(['factory.models.codex.provider must be "claude" or "codex"']);
+  });
+
+  it("gives a provider no job uses its default model, and a moved job's provider the other job's", () => {
+    const config = sampleConfig();
+    config.factory.models.claude = { model: "claude-opus-5-5", provider: "claude" };
+    config.factory.models.codex = { model: "claude-haiku-5-5", provider: "claude" };
+    expect(modelFor(config.factory, "review", "claude")).toEqual({ model: "claude-haiku-5-5" });
+    // A review that began on Codex before the job moved keeps a Codex model.
+    expect(modelFor(config.factory, "review", "codex")).toEqual({
+      model: DEFAULT_FACTORY.models.codex.model,
+    });
   });
 });
 

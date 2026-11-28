@@ -1,4 +1,5 @@
-import type { InstanceState, WorkerView } from "../workers/manager.js";
+import { providersInUse } from "../config/jobs.js";
+import type { InstanceState, Provider, WorkerView } from "../workers/manager.js";
 import { read, type FactoryPages } from "./factory.js";
 import { buttonLink, escapeHtml } from "./html.js";
 
@@ -31,9 +32,16 @@ function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[] | unde
   const configRepo = factory.configRepo?.();
   const projects = Object.keys(version.value?.document.projects ?? {}).length;
   const enabled = workers.filter((worker) => worker.enabled);
-  // Signed in is about both factory instances, not readiness, which a routine redeploy interrupts.
-  const signedIn = enabled.filter((worker) => counted(worker.claude) && counted(worker.codex));
-  const waiting = enabled.find((worker) => !counted(worker.claude) || !counted(worker.codex));
+  // Signed in is about the factory instances the coding jobs use, not readiness, which a routine
+  // redeploy interrupts. A factory that runs on one provider needs only that one.
+  const needed: Provider[] =
+    version.value === undefined
+      ? ["claude", "codex"]
+      : providersInUse(version.value.document.factory);
+  const done = (worker: WorkerView): boolean =>
+    needed.every((provider) => counted(worker[provider]));
+  const signedIn = enabled.filter(done);
+  const waiting = enabled.find((worker) => !done(worker));
   const model = factory.hermesModel?.();
   return [
     {
@@ -55,7 +63,7 @@ function setupSteps(factory: FactoryPages, workers: WorkerView[]): Step[] | unde
       done: signedIn.length > 0,
       next:
         waiting?.blocker === undefined
-          ? "Sign in Factory Claude and Factory Codex."
+          ? `Sign in ${needed.map((provider) => (provider === "claude" ? "Factory Claude" : "Factory Codex")).join(" and ")}.`
           : `${waiting.label}: ${waiting.blocker}`,
       href: "/workers",
       link: "Open workers",

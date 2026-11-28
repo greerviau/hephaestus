@@ -58,7 +58,7 @@ describe("the Evidence row in a task's Proof", () => {
     const { html } = await dashboard.get(`/work/${String(id)}`);
 
     const proof = /<h2>Proof<\/h2>.*?<\/section>/s.exec(html)?.[0] ?? "";
-    expect(proof).toContain("Review by the other provider");
+    expect(proof).toContain('<span class="title">Review</span>');
     expect(proof).toContain("Checks after the merge");
     expect(proof).toContain(`data-lazy-url="/work/${String(id)}/evidence"`);
     expect(proof).toContain(">Evidence<");

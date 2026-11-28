@@ -52,7 +52,7 @@ const SETTINGS: { name: SettingName; label: string; help: string }[] = [
   },
   {
     name: "requireReview",
-    label: "Require a review from the other provider",
+    label: "Require a review",
     help: "On the exact head commit.",
   },
   {
