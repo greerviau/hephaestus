@@ -54,7 +54,7 @@ The status channel becomes Hermes's home channel (`DISCORD_HOME_CHANNEL`, `SLACK
 
 A Discord bot saved with a request channel still loads. When the service starts, Hephaestus rewrites its settings: it drops the request channel and its no-mention settings (`DISCORD_FREE_RESPONSE_CHANNELS` and `DISCORD_FREE_RESPONSE_AUTO_THREAD`), keeps its other read channels, or reading every channel, as they were, and restarts the factory gateway. The former request channel is not read on its own: a bot that read only it reads no channel until you list some under Change channels. With no status channel set, its status and alerts keep going to its home channel, which was the request channel.
 
-With alerts on, Hephaestus posts each new notification, the items that appear under Needs you, to the alerts channel with a link to the dashboard. Proposals that wait for approval and workers that need a sign-in are alerts too. Alerts start from the moment you turn them on, so earlier notifications are not sent.
+With alerts on, Hephaestus posts each new notification, the items that appear under Needs you, to the alerts channel with a link to the dashboard. A notification about a task links to that task's page, and if the dashboard asks you to sign in first, it opens that page once you do. Proposals that wait for approval and workers that need a sign-in are alerts too. Alerts start from the moment you turn them on, so earlier notifications are not sent.
 
 ### What you can ask
 

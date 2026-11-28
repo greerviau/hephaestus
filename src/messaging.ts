@@ -648,7 +648,11 @@ export class Messaging {
       .filter((item) => item.id > sent)
       .sort((a, b) => a.id - b.id);
     for (const item of pending) {
-      if (!(await this.deliver(`notice-${String(item.id)}`, item.text, targets))) return;
+      const link =
+        item.taskId === null
+          ? this.options.dashboardUrl()
+          : `${this.options.dashboardUrl()}work/${String(item.taskId)}`;
+      if (!(await this.deliver(`notice-${String(item.id)}`, item.text, targets, link))) return;
       // Never backwards, though only one pass runs at a time.
       const stored = Number(getMeta(this.options.db, ALERTS_SENT_KEY) ?? "0");
       setMeta(this.options.db, ALERTS_SENT_KEY, String(Math.max(stored, item.id)));
@@ -657,7 +661,7 @@ export class Messaging {
     const sentExtra = new Set(this.extraSent());
     for (const item of extras) {
       if (item.quiet === true || sentExtra.has(this.extraKey(item))) continue;
-      if (!(await this.deliver(item.key, item.text, targets))) break;
+      if (!(await this.deliver(item.key, item.text, targets, this.options.dashboardUrl()))) break;
       sentExtra.add(this.extraKey(item));
     }
     // Keys of groups that went away are dropped, so an item that comes back is sent again.
@@ -688,20 +692,21 @@ export class Messaging {
   /**
    * Sends one alert to every target. A failed send is retried on later passes,
    * up to a limit, and stops this pass so alerts keep their order. Returns true
-   * once the alert is done with.
+   * once the alert is done with. `link` is the dashboard page the alert is about.
    */
-  private async deliver(key: string, text: string, targets: PlatformState[]): Promise<boolean> {
+  private async deliver(
+    key: string,
+    text: string,
+    targets: PlatformState[],
+    link: string,
+  ): Promise<boolean> {
     const record = this.attempts.get(key) ?? { tries: 0, done: new Set<PlatformName>() };
     let failed = false;
     for (const target of targets) {
       // A retry goes only to the platforms that did not take the alert yet.
       if (record.done.has(target.platform)) continue;
       try {
-        await this.send(
-          target.platform,
-          `Hephaestus: ${text}\n${this.options.dashboardUrl()}`,
-          "alerts",
-        );
+        await this.send(target.platform, `Hephaestus: ${text}\n${link}`, "alerts");
         record.done.add(target.platform);
       } catch (error) {
         failed = true;
