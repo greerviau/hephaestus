@@ -230,39 +230,86 @@ describe("worker scripts", () => {
     writeFileSync(join(bin, "codex"), "#!/bin/sh\nexit 1\n", { mode: 0o755 });
     const path = join(home, "cleanup.sh");
     writeFileSync(path, scriptOf(cleanupMessage()));
-    expect(() =>
-      execFileSync("bash", [path], {
-        encoding: "utf8",
-        env: { PATH: `${bin}:${process.env.PATH ?? ""}`, HOME: home },
-        stdio: ["ignore", "pipe", "pipe"],
-      }),
-    ).toThrow();
-    expect(readFileSync(join(home, ".hephaestus/codex/auth.json"), "utf8")).toBe("{}");
-  });
-
-  it("deploy.sh changes nothing when HOME is not the account's home folder", () => {
-    // An agent testing the script under a scratch HOME still has T3's own T3CODE_HOME.
-    passwdHome(join(tmpdir(), "the-real-home"));
-    const t3 = join(home, ".t3");
-    const script = scriptOf(deployMessage(1, sha, remote, "p-v1"));
-    const path = join(home, "deploy.sh");
-    writeFileSync(path, script);
     let output = "";
     try {
-      execFileSync("bash", [path, "1", sha, remote, "p-v1"], {
+      execFileSync("bash", [path], {
         encoding: "utf8",
-        env: { PATH: `${account}:${process.env.PATH ?? ""}`, HOME: home, T3CODE_HOME: t3 },
+        env: { PATH: `${bin}:${account}:${process.env.PATH ?? ""}`, HOME: home },
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
       output = (error as { stdout?: string }).stdout ?? "";
     }
+    expect(output).toMatch(/^CLEANUP-FAILED codex logout failed/m);
+    expect(readFileSync(join(home, ".hephaestus/codex/auth.json"), "utf8")).toBe("{}");
+  });
+
+  /** Runs a script as an agent testing it under a scratch HOME would, with T3's own T3CODE_HOME. */
+  function runSplit(script: string, ...args: string[]): string {
+    const path = join(home, "split.sh");
+    writeFileSync(path, script);
+    try {
+      return execFileSync("bash", [path, ...args], {
+        encoding: "utf8",
+        env: {
+          PATH: `${account}:${process.env.PATH ?? ""}`,
+          HOME: home,
+          T3CODE_HOME: join(home, ".t3"),
+        },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      return (error as { stdout?: string }).stdout ?? "";
+    }
+  }
+
+  const settingsText = (): string => readFileSync(join(home, ".t3/userdata/settings.json"), "utf8");
+
+  it("deploy.sh changes nothing when HOME is not the account's home folder", () => {
+    passwdHome(join(tmpdir(), "the-real-home"));
+    const output = runSplit(
+      scriptOf(deployMessage(1, sha, remote, "p-v1")),
+      "1",
+      sha,
+      remote,
+      "p-v1",
+    );
 
     expect(output).toMatch(/^DEPLOY-FAILED HOME is .+, not this account's home folder/m);
-    expect(readFileSync(join(t3, "userdata/settings.json"), "utf8")).toBe(
-      JSON.stringify({ theme: "dark" }),
-    );
+    expect(settingsText()).toBe(JSON.stringify({ theme: "dark" }));
     expect(existsSync(join(home, ".hephaestus"))).toBe(false);
+  });
+
+  it("deploy.sh reports a failed lookup of the account's home folder", () => {
+    writeFileSync(join(account, "getent"), "#!/bin/sh\nexit 2\n", { mode: 0o755 });
+    const output = runSplit(
+      scriptOf(deployMessage(1, sha, remote, "p-v1")),
+      "1",
+      sha,
+      remote,
+      "p-v1",
+    );
+
+    expect(output).toMatch(/^DEPLOY-FAILED .*account's home folder/m);
+    expect(settingsText()).toBe(JSON.stringify({ theme: "dark" }));
+  });
+
+  it("deploy.sh accepts the account's home folder written with a trailing slash", () => {
+    passwdHome(`${home}/`);
+    expect(
+      run(scriptOf(deployMessage(1, sha, remote, "p-v1")), "1", sha, remote, "p-v1"),
+    ).toContain("DEPLOYED version=1");
+  });
+
+  it("cleanup.sh changes nothing when HOME is not the account's home folder", () => {
+    run(scriptOf(deployMessage(1, sha, remote, "p-v1")), "1", sha, remote, "p-v1");
+    const before = settingsText();
+    passwdHome(join(tmpdir(), "the-real-home"));
+    const output = runSplit(scriptOf(cleanupMessage()));
+
+    expect(output).toMatch(/^CLEANUP-FAILED HOME is .+, not this account's home folder/m);
+    expect(settingsText()).toBe(before);
+    expect(existsSync(join(home, ".hephaestus"))).toBe(true);
   });
 
   it("deploy.sh stops when the tag points at another commit", () => {

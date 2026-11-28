@@ -7,9 +7,9 @@ set -euo pipefail
 version=$1 sha=$2 repo_url=$3 tag=$4
 # T3 gives its threads T3CODE_HOME, so a run under a scratch HOME would point
 # T3's real factory instances at a folder that is later deleted.
-account_home=$(getent passwd "$(id -un)" | cut -d: -f6)
-if [ "$HOME" != "$account_home" ]; then
-  echo "DEPLOY-FAILED HOME is $HOME, not this account's home folder $account_home"
+account_home=$(getent passwd "$(id -un)" | cut -d: -f6) || account_home=
+if [ -z "$account_home" ] || [ "${HOME%/}" != "${account_home%/}" ]; then
+  echo "DEPLOY-FAILED HOME is $HOME, not this account's home folder ${account_home:-(getent found none)}"
   exit 1
 fi
 root=$HOME/.hephaestus

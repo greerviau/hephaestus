@@ -87,6 +87,8 @@ let manager: WorkerManager;
 let synced: number;
 let clock: number;
 let reports: InstanceReport[] | undefined;
+/** Answers the next provider list check in place of `reports`, such as one T3 answers late. */
+let probe: (() => Promise<InstanceReport[] | undefined>) | undefined;
 let active: string[];
 
 function finishThread(threadId: string, text: string, status = "completed"): void {
@@ -147,6 +149,7 @@ beforeEach(() => {
   repo = new FakeRepo();
   synced = 0;
   reports = undefined;
+  probe = undefined;
   active = [];
   manager = new WorkerManager({
     db,
@@ -159,7 +162,7 @@ beforeEach(() => {
       synced += 1;
       return Promise.resolve();
     },
-    instances: () => Promise.resolve(reports),
+    instances: () => probe?.() ?? Promise.resolve(reports),
     activeThreads: () => Promise.resolve(active),
     now,
   });
@@ -580,6 +583,94 @@ describe("WorkerManager", () => {
     await manager.tick();
     expect(t3.launches).toHaveLength(launched);
     expect(viewOf("env-1")).toMatchObject({ blocker: `Factory Codex: ${broken}`, ownerStep: true });
+  });
+
+  it("repairs an instance again when it breaks after a repair made it work", async () => {
+    await makeReady();
+    const codex = (constraints: string[]): InstanceReport[] => [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints },
+    ];
+    reports = codex(["Provider instance is disabled."]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    await finishRepair();
+    reports = codex([]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1").ready).toBe(true);
+
+    reports = codex(["Provider instance is disabled."]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    const launched = t3.launches.length;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(launched + 1);
+    expect(t3.launches.at(-1)?.title).toBe("Hephaestus: deploy config");
+  });
+
+  it("does not repair again when T3 words or orders the same broken instance's problems differently", async () => {
+    await makeReady();
+    const codex = (constraints: string[]): InstanceReport[] => [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints },
+    ];
+    reports = codex(["first problem", "second problem"]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    await finishRepair();
+    const launched = t3.launches.length;
+    for (const order of [
+      ["second problem", "first problem"],
+      ["first problem", "second problem"],
+    ]) {
+      reports = codex(order);
+      clock += 11 * 60_000;
+      await manager.tick();
+      await manager.tick();
+    }
+    expect(t3.launches).toHaveLength(launched);
+  });
+
+  it("repairs an instance whose missing home folder has login in its path", async () => {
+    await makeReady();
+    reports = [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      {
+        providerInstanceId: FACTORY_CODEX,
+        constraints: [
+          'CODEX_HOME points to "/tmp/login-test/.hephaestus/codex", but that path does not exist.',
+        ],
+      },
+    ];
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1").codex).not.toBe("signed-out");
+    await finishRepair();
+  });
+
+  it("drops a provider list answer that a deploy started meanwhile made stale", async () => {
+    await makeReady();
+    let answer: (reports: InstanceReport[]) => void = () => undefined;
+    const probed = { asked: false };
+    probe = () => {
+      probed.asked = true;
+      probe = undefined;
+      return new Promise((resolve) => {
+        answer = resolve;
+      });
+    };
+    clock += 11 * 60_000;
+    const tick = manager.tick();
+    while (!probed.asked) await new Promise((resolve) => setImmediate(resolve));
+    await manager.deploy("env-1");
+    answer([
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints: ["Provider instance is disabled."] },
+    ]);
+    await tick;
+
+    expect(manager.worker("env-1")?.instances).toEqual({});
   });
 
   it("times out a task whose thread never ends", async () => {
