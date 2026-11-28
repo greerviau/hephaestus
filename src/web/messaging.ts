@@ -50,7 +50,7 @@ const STEPS: Record<PlatformName, string[]> = {
   ],
   slack: [
     `On ${externalLink("https://api.slack.com/apps", "Slack's app page")}, create an app from scratch. Under Socket Mode, turn it on and make an app-level token with the connections:write scope. Under Event Subscriptions, subscribe the bot to message.channels, message.groups, message.im, and app_mention.`,
-    "Under OAuth &amp; Permissions, add the bot scopes chat:write, channels:history, groups:history, im:history, app_mentions:read, users:read, and files:write, install the app to your workspace, and copy the Bot User OAuth Token. Invite the bot to your channels.",
+    "Under OAuth &amp; Permissions, add the bot scopes chat:write, channels:history, groups:history, im:history, app_mentions:read, users:read, files:read, and files:write, install the app to your workspace, and copy the Bot User OAuth Token. Invite the bot to your channels.",
     "In Slack, open your profile and choose Copy member ID for your user ID. Open a channel's details for its channel ID at the bottom.",
   ],
 };
