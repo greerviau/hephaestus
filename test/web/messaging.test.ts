@@ -103,6 +103,15 @@ describe("Chat page", () => {
     },
   );
 
+  it("asks for the files:read scope on Slack, so the bot can download the files people send", async () => {
+    dashboard = await withMessaging();
+    const { html } = await dashboard.get("/chat/connect/slack");
+    const steps = html.match(/<ol class="steps">.*?<\/ol>/s)?.[0] ?? "";
+    // Slack answers 403 for a file's private URL when the bot token lacks files:read.
+    expect(steps).toMatch(/bot scopes [^<]*\bfiles:read\b/);
+    expect(steps).toMatch(/bot scopes [^<]*\bfiles:write\b/);
+  });
+
   it("gives Discord no request channel, and one choice between listed channels and every channel", async () => {
     dashboard = await withMessaging();
     const { status, html } = await dashboard.get("/chat/connect/discord");

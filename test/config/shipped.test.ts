@@ -127,6 +127,15 @@ describe("the communicator's shipped instructions", () => {
     );
   });
 
+  it("tell the communicator to give the reason when a sent file could not be read, and the Slack scope it needs", () => {
+    const text = collapse(shippedInstructions("communicator"));
+    // Hermes puts a failed download in an attachment notice at the top of the message.
+    expect(text).toMatch(/attachment notice/);
+    expect(text).toMatch(/tell the requester which file and the reason the notice gives/);
+    expect(text).toMatch(/HTTP 403[^.]*Slack[^.]*`files:read`/);
+    expect(text).toMatch(/Do not file a path for a file that could not be read/);
+  });
+
   it("tell the communicator to answer stats questions from the stats tools, without tables, and to say when data is missing", () => {
     const text = collapse(shippedInstructions("communicator"));
 
