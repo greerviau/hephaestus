@@ -476,11 +476,12 @@ export class FactoryMcp {
   /**
    * The newest tool calls. `role` keeps one role's calls. `repo` keeps the
    * calls about one project: those whose arguments name it as `repo`, or name
-   * one of its tasks as `task_id`.
+   * one of its tasks as `task_id`. `text` keeps the calls whose role, tool, or
+   * raw arguments contain it, ignoring ASCII case.
    */
   calls(
     limit = 200,
-    only: { role?: string; repo?: string } = {},
+    only: { role?: string; repo?: string; text?: string } = {},
   ): {
     id: number;
     role: string;
@@ -502,9 +503,15 @@ export class FactoryMcp {
                WHEN json_type(arguments, '$.task_id') IN ('integer', 'real')
                  THEN json_extract(arguments, '$.task_id') IN (SELECT id FROM tasks WHERE repo = @repo)
                ELSE 0 END)
+             AND (@text IS NULL OR instr(lower(role || char(10) || tool || char(10) || arguments), lower(@text)) > 0)
            ORDER BY id DESC LIMIT @limit`,
         )
-        .all({ limit, role: only.role ?? null, repo: only.repo ?? null }) as {
+        .all({
+          limit,
+          role: only.role ?? null,
+          repo: only.repo ?? null,
+          text: only.text ?? null,
+        }) as {
         id: number;
         role: string;
         tool: string;

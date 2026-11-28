@@ -388,7 +388,12 @@ describe("Reloading", () => {
       const { html } = await dashboard.get(path);
       expect(reload(html), path).toBe(expected);
       // A reload drops typed text, so a page that reloads has nowhere to type.
-      expect(main(html), path).not.toMatch(
+      // Activity's search is the exception its issue asks for: the live script
+      // waits while the field has focus, and a submitted query stays in `q`.
+      const typed = path.startsWith("/activity")
+        ? main(html).replace('<input type="search" name="q" value="">', "")
+        : main(html);
+      expect(typed, path).not.toMatch(
         /<textarea|<input type="(?:text|password|url|email|search|number)"/,
       );
     }
