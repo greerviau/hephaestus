@@ -45,8 +45,9 @@ export function updateRoutes(factory: FactoryPages): Route[] {
               ["Running", `<code>${escapeHtml(version.commit.slice(0, 7))}</code>`],
               [
                 "origin/main",
+                // Unset both before the first fetch and after a failed one.
                 version.behind === undefined
-                  ? "Not checked yet"
+                  ? "Unknown"
                   : behind === 0
                     ? "Nothing newer at the last check"
                     : behind === 1
@@ -68,7 +69,9 @@ export function updateRoutes(factory: FactoryPages): Route[] {
           ? callout(
               "err",
               "The last update stopped before it finished",
-              "It was stopped, or the host restarted, partway through, so the checkout may be half updated. Run the command below on the Hermes host to finish it or roll it back.",
+              `It was stopped, or the host restarted, partway through, so the checkout may be half updated. Run ${
+                version === undefined ? "<code>update</code>" : "the command below"
+              } on the Hermes host to finish it or roll it back.`,
             )
           : callout("err", "The last update did not finish", "Its log below says why.");
     const refusal = refused === undefined ? "" : callout("err", "Not started", escapeHtml(refused));

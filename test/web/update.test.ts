@@ -146,8 +146,23 @@ describe("Update", () => {
       "<dt>origin/main</dt><dd>Nothing newer at the last check</dd>",
     );
     const lastRun = sectionNamed(page.html, "Last run");
-    expect(lastRun).toContain("Finished");
+    expect(/<div class="sec-head">[^]*?<\/div>/.exec(lastRun ?? "")?.[0]).toContain(
+      ">Finished</span>",
+    );
     expect(lastRun).toContain("Fast-forwarded a to b");
+  });
+
+  it("says origin/main is unknown when the last fetch failed", async () => {
+    dashboard = await startDashboard({
+      updater: fakeUpdater({ running: false }).updater,
+      version: () => ({
+        commit: "abcdef1234567890",
+        command: "node /srv/hephaestus/dist/cli.js update",
+      }),
+    });
+
+    const page = await dashboard.get("/update");
+    expect(sectionNamed(page.html, "Version")).toContain("<dt>origin/main</dt><dd>Unknown</dd>");
   });
 
   it("says when the last update stopped before it finished", async () => {
@@ -159,6 +174,16 @@ describe("Update", () => {
     const page = await dashboard.get("/update");
     expect(page.html).toContain("The last update stopped before it finished");
     expect(page.html).toContain("node /srv/hephaestus/dist/cli.js update");
+  });
+
+  it("does not point at a command it cannot show when an update stopped partway", async () => {
+    dashboard = await startDashboard({
+      updater: fakeUpdater({ running: false, log: "Fast-forwarded a to b\nnpm ci\n" }).updater,
+    });
+
+    const page = await dashboard.get("/update");
+    expect(page.html).toContain("The last update stopped before it finished");
+    expect(page.html).not.toContain("command below");
   });
 
   it("says why an update did not start", async () => {
