@@ -31,6 +31,38 @@ export const MODELS: Record<EffortProvider, readonly string[]> = {
   ],
 };
 
+/**
+ * The effort level each listed model starts at on the Models page, so its effort dropdown
+ * always shows a real level. Every model in `MODELS` has one, and each is one of its
+ * provider's `EFFORT` levels.
+ */
+export const MODEL_EFFORT: Readonly<Record<string, string>> = {
+  "claude-opus-5-5": "high",
+  "claude-sonnet-5-5": "high",
+  "claude-fable-5-2": "high",
+  "claude-haiku-5-5": "medium",
+  "gpt-6.2-sol": "medium",
+  "gpt-6.2-astra": "medium",
+  "gpt-6.1-terra": "medium",
+  "gpt-6.1-sol": "medium",
+  "gpt-6-astra": "medium",
+  "gpt-6-luna": "low",
+};
+
+/** The level a model of this provider that `MODEL_EFFORT` does not list starts at. */
+const PROVIDER_EFFORT: Record<EffortProvider, string> = { claude: "high", codex: "medium" };
+
+/**
+ * The level the Models page preselects for a model that sets no effort: its own default, or
+ * its provider's for a model the list does not name.
+ */
+export function defaultEffort(provider: EffortProvider, model: string): string {
+  const level = MODEL_EFFORT[model];
+  return level !== undefined && EFFORT[provider].levels.includes(level)
+    ? level
+    : PROVIDER_EFFORT[provider];
+}
+
 export const PROVIDER_LABELS: Record<EffortProvider, string> = { claude: "Claude", codex: "Codex" };
 
 /** The providers the factory supports, in the order the Models page lists them. */

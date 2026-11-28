@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../../src/config/document.js";
-import { MODELS } from "../../src/config/effort.js";
+import { EFFORT, MODELS, MODEL_EFFORT } from "../../src/config/effort.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { startDashboard, type Dashboard, type DashboardOptions } from "./dashboard.js";
 
@@ -55,6 +55,17 @@ function selectOf(html: string, label: string): string {
 /** The values a select offers, leaving out a disabled placeholder. */
 function optionValues(html: string, label: string): string[] {
   return [...selectOf(html, label).matchAll(/<option value="([^"]*)"(?![^>]*disabled)/g)].map(
+    (match) => match[1] ?? "",
+  );
+}
+
+/** The aria-labels of the controls in a job's row, in order. */
+function rowControls(html: string, job: string): string[] {
+  const row =
+    new RegExp(
+      `<li class="row job"[^>]*><div class="main"><span class="title">${job}</span>.*?</li>`,
+    ).exec(html)?.[0] ?? "";
+  return [...row.matchAll(/<(?:select|input) [^>]*aria-label="([^"]*)"/g)].map(
     (match) => match[1] ?? "",
   );
 }
@@ -421,7 +432,7 @@ describe("Factory tab schedules", () => {
 });
 
 describe("Models tab", () => {
-  it("shows one row per coding job with its model, and the factory instance as fixed text", async () => {
+  it("shows one row per coding job with its model", async () => {
     await start();
 
     const { html } = await dashboard.get("/config/models");
@@ -434,8 +445,6 @@ describe("Models tab", () => {
     expect(selected(html, "Review model")).toBe("gpt-6.2-sol");
     expect(selected(html, "Housekeeping model")).toBe("claude-sonnet-5-5");
     expect(html).not.toMatch(/<input [^>]*name="(claude|codex|setup)\.model"/);
-    expect(html).toContain('<span class="muted">Factory Claude</span>');
-    expect(html).toContain('<span class="muted">Factory Codex</span>');
     expect(html).toContain("<summary>Provider options</summary>");
     expect(html).not.toContain('name="limits.threads"');
   });
@@ -489,7 +498,55 @@ describe("Models tab", () => {
     expect(dashboard.store.list()).toHaveLength(1);
   });
 
-  it("lists only each provider's effort levels, with a placeholder and no default entry", async () => {
+  it("renders the same controls in each row, in the order provider, model, effort", async () => {
+    await start();
+
+    const { html } = await dashboard.get("/config/models");
+
+    for (const job of ["Implement", "Review", "Housekeeping"]) {
+      expect(rowControls(html, job)).toEqual([`${job} provider`, `${job} model`, `${job} effort`]);
+    }
+    const coding = /<ul class="rows">.*?<\/ul>/.exec(html)?.[0] ?? "";
+    expect(coding).not.toContain("Factory Claude");
+    expect(coding).not.toContain("Factory Codex");
+    expect(coding).not.toContain("claudeAgent");
+    expect(html).not.toMatch(/name="setup.instanceId"/);
+  });
+
+  it("gives every listed model a default level its provider offers", () => {
+    for (const [provider, models] of Object.entries(MODELS)) {
+      for (const model of models) {
+        expect(EFFORT[provider as keyof typeof EFFORT].levels).toContain(MODEL_EFFORT[model]);
+      }
+    }
+  });
+
+  it.each(
+    Object.entries(MODELS).flatMap(([provider, models]) =>
+      models.map((model) => [provider, model] as const),
+    ),
+  )("preselects the default level of the %s model %s in each row", async (provider, model) => {
+    await start();
+    const config = sampleConfig();
+    if (provider === "claude") config.factory.models.claude = { model };
+    else config.factory.models.codex = { model };
+    config.factory.setup = { instanceId: provider === "claude" ? "claudeAgent" : "codex", model };
+    deployVersion(config);
+
+    const { html } = await dashboard.get("/config/models");
+
+    const job = provider === "claude" ? "Implement" : "Review";
+    for (const row of [job, "Housekeeping"]) {
+      expect(selected(html, `${row} model`)).toBe(model);
+      expect(selected(html, `${row} effort`)).toBe(MODEL_EFFORT[model]);
+      // Each model option names its default, which the page script picks when the model changes.
+      expect(selectOf(html, `${row} model`)).toContain(
+        `<option value="${model}" data-for="${provider}" data-effort="${MODEL_EFFORT[model] ?? ""}"`,
+      );
+    }
+  });
+
+  it("lists only each provider's effort levels, with the model's default chosen and no default entry", async () => {
     await start();
 
     const { html } = await dashboard.get("/config/models");
@@ -515,10 +572,12 @@ describe("Models tab", () => {
       optionValues(html, "Implement effort"),
     );
     expect(html).not.toContain("Default effort");
-    // A choice without effort shows a placeholder that cannot be picked or sent.
-    expect(selectOf(html, "Implement effort")).toContain(
-      '<option value="" disabled hidden selected>Select effort</option>',
-    );
+    // A choice without effort shows its model's default level, never the placeholder.
+    expect(selected(html, "Implement effort")).toBe(MODEL_EFFORT["claude-sonnet-5-5"]);
+    expect(selected(html, "Review effort")).toBe(MODEL_EFFORT["gpt-6.2-sol"]);
+    expect(selected(html, "Housekeeping effort")).toBe(MODEL_EFFORT["claude-sonnet-5-5"]);
+    // The placeholder is there only for a row whose provider changes before a model is chosen.
+    expect(html).not.toContain("selected>Select effort</option>");
     // The selector sits in the job's row, after its model selector.
     expect(html).toMatch(
       /name="codex.model"[^>]*>.*?<\/select>\s*<select [^>]*name="codex.effort"/,
@@ -770,18 +829,25 @@ describe("Models tab providers", () => {
     expect(html).toContain('<script src="/assets/provider-choice.js" defer></script>');
   });
 
-  it("picks the housekeeping instance from a dropdown of its provider's instances", async () => {
+  it("picks the housekeeping instance for the provider chosen, without asking", async () => {
     await start();
 
-    const { html } = await dashboard.get("/config/models");
+    const response = await dashboard.post("/config/models", {
+      parentId: "1",
+      "claude.model": "claude-sonnet-5-5",
+      "codex.model": "gpt-6.2-sol",
+      "setup.provider": "codex",
+      "setup.model": "gpt-6.1-sol",
+    });
 
-    expect(html).not.toMatch(/<input [^>]*name="setup.instanceId"/);
-    expect(selected(html, "Housekeeping provider instance")).toBe("claudeAgent");
-    expect(optionValues(html, "Housekeeping provider instance")).toEqual(["claudeAgent"]);
-    expect(optionsFor(html, "Housekeeping provider instance", "codex")).toEqual(["codex"]);
+    expect(response.status).toBe(303);
+    expect(dashboard.store.list()[0]?.document.factory.setup).toEqual({
+      instanceId: "codex",
+      model: "gpt-6.1-sol",
+    });
   });
 
-  it("shows a saved housekeeping instance the list does not know, under its provider", async () => {
+  it("keeps a saved housekeeping instance the list does not know while its provider stays", async () => {
     await start();
     const own = sampleConfig();
     own.factory.setup = { instanceId: "codexWork", model: "gpt-6.1-terra", effort: "max" };
@@ -791,16 +857,79 @@ describe("Models tab providers", () => {
 
     let html = (await dashboard.get("/config/models")).html;
     expect(selected(html, "Housekeeping provider")).toBe("codex");
-    expect(selected(html, "Housekeeping provider instance")).toBe("codexWork");
-    expect(optionValues(html, "Housekeeping provider instance")).toEqual(["codexWork", "codex"]);
+    expect(selected(html, "Housekeeping effort")).toBe("max");
+
+    const response = await dashboard.post("/config/models", {
+      ...renderedForm(html),
+      "setup.model": "gpt-6-luna",
+    });
+    expect(response.status).toBe(303);
+    expect(dashboard.store.list()[0]?.document.factory.setup).toEqual({
+      instanceId: "codexWork",
+      model: "gpt-6-luna",
+      effort: "max",
+    });
 
     deployVersion(other, 2);
     html = (await dashboard.get("/config/models")).html;
     // An instance of a provider the factory does not know has no models or levels to offer.
     expect(selected(html, "Housekeeping provider")).toBe("");
-    expect(selected(html, "Housekeeping provider instance")).toBe("cursor");
     expect(selected(html, "Housekeeping model")).toBe("auto");
     expect(optionValues(html, "Housekeeping effort")).toEqual([]);
+  });
+
+  it("shows a saved model the list no longer names first, with its provider's default level", async () => {
+    await start();
+    const old = sampleConfig();
+    old.factory.models.claude = { model: "claude-retired-4" };
+    old.factory.setup = { instanceId: "claudeAgent", model: "claude-retired-4" };
+    deployVersion(old);
+
+    const { html } = await dashboard.get("/config/models");
+
+    for (const job of ["Implement", "Housekeeping"]) {
+      expect(selected(html, `${job} model`)).toBe("claude-retired-4");
+      expect(optionValues(html, `${job} model`)).toEqual(["claude-retired-4", ...MODELS.claude]);
+      expect(selected(html, `${job} effort`)).toBe("high");
+    }
+  });
+
+  it("saves a chosen model and effort in each row and shows them after reload", async () => {
+    await start();
+
+    const html = (await dashboard.get("/config/models")).html;
+    const response = await dashboard.post("/config/models", {
+      ...renderedForm(html),
+      "claude.model": "claude-haiku-5-5",
+      "claude.effort": "max",
+      "codex.model": "gpt-6-astra",
+      "codex.effort": "ultra",
+      "setup.provider": "codex",
+      "setup.model": "gpt-6.2-astra",
+      "setup.effort": "low",
+    });
+
+    expect(response.status).toBe(303);
+    const document = dashboard.store.list()[0]?.document;
+    if (document === undefined) throw new Error("no saved version");
+    expect(document.factory.models).toEqual({
+      claude: { model: "claude-haiku-5-5", effort: "max" },
+      codex: { model: "gpt-6-astra", effort: "ultra" },
+    });
+    expect(document.factory.setup).toEqual({
+      instanceId: "codex",
+      model: "gpt-6.2-astra",
+      effort: "low",
+    });
+    deployVersion(document);
+    const after = (await dashboard.get("/config/models")).html;
+    expect(selected(after, "Implement model")).toBe("claude-haiku-5-5");
+    expect(selected(after, "Implement effort")).toBe("max");
+    expect(selected(after, "Review model")).toBe("gpt-6-astra");
+    expect(selected(after, "Review effort")).toBe("ultra");
+    expect(selected(after, "Housekeeping provider")).toBe("codex");
+    expect(selected(after, "Housekeeping model")).toBe("gpt-6.2-astra");
+    expect(selected(after, "Housekeeping effort")).toBe("low");
   });
 
   it.each([
