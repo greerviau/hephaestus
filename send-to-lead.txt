@@ -1,0 +1,8 @@
+POST answered in 6 ms with 303 -> /work?tab=needs&notice=sending-to-lead while the board call was held
+
+== Work > Needs you while the send runs in the background ==
+<div class="box info"><div class="box-title"><span>Sending the task to the lead</span></div><p>The lead gets your note in a moment. Until then the page shows the task as sending.</p></div>
+<li class="row kinded"><span class="kind">merge</span><div class="main"><a class="title" href="/work/1">#7 Fix &lt;the&gt; parser</a><span class="subline">The PR touches .github/workflows/ci.yml</span></div><div class="aside"><span class="st t-run"><span class="dot"></span>Sending to lead</span></div></li>
+
+== Work > Needs you after the background send failed ==
+<li class="row kinded"><span class="kind">merge</span><div class="main"><a class="title" href="/work/1">#7 Fix &lt;the&gt; parser</a><span class="subline">The PR touches .github/workflows/ci.yml<br><span class="st t-bad">Sending to the lead failed</span> The service log has the error.</span></div><div class="aside"><form class="inline" method="post" action="/work/1/approve-merge"><input type="hidden" name="headSha" value="1111111111111111111111111111111111111111"><input type="hidden" name="action" value="merge"><input type="hidden" name="back" value="/work?tab=needs"><button type="submit" class="primary">Merge PR #5 at 1111111</button></form><details class="menu" name="menu"><summary aria-label="More actions"></summary><div class="pop"><a href="/work/1/lead?back=%2Fwork%3Ftab%3Dneeds">Send to lead</a><a href="/work/1/abandon?back=%2Fwork%3Ftab%3Dneeds">Abandon</a></div></details></div></li>
