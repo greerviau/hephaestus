@@ -10,7 +10,7 @@ Hephaestus turns your repos into a software factory. You ask for work, AI agents
 - A merge policy decides what merges on its own and what waits for you.
 - When a merge breaks something, it reverts automatically.
 - The nightly self-improvement loop proposes improvements for you to approve.
-- A dashboard to show you what needs you, what is running, and the full history.
+- A dashboard to show you what needs you, what is running, history, and analytics.
 
 ## Requirements
 
