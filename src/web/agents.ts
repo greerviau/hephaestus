@@ -69,7 +69,7 @@ const SETS: Record<InstructionSetName, { title: string; does: string }> = {
   },
   lead: {
     title: "Lead",
-    does: "Queues admitted tasks with a brief in the order they start, defers what must wait, and handles escalations.",
+    does: "Queues, defers, and briefs admitted tasks, and handles escalations.",
   },
   improver: {
     title: "Improver",
@@ -77,7 +77,7 @@ const SETS: Record<InstructionSetName, { title: string; does: string }> = {
   },
   threads: {
     title: "Coding threads",
-    does: "Your standing instructions for every implement and review thread.",
+    does: "Added to every implement and review thread.",
   },
 };
 
@@ -152,21 +152,20 @@ function shippedPart(name: InstructionSetName, text: string): string {
     ? `${THREAD_RULES}\n\nAn implement thread's first message also gives it the task, the lead's brief, the branch, how to open the PR, and the result block to end with:\n\n${branchRule("<branch>")}\n\nA review thread's first message gives it the PR, the head commit to review, how to judge a revert, and its result block.`
     : shippedInstructions(name);
   const order = threads
-    ? "A summary of what Hephaestus tells every thread in its first message, with the result block again in each message after. Your instructions are the threads' standing instructions on the worker."
-    : "The role gets these first, and your instructions after them.";
+    ? "A summary of what each thread's first message says."
+    : "The role gets these first, then yours.";
   return `${fold(
     "Shipped with Hephaestus",
-    `<p class="hint">${order} They come with Hephaestus and change when it is updated, so they cannot be edited here.</p><pre class="block">${escapeHtml(shipped)}</pre>`,
+    `<p class="hint">${order} Read-only; they change when Hephaestus updates.</p><pre class="block">${escapeHtml(shipped)}</pre>`,
   )}${repeated}`;
 }
 
 /** The message and deploy choice of a dialog that saves a version. `id` keeps its fields apart from the page's own. */
 function versionChoice(id: string, base: ConfigVersion): string {
-  return `${input("message", "What changed", {
+  return `${input("message", "What changed (optional)", {
     id: `${id}-message`,
     required: false,
-    hint: "Shown in the version list. Left empty, Hephaestus writes one.",
-  })}${deployChoice(undefined)}<p class="hint">Creates a config version built from version ${String(base.id)}.</p>`;
+  })}${deployChoice(undefined)}<p class="hint">Builds on v${String(base.id)}.</p>`;
 }
 
 /** What a refused form comes back with. */
@@ -322,13 +321,13 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
       body: `${input("name", "Name", {
         id: "new-skill-name",
         value: typed?.get("name") ?? "",
-        hint: "Letters, digits, hyphens, dots, and underscores, such as write-brief.",
+        hint: "Letters, digits, hyphens, dots, and underscores.",
         autofocus: true,
       })}${input("description", "When an agent should use it", {
         id: "new-skill-description",
         value: typed?.get("description") ?? "",
         required: false,
-        hint: "One sentence. Agents read this to decide whether to load the skill.",
+        hint: "One sentence agents read to decide whether to load it.",
       })}${versionChoice("new-skill", current)}`,
       action: "/config/skills",
       fields: { parentId: String(current.id) },
@@ -401,7 +400,6 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
             : choices
         }</div></fieldset>${input("message", "What changed", {
           value: typed?.get("message") ?? "",
-          hint: "Shown in the version list.",
         })}${versionSaveBar("Save instructions", current, typed)}</form>${
           stale
             ? typedText(
@@ -496,7 +494,7 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
         body: input("path", "File path", {
           id: "add-file-path",
           placeholder: "examples/good.md",
-          hint: "A path inside the skill folder. The file is created when you save its text.",
+          hint: "Relative to the skill folder.",
           autofocus: true,
         }),
         action: `${here}/files`,
@@ -508,7 +506,6 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
         body: `${input("name", "New name", {
           id: "rename-skill-name",
           value: typed?.get("name") ?? name,
-          hint: "Every instruction set that loads the skill loads it under the new name.",
           autofocus: true,
         })}${versionChoice("rename-skill", current)}`,
         action: `${here}/rename`,
@@ -551,7 +548,6 @@ export function agentsRoutes(factory: FactoryPages): Route[] {
           editing === undefined ? (isNew ? "" : (files[file] ?? "")) : formText(editing, "text"),
         )}${input("message", "What changed", {
           value: sent?.get("message") ?? "",
-          hint: "Shown in the version list.",
         })}${versionSaveBar("Save skill", current, sent, !isNew)}</form>${stale ? typedText(sent) : ""}${dialogs}`,
         crumbs(name),
       ),

@@ -70,7 +70,7 @@ export function updateRoutes(factory: FactoryPages): Route[] {
         "Update",
         `${pageHead({
           title: "Update",
-          lede: "Fast-forwards the checkout the service runs from to origin/main, installs, builds, and restarts the service. A build that fails, or does not start, is rolled back.",
+          lede: "Pulls origin/main, builds, and restarts the service. A failed build rolls back.",
         })}${refusal}${state}${where}${button}${fallback}${log}`,
         {
           shell: context.shell,

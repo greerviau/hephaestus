@@ -344,8 +344,8 @@ export function issueActions(
 /** Why an issue waits for the owner, as text. */
 export function issueWhy(issue: TrackedIssue): string {
   return issue.state === "held-cap"
-    ? `${issue.filedBy === "owner" ? "You requested it" : `Filed by the ${issue.filedBy ?? "factory"}`}, and it is held: the project already has its cap of factory-filed issues waiting.`
-    : `Opened by ${issue.author} outside Hephaestus. The factory works on it only if you admit it.`;
+    ? `${issue.filedBy === "owner" ? "You requested it" : `Filed by the ${issue.filedBy ?? "factory"}`}. Held: the project is at its cap of factory-filed issues.`
+    : `Opened by ${issue.author} outside Hephaestus.`;
 }
 
 /** What each running thread of a task is: its job, worker, and provider. */

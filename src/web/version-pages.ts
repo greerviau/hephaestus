@@ -182,7 +182,7 @@ export function versionRoutes(factory: FactoryPages): Route[] {
         dialog({
           id: "deploy-version",
           title: `Deploy ${v}`,
-          body: `<p>Deploy config ${v} to every worker${again ? " again" : ""}?</p><p class="muted">It is published to the config repo and applied to the factory's Hermes. ${PICKED_UP}</p>`,
+          body: `<p>Deploy config ${v} to every worker${again ? " again" : ""}?</p><p class="muted">${PICKED_UP}</p>`,
           action: `${here}/deploy`,
           submit: `Deploy ${v}`,
         }),

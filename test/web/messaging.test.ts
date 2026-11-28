@@ -129,7 +129,7 @@ describe("Chat page", () => {
     expect(html).toContain('<input type="radio" name="read_all" value="0" checked>');
     expect(html).toContain('<input type="radio" name="read_all" value="1">');
     expect(html).toMatch(/<div class="access-list">.*?name="reads"(?![^>]* required)/s);
-    expect(html).toContain("only when you mention it");
+    expect(html).toContain("only when mentioned");
     expect(html.match(/<ol class="steps">.*?<\/ol>/s)?.[0].match(/<li>/g)).toHaveLength(3);
     expect(html).not.toMatch(/communicator|lead|improver/i);
   });

@@ -162,7 +162,10 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
               kind: "proposal",
               title: `Proposal v${String(version.id)}: ${version.title}`,
               href,
-              sub: `${version.author === "improver" ? "The improver proposed a config change" : "A Hephaestus update brings starter skills"}. Approving it deploys it.`,
+              sub:
+                version.author === "improver"
+                  ? "Config change from the improver."
+                  : "Starter skills from an update.",
               aside: buttonLink(href, "Review proposal"),
             });
           }
@@ -174,7 +177,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
               kind: "worker",
               title: `${environment.label}: the T3 link ${expiresIn(environment, now())}`,
               href: "/workers",
-              sub: "Link it again from this host before then, or factory threads on it stop.",
+              sub: "Relink it before then, or its factory threads stop.",
               aside: buttonLink("/workers", "Open workers"),
             });
           }

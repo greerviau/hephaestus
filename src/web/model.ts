@@ -270,10 +270,7 @@ export function modelRoutes(factory: FactoryPages): Route[] {
     problem: Problem | undefined,
   ): Promise<string> {
     const { shell } = context;
-    const head = pageHead({
-      title: TITLE,
-      lede: "The model that decides what to work on, writes each brief, and answers you in chat. Any provider Hermes supports works here.",
-    });
+    const head = pageHead({ title: TITLE });
     if (model === undefined) {
       return configPage(
         shell,
@@ -449,7 +446,7 @@ function modelSection(
         type: "password",
         autocomplete: "off",
         required: false,
-        hint: `Kept in files only you can read on this host. It is never shown again.${warned === undefined ? "" : " Enter it again if the endpoint needs one."}`,
+        hint: `Stored on this host and never shown again.${warned === undefined ? "" : " Enter it again if the endpoint needs one."}`,
       })}`
     : "";
   const modelField = field(
@@ -457,7 +454,7 @@ function modelSection(
     "Model",
     `<input type="text" id="model" name="model" required value="${escapeHtml(current)}"${models === "" ? "" : ' list="models"'} autocomplete="off" aria-describedby="model-hint">${models === "" ? "" : `<datalist id="models">${models}</datalist>`}`,
     {
-      hint: `${models === "" ? "Type the model's name as the provider spells it." : "Pick one Hermes lists, or type another."} Hermes checks it before saving.`,
+      hint: models === "" ? "As the provider spells it." : "Pick one or type another.",
     },
   );
   return section({
@@ -496,16 +493,14 @@ function signInHtml(
   }
   if (provider.auth_type === "api_key" && provider.key_env !== "") {
     const setupToken =
-      provider.slug === "anthropic"
-        ? " A token that <code>claude setup-token</code> prints works too, and is saved as <code>ANTHROPIC_TOKEN</code>."
-        : "";
+      provider.slug === "anthropic" ? " A <code>claude setup-token</code> token also works." : "";
     return `<form class="form" method="post" action="${PLANNING_PATH}/key" autocomplete="off">${hidden}${input(
       "key",
       "API key",
       {
         type: "password",
         autocomplete: "off",
-        hint: `Saved as <code>${escapeHtml(provider.key_env)}</code> in files only you can read on this host. It is never shown again.${setupToken}`,
+        hint: `Stored on this host as <code>${escapeHtml(provider.key_env)}</code>.${setupToken}`,
       },
     )}<div><button type="submit">${provider.authenticated ? "Replace the key" : "Save the key"}</button></div></form>`;
   }

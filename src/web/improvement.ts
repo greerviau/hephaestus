@@ -138,9 +138,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
               count: pending.value.length,
               body:
                 pending.value.length === 0
-                  ? empty(
-                      "No proposal is waiting. The improver files one when the factory's threads show a change worth making.",
-                    )
+                  ? empty("No proposals waiting.")
                   : rowList(
                       pending.value.map(({ version, changes, evidence }) => ({
                         title: `v${String(version.id)} ${version.title}`,
@@ -181,10 +179,7 @@ export function improvementRoutes(factory: FactoryPages): Route[] {
           200,
           layout(
             "Proposals",
-            `${pageHead({
-              title: "Proposals",
-              lede: "Config changes the improver suggests from the factory's own threads, which it may file each night, and starter skills a Hephaestus update brings. Nothing changes until you approve one; approving deploys it to every worker.",
-            })}${notice(url)}${failed ? STORE_ERROR : ""}${waiting}${history}`,
+            `${pageHead({ title: "Proposals" })}${notice(url)}${failed ? STORE_ERROR : ""}${waiting}${history}`,
             { section: "/proposals", shell },
           ),
         );

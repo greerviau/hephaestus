@@ -359,7 +359,7 @@ describe("Home", () => {
     // Projects and the deployed config are done; the first step left is the next one.
     expect(fresh.split('<li class="done">').length - 1).toBe(2);
     expect(fresh).toContain(
-      '<li class="next"><div><strong>Name the config repo</strong><span class="subline">Name a private repo for config versions. Hephaestus creates it if it does not exist.</span></div><a class="btn primary" href="/config">Open config</a></li>',
+      '<li class="next"><div><strong>Name the config repo</strong><span class="subline">A private repo for config versions. Created if missing.</span></div><a class="btn primary" href="/config">Open config</a></li>',
     );
     expect(fresh).toContain('<a class="btn" href="/workers">Open workers</a>');
     expect(fresh).toContain('<a class="btn" href="/config/models/planning">Open models</a>');

@@ -88,14 +88,11 @@ const RELOAD_SECONDS = 10;
 const WORKERS_PATH = "/workers";
 
 function workersPage(shell: Shell | undefined, body: string, refreshSeconds?: number): string {
-  return layout(
-    "Workers",
-    `${pageHead({
-      title: "Workers",
-      lede: "Machines linked to this host's T3. Factory threads run only on workers that are ready.",
-    })}${body}`,
-    { section: "/workers", shell, ...(refreshSeconds === undefined ? {} : { refreshSeconds }) },
-  );
+  return layout("Workers", `${pageHead({ title: "Workers" })}${body}`, {
+    section: "/workers",
+    shell,
+    ...(refreshSeconds === undefined ? {} : { refreshSeconds }),
+  });
 }
 
 /** The Workers page with one machine's row held open, which a reload would otherwise close. */
@@ -207,7 +204,7 @@ export function workersRoutes(
                   "Sign in Factory Claude",
                   `${pageHead({
                     title: "Sign in Factory Claude",
-                    lede: `On ${escapeHtml(environment.label)}. The token goes into T3, not into this page.`,
+                    lede: `On ${escapeHtml(environment.label)}.`,
                   })}<form method="post" action="${escapeHtml(actionPath(environmentId, "sign-in-claude"))}"><input type="hidden" name="back" value="${escapeHtml(back)}"><ol class="steps"><li>Press Start sign-in. Hephaestus starts a thread on the machine.</li><li>On any machine signed in to Claude, run <code>claude setup-token</code>.</li><li>In T3, open the thread "${CLAUDE_THREAD}" on ${escapeHtml(environment.label)} and paste the token there.</li><li>The Workers page shows Factory Claude as signed in once the token is accepted.</li></ol><div class="savebar"><button type="submit" class="primary">Start sign-in</button>${buttonLink(back, "Cancel")}</div></form>`,
                   { section: "/workers", shell: context.shell, crumbs },
                 ),

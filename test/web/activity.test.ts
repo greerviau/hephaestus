@@ -71,7 +71,7 @@ describe("Activity", () => {
     const positions = order.map((text) => page.indexOf(text));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(page.match(/<li class="row kinded act-row">/g)).toHaveLength(6);
-    expect(page).toContain("6 shown, newest first. The page lists at most 200.");
+    expect(page).toContain("6 shown, up to 200.");
   });
 
   it("shows each row's status as text, and a call's raw arguments under a fold", async () => {

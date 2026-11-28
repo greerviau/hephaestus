@@ -77,7 +77,6 @@ const NOTICES: Record<string, { title: string; text: string }> = {
   "alerts-off": { title: "Alerts off", text: "Nothing more is posted to the chat." },
 };
 
-const LEDE = "Ask for work in a chat and get told there when something needs you.";
 const SEP = " &middot; ";
 
 /** What went wrong with an action, for the page the owner lands on. */
@@ -321,7 +320,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
 
   function page(context: RouteContext, notice: string, problem: Problem | undefined): string {
     const { shell } = context;
-    const head = pageHead({ title: "Chat", lede: LEDE });
+    const head = pageHead({ title: "Chat" });
     const blocked = unavailable();
     if (messaging === undefined || blocked !== undefined) {
       return layout("Chat", `${head}${blocked ?? ""}`, { section: "/chat", shell });
@@ -340,7 +339,7 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
         : rowList([
             {
               title: "Post what needs you to the chat",
-              sub: `Escalations, reverts, proposals to approve, and workers that need a sign-in are posted to the alerts channel on ${escapeHtml(listed(connected.map((state) => state.label)))}, each with a link to the dashboard.`,
+              sub: `Escalations, reverts, proposals, and worker sign-ins, to the alerts channel on ${escapeHtml(listed(connected.map((state) => state.label)))}.`,
               aside: `${statusText(alerts ? "done" : "off", alerts ? "On" : "Off")}${postButton(
                 `/chat/alerts/${alerts ? "off" : "on"}`,
                 alerts ? "Turn alerts off" : "Turn alerts on",
@@ -381,8 +380,8 @@ export function messagingRoutes(factory: FactoryPages): Route[] {
         ? ""
         : callout("err", `${platform.label}: not changed`, escapeHtml(problem.text));
     const form = `<form class="form" method="post" action="/chat/${name}/connect" autocomplete="off">
-${input("token", "Bot token", { type: "password", autocomplete: "off", hint: "Kept in a file only you can read on this host. It is never shown again." })}
-${platform.appToken === undefined ? "" : `${input("app_token", "App-level token", { type: "password", autocomplete: "off", hint: "The xapp- token Socket Mode uses. Kept and never shown again, like the bot token." })}\n`}${input("users", "Your user ID", { value: typed?.users, inputmode: numeric(name), hint: "Only these users can use the bot. Separate several with commas." })}
+${input("token", "Bot token", { type: "password", autocomplete: "off", hint: "Stored on this host and never shown again." })}
+${platform.appToken === undefined ? "" : `${input("app_token", "App-level token", { type: "password", autocomplete: "off", hint: "The xapp- token for Socket Mode." })}\n`}${input("users", "Your user ID", { value: typed?.users, inputmode: numeric(name), hint: "Only these users can use the bot. Comma-separated." })}
 ${channelFields(name, typed)}
 <div class="savebar"><button type="submit" class="primary">${escapeHtml(title)}</button><a href="/chat">Cancel</a></div>
 </form>`;
@@ -410,10 +409,7 @@ ${channelFields(name, typed)}
   ): string {
     const platform = PLATFORMS[name];
     const title = `${platform.label} channels`;
-    const head = pageHead({
-      title,
-      lede: "Which channels the bot reads, and where Hephaestus posts. The bot never reads a channel outside these.",
-    });
+    const head = pageHead({ title });
     const error =
       problem === undefined
         ? ""
@@ -441,13 +437,13 @@ function channelFields(name: PlatformName, typed: Typed | undefined): string {
       ? input("channel", "Request channel ID", {
           value: typed?.channel,
           inputmode,
-          hint: "Ask for work here without mentioning the bot; each request gets its own thread.",
+          hint: "Requests here need no mention. Each gets its own thread.",
         })
       : input("channel", "Request chat ID (optional)", {
           value: typed?.channel,
           inputmode,
           required: false,
-          hint: "Ask for work here. Empty uses your direct chat with the bot.",
+          hint: "Empty uses your direct chat with the bot.",
         });
   return [
     request,
@@ -457,8 +453,8 @@ function channelFields(name: PlatformName, typed: Typed | undefined): string {
       required: false,
       hint:
         platform.request === "required"
-          ? "Channel IDs, separated by commas. The bot answers there when you mention it. Empty keeps it to the request channel."
-          : "Group chat IDs, separated by commas. Empty keeps it to the request chat and your direct chat.",
+          ? "Comma-separated. The bot answers there when mentioned."
+          : "Group chat IDs, comma-separated.",
     }),
     checkbox("read_all", `Let the bot read every ${where} it can see`, {
       checked: typed?.readAll === true,
@@ -467,13 +463,13 @@ function channelFields(name: PlatformName, typed: Typed | undefined): string {
       value: typed?.status,
       inputmode,
       required: false,
-      hint: `Where the factory's own notices go, such as scheduled job results and restarts. Empty uses the request ${where}.`,
+      hint: `Job results and restarts. Empty uses the request ${where}.`,
     }),
     input("alerts", `Alerts ${where} ID (optional)`, {
       value: typed?.alerts,
       inputmode,
       required: false,
-      hint: `Where anything that needs you goes. Empty uses the status ${where}, or the request ${where} when that is empty too.`,
+      hint: `Anything that needs you. Empty uses the status ${where}.`,
     }),
   ].join("\n");
 }
@@ -486,33 +482,32 @@ function channelFields(name: PlatformName, typed: Typed | undefined): string {
 function mentionFields(name: PlatformName, typed: Typed | undefined): string {
   const inputmode = numeric(name);
   const all = typed?.readAll === true;
-  const choice = (value: string, checked: boolean, title: string, hint: string): string =>
-    `<label class="choice"><input type="radio" name="read_all" value="${value}"${checked ? " checked" : ""}><strong>${escapeHtml(title)}</strong><span class="hint">${escapeHtml(hint)}</span></label>`;
+  const choice = (value: string, checked: boolean, title: string): string =>
+    `<label class="choice"><input type="radio" name="read_all" value="${value}"${checked ? " checked" : ""}><strong>${escapeHtml(title)}</strong></label>`;
   const access = `<fieldset class="access"><legend>Channels the bot reads</legend><div class="choices two">${choice(
     "0",
     !all,
     "Only the channels I list",
-    "Empty, the bot reads no channel.",
-  )}${choice("1", all, "Every channel it can see", "Any channel the bot was invited to.")}</div>
+  )}${choice("1", all, "Every channel it is in")}</div>
 <div class="access-list">${textarea("reads", "Channel IDs", {
     value: typed?.reads,
     rows: 2,
     required: false,
-    hint: "Separated by commas.",
+    hint: "Comma-separated.",
   })}</div>
-<p class="hint">Either way, the bot answers only when you mention it, in a thread of its own.</p></fieldset>`;
+<p class="hint">The bot answers only when mentioned, in its own thread.</p></fieldset>`;
   return [
     access,
     input("status", "Status channel ID", {
       value: typed?.status,
       inputmode,
-      hint: "Where the factory's own notices go, such as scheduled job results, restarts, and the test message. The bot reads it only when it is listed above.",
+      hint: "Job results, restarts, and test messages.",
     }),
     input("alerts", "Alerts channel ID (optional)", {
       value: typed?.alerts,
       inputmode,
       required: false,
-      hint: "Where anything that needs you goes. Empty uses the status channel.",
+      hint: "Anything that needs you. Empty uses the status channel.",
     }),
   ].join("\n");
 }

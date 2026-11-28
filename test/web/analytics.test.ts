@@ -154,9 +154,7 @@ describe("Analytics", () => {
 
     const page = main((await dashboard.get("/analytics")).html);
 
-    expect(page).toContain(
-      '<p class="empty">Nothing to chart yet. Charts fill in as tasks open PRs, merge, and finish.</p>',
-    );
+    expect(page).toContain('<p class="empty">Nothing to chart yet.</p>');
     expect(page).toContain('aria-label="Period"');
     expect(page).not.toContain('role="img"');
     expect(page).not.toContain('class="totals"');

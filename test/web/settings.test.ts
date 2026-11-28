@@ -140,9 +140,9 @@ describe("Factory tab", () => {
     expect(html).toContain('name="limits.threads" min="0" step="1" value="4"');
     expect(html).toContain('name="triageAlertMinutes" min="0" step="1" value="30"');
     expect(html).toContain('name="cron.improver.nightly.time" value="03:00"');
-    expect(html).toContain('<label for="f-threads">Threads in all</label>');
+    expect(html).toContain('<label for="f-threads">Threads in total</label>');
     expect(html).toContain("Deploy now");
-    expect(html).toContain(`built from version ${String(id)}`);
+    expect(html).toContain(`Builds on v${String(id)}.`);
     expect(html).not.toContain('name="claude.model"');
   });
 
@@ -497,14 +497,12 @@ describe("Models tab", () => {
 });
 
 describe("JSON tab", () => {
-  it("says it is the fallback, and saves an edit as a draft with its diff", async () => {
+  it("says it saves a draft, and saves an edit as a draft with its diff", async () => {
     await start();
     const document = sampleConfig();
     document.roles.lead.persona = "Lead <carefully>.";
 
-    expect((await dashboard.get("/config/json")).html).toContain(
-      "for changes the other tabs do not cover",
-    );
+    expect((await dashboard.get("/config/json")).html).toContain("Saves a draft built on v1.");
     const created = await dashboard.post("/config/json", {
       document: JSON.stringify(document),
       message: "Tune the lead",
@@ -584,7 +582,7 @@ describe("JSON tab", () => {
     expect(html).toContain("The config is not valid JSON");
     expect(html).toContain('name="parentId" value="1"');
     expect(html).toContain('value="Keep me"');
-    expect(html).toContain("built from version 1.");
+    expect(html).toContain("built on v1.");
   });
 
   it("can save back an unchanged config near the size cap", async () => {

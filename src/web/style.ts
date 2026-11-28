@@ -93,6 +93,9 @@ main:focus { outline: none; }
 .sec-head a, .sec-head .muted { font-size: 13px; }
 .cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 48px; }
 .cols .sec { margin-bottom: 0; }
+/* The save bar ends the form, so it sits closer to the section it saves. */
+.sec:has(+ .savebar) { margin-bottom: 16px; }
+.sec + .savebar { padding-left: 8px; }
 .cols + .sec, .cols { margin-bottom: 48px; }
 
 /* buttons */
@@ -182,7 +185,14 @@ textarea { line-height: 1.5; padding: 8px; resize: vertical; }
 .inline-field select { min-width: 0; flex: 1 1 auto; }
 fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
 legend { padding: 0; font-weight: 700; margin-bottom: 12px; }
-.setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 24px; align-items: start; padding: 12px 0; border-bottom: 1px solid var(--line); }
+/* A fieldset that is a page section gets the section heading's look. */
+fieldset.sec > legend { width: 100%; font-size: 18px; line-height: 1.3; padding-bottom: 8px; border-bottom: 1px solid var(--line); margin-bottom: 0; }
+/* A section body that is not a list of rows: inset like rows, with room under the heading. */
+.sec-body { display: grid; gap: 16px; padding: 16px 8px 0; margin: 0; }
+.sec-body .savebar { padding-top: 0; }
+.sec-body details.fold { margin-top: 0; }
+.sec > details.fold { padding: 0 8px; }
+.setting { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 24px; align-items: center; padding: 12px 8px; border-bottom: 1px solid var(--line); }
 .setting label { font-weight: 500; }
 .setting .hint { display: block; }
 .choices { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }

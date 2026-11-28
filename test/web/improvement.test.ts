@@ -245,7 +245,7 @@ describe("Proposals", () => {
     expect(deployed).toEqual([id]);
     const list = (await dashboard.get("/proposals?notice=approved")).html;
     expect(list).toContain("Proposal approved");
-    expect(list).toContain("No proposal is waiting.");
+    expect(list).toContain("No proposals waiting.");
     expect(list).toContain('<h2>Past proposals<span class="n">1</span></h2>');
     expect(list).toContain(`<a class="row" href="/config/versions/${String(id)}">`);
     expect(list).toContain("Approved</span>");
@@ -377,7 +377,7 @@ describe("Proposals", () => {
     const { html } = await dashboard.get("/proposals");
 
     expect(html).toContain('<h2>Waiting for you<span class="n">0</span></h2>');
-    expect(html).toContain("No proposal is waiting.");
+    expect(html).toContain("No proposals waiting.");
   });
 
   it("shows the store error and no actions when the store cannot be read", async () => {
