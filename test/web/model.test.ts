@@ -243,6 +243,36 @@ describe("Planning model page", () => {
     expect(model.choices).toEqual([{ provider: "anthropic", model: "claude-opus-5-5" }]);
   });
 
+  it("picks the model from the same dropdown as the Models tab, and saves the choice", async () => {
+    const model = fakeModel();
+    dashboard = await startDashboard({ model });
+
+    const page = (await dashboard.get("/config/models/planning?provider=anthropic")).html;
+    const control = /<select [^>]*name="model"[^>]*>(.*?)<\/select>/.exec(page);
+    expect(control?.[0]).toContain('class="model"');
+    expect([...(control?.[1] ?? "").matchAll(/<option value="([^"]*)"/g)].map((m) => m[1])).toEqual(
+      ["claude-sonnet-5", "claude-opus-5-5"],
+    );
+    expect(control?.[1]).toContain('<option value="claude-sonnet-5" selected>');
+    expect(page).not.toContain("<datalist");
+    expect(page).not.toContain('list="models"');
+
+    await dashboard.post("/config/models/planning/set", {
+      provider: "anthropic",
+      model: "claude-opus-5-5",
+    });
+    expect(model.choices).toEqual([{ provider: "anthropic", model: "claude-opus-5-5" }]);
+  });
+
+  it("keeps a model field for a provider with no model list", async () => {
+    dashboard = await startDashboard({ model: fakeModel() });
+
+    const page = (await dashboard.get("/config/models/planning?provider=deepseek")).html;
+
+    expect(page).toContain('<input type="text" id="model" name="model"');
+    expect(page).not.toMatch(/<select [^>]*name="model"/);
+  });
+
   it("takes a custom endpoint's URL and key with the model", async () => {
     const model = fakeModel();
     dashboard = await startDashboard({ model });

@@ -5,7 +5,15 @@ import {
   type ModelChoice,
 } from "../config/document.js";
 import { EFFORT, MODELS, providerOfInstance, type EffortProvider } from "../config/effort.js";
-import { checkbox, escapeHtml, fold, section, setting } from "./html.js";
+import {
+  checkbox,
+  choiceOptions,
+  escapeHtml,
+  fold,
+  modelSelect,
+  section,
+  setting,
+} from "./html.js";
 
 /** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
 type Value = (name: string, saved: string) => string;
@@ -232,17 +240,6 @@ function providerOf(key: JobKey, instanceId: string): EffortProvider | undefined
   return key === "setup" ? providerOfInstance(instanceId) : key;
 }
 
-/** The options of a selector: the given values, with a saved or typed one they lack first. */
-function selectOptions(values: readonly string[], current: string): string {
-  const all = current === "" || values.includes(current) ? values : [current, ...values];
-  return all
-    .map(
-      (value) =>
-        `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
-    )
-    .join("");
-}
-
 /**
  * A job's effort selector: the provider's levels only. A choice without effort shows a
  * placeholder that is disabled, so the browser sends no effort and the save leaves it unset.
@@ -257,7 +254,7 @@ function effortSelect(
 ): string {
   const levels = provider === undefined ? [] : EFFORT[provider].levels;
   const placeholder = provider === undefined ? "No effort levels" : "Select effort";
-  const options = `<option value="" disabled hidden${current === "" ? " selected" : ""}>${placeholder}</option>${selectOptions(levels, current)}`;
+  const options = `<option value="" disabled hidden${current === "" ? " selected" : ""}>${placeholder}</option>${choiceOptions(levels, current)}`;
   return `<select class="effort" name="${key}.effort" aria-label="${job} effort">${options}</select>`;
 }
 
@@ -275,7 +272,7 @@ function modelField(
   if (provider === undefined) {
     return `<input type="text" name="${key}.model" value="${escapeHtml(current)}" aria-label="${job} model" required>`;
   }
-  return `<select class="model" name="${key}.model" aria-label="${job} model" required>${selectOptions(MODELS[provider], current)}</select>`;
+  return modelSelect(`${key}.model`, MODELS[provider], current, ` aria-label="${job} model"`);
 }
 
 /** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */

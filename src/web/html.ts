@@ -751,6 +751,31 @@ export function selectControl(
     .join("")}</select>`;
 }
 
+/** The options of a dropdown: the given values, with a saved or typed one they lack first. */
+export function choiceOptions(values: readonly string[], current: string): string {
+  const all = current === "" || values.includes(current) ? values : [current, ...values];
+  return all
+    .map(
+      (value) =>
+        `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
+    )
+    .join("");
+}
+
+/**
+ * The model dropdown that every model picker uses: the models a provider offers, with the
+ * saved or typed model first when the list lacks it, so saving keeps it. `attributes` is
+ * already safe HTML, such as an id or aria-label.
+ */
+export function modelSelect(
+  name: string,
+  models: readonly string[],
+  current: string,
+  attributes = "",
+): string {
+  return `<select class="model" name="${escapeHtml(name)}"${attributes} required>${choiceOptions(models, current)}</select>`;
+}
+
 /** A labelled select with `value` selected. */
 export function select(
   name: string,
