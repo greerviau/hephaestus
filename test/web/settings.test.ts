@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { FactoryConfig } from "../../src/config/document.js";
+import { MODELS } from "../../src/config/effort.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { startDashboard, type Dashboard, type DashboardOptions } from "./dashboard.js";
 
@@ -45,6 +46,23 @@ const FACTORY_FIELDS = {
   "limits.startsPerDay": "40",
   triageAlertMinutes: "30",
 };
+
+/** The inner HTML of the select with this aria-label. */
+function selectOf(html: string, label: string): string {
+  return new RegExp(`<select [^>]*aria-label="${label}"[^>]*>(.*?)</select>`).exec(html)?.[1] ?? "";
+}
+
+/** The values a select offers, leaving out a disabled placeholder. */
+function optionValues(html: string, label: string): string[] {
+  return [...selectOf(html, label).matchAll(/<option value="([^"]*)"(?![^>]*disabled)/g)].map(
+    (match) => match[1] ?? "",
+  );
+}
+
+/** The value a select shows as chosen. */
+function selected(html: string, label: string): string | undefined {
+  return /<option value="([^"]*)"[^>]* selected>/.exec(selectOf(html, label))?.[1];
+}
 
 const MODEL_FIELDS = {
   parentId: "1",
@@ -412,9 +430,10 @@ describe("Models tab", () => {
     for (const job of ["Implement", "Review", "Housekeeping"]) {
       expect(html).toContain(`<span class="title">${job}</span>`);
     }
-    expect(html).toContain('name="claude.model" value="claude-sonnet-5-5"');
-    expect(html).toContain('name="codex.model" value="gpt-6.2-sol"');
-    expect(html).toContain('name="setup.model" value="claude-sonnet-5-5"');
+    expect(selected(html, "Implement model")).toBe("claude-sonnet-5-5");
+    expect(selected(html, "Review model")).toBe("gpt-6.2-sol");
+    expect(selected(html, "Housekeeping model")).toBe("claude-sonnet-5-5");
+    expect(html).not.toMatch(/<input [^>]*name="(claude|codex|setup)\.model"/);
     expect(html).toContain('name="setup.instanceId" value="claudeAgent"');
     expect(html).not.toMatch(/<select[^>]*provider/);
     expect(html).toContain("<summary>Provider options</summary>");
@@ -470,17 +489,12 @@ describe("Models tab", () => {
     expect(dashboard.store.list()).toHaveLength(1);
   });
 
-  it("shows an effort selector beside each model with only its provider's levels and a default", async () => {
+  it("lists only each provider's effort levels, with a placeholder and no default entry", async () => {
     await start();
 
     const { html } = await dashboard.get("/config/models");
 
-    const select = (job: string): string =>
-      new RegExp(`<select [^>]*aria-label="${job} effort">(.*?)</select>`).exec(html)?.[1] ?? "";
-    const values = (job: string): string[] =>
-      [...select(job).matchAll(/<option value="([^"]*)"/g)].map((match) => match[1] ?? "");
-    expect(values("Implement")).toEqual([
-      "",
+    expect(optionValues(html, "Implement effort")).toEqual([
       "low",
       "medium",
       "high",
@@ -488,12 +502,124 @@ describe("Models tab", () => {
       "max",
       "ultrathink",
     ]);
-    expect(values("Review")).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    expect(optionValues(html, "Review effort")).toEqual([
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultra",
+    ]);
     // The default housekeeping instance is a Claude one.
-    expect(values("Housekeeping")).toEqual(values("Implement"));
-    expect(select("Implement")).toContain('<option value="" selected>Default effort</option>');
-    // The selector sits in the job's row, after its model field.
-    expect(html).toMatch(/name="codex.model"[^>]*>\s*<select name="codex.effort"/);
+    expect(optionValues(html, "Housekeeping effort")).toEqual(
+      optionValues(html, "Implement effort"),
+    );
+    expect(html).not.toContain("Default effort");
+    // A choice without effort shows a placeholder that cannot be picked or sent.
+    expect(selectOf(html, "Implement effort")).toContain(
+      '<option value="" disabled hidden selected>Select effort</option>',
+    );
+    // The selector sits in the job's row, after its model selector.
+    expect(html).toMatch(
+      /name="codex.model"[^>]*>.*?<\/select>\s*<select [^>]*name="codex.effort"/,
+    );
+  });
+
+  it("saves a form without a chosen effort, leaving effort unset", async () => {
+    await start();
+
+    // The placeholder is disabled, so the browser sends no effort field for it.
+    const response = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      "codex.model": "gpt-6.2-astra",
+    });
+
+    expect(response.status).toBe(303);
+    const saved = dashboard.store.list()[0]?.document.factory;
+    expect(saved?.models).toEqual({
+      claude: { model: "claude-sonnet-5-5" },
+      codex: { model: "gpt-6.2-astra" },
+    });
+    expect(saved?.setup).toEqual({ instanceId: "claudeAgent", model: "claude-sonnet-5-5" });
+  });
+
+  it("offers each provider's known models in a dropdown and saves the one chosen", async () => {
+    await start();
+
+    const { html } = await dashboard.get("/config/models");
+
+    expect(optionValues(html, "Implement model")).toEqual([...MODELS.claude]);
+    expect(optionValues(html, "Review model")).toEqual([...MODELS.codex]);
+    expect(optionValues(html, "Housekeeping model")).toEqual([...MODELS.claude]);
+    expect(MODELS.claude).toContain("claude-opus-5-5");
+    expect(MODELS.codex).toContain("gpt-6.1-sol");
+
+    const response = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      "claude.model": "claude-opus-5-5",
+      "claude.effort": "ultrathink",
+      "codex.model": "gpt-6.1-sol",
+    });
+
+    expect(response.status).toBe(303);
+    expect(dashboard.store.list()[0]?.document.factory.models).toEqual({
+      claude: { model: "claude-opus-5-5", effort: "ultrathink" },
+      codex: { model: "gpt-6.1-sol" },
+    });
+    // Once that version is current, the form shows what it saved.
+    const document = dashboard.store.list()[0]?.document;
+    if (document === undefined) throw new Error("no saved version");
+    deployVersion(document);
+    const after = (await dashboard.get("/config/models")).html;
+    expect(selected(after, "Implement model")).toBe("claude-opus-5-5");
+    expect(selected(after, "Implement effort")).toBe("ultrathink");
+  });
+
+  it("lists the housekeeping models and levels of the provider its instance names", async () => {
+    await start();
+    const codex = sampleConfig();
+    codex.factory.setup = { instanceId: "codex", model: "gpt-6.2-sol" };
+    deployVersion(codex);
+
+    let html = (await dashboard.get("/config/models")).html;
+    expect(optionValues(html, "Housekeeping model")).toEqual([...MODELS.codex]);
+    expect(optionValues(html, "Housekeeping effort")).toEqual(optionValues(html, "Review effort"));
+
+    const other = sampleConfig();
+    other.factory.setup = { instanceId: "cursor", model: "auto" };
+    deployVersion(other, 2);
+
+    // An instance of another provider has no known models, so its model stays typed.
+    html = (await dashboard.get("/config/models")).html;
+    expect(html).toContain('<input type="text" name="setup.model" value="auto"');
+    expect(optionValues(html, "Housekeeping effort")).toEqual([]);
+  });
+
+  it("keeps a saved model the list does not know, selected and unchanged on save", async () => {
+    await start();
+    const custom = sampleConfig();
+    custom.factory.models.codex = { model: "gpt-experimental-long-model-name-preview" };
+    const id = deployVersion(custom);
+
+    const { html } = await dashboard.get("/config/models");
+
+    expect(selected(html, "Review model")).toBe("gpt-experimental-long-model-name-preview");
+    expect(optionValues(html, "Review model")).toEqual([
+      "gpt-experimental-long-model-name-preview",
+      ...MODELS.codex,
+    ]);
+
+    const response = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      parentId: String(id),
+      "codex.model": "gpt-experimental-long-model-name-preview",
+      "claude.effort": "low",
+    });
+
+    expect(response.status).toBe(303);
+    expect(dashboard.store.list()[0]?.document.factory.models.codex).toEqual({
+      model: "gpt-experimental-long-model-name-preview",
+    });
   });
 
   it("saves the chosen effort levels in a new version whose diff shows them", async () => {
