@@ -313,15 +313,18 @@ textarea.config { min-height: 420px; font-size: 13px; }
 .code-big { font-size: 24px; font-weight: 700; letter-spacing: 0.08em; padding: 8px 16px; border: 1px dashed var(--ctl); border-radius: var(--r); display: inline-block; background: var(--sunk); }
 
 /* board */
+/* Lanes share the width equally from the same floor, and their tasks may shrink below their content, so no lane grows to fit a task and no task spills into the next lane. */
 .board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(120px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
+.lane { min-width: 0; }
 .lane h2 { font-size: 14px; display: flex; justify-content: space-between; color: var(--ink-2); padding: 0 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .lane h2 .n { color: var(--muted); font-weight: 400; }
-.lane ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lane ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }
 .lane .empty { padding: 4px 0; font-size: 13px; color: var(--muted); }
-.tile { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: inherit; }
+.tile { display: grid; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: inherit; }
 .tile:hover { border-color: var(--ctl); text-decoration: none; }
 .tile .title { font-weight: 500; overflow-wrap: anywhere; }
 .tile .subline { color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
+.tile .st { white-space: normal; overflow-wrap: anywhere; }
 
 /* charts */
 .totals { display: flex; flex-wrap: wrap; gap: 8px 32px; margin: 0 0 32px; padding: 0; list-style: none; }
@@ -403,7 +406,6 @@ ol.setup .subline { display: block; color: var(--muted); font-size: 13px; }
   .link, .seg a, .tabs a { min-height: 44px; }
   .tabs a { display: inline-flex; align-items: center; }
   select, input, textarea { font-size: 16px !important; }
-  .board { grid-auto-flow: row; grid-auto-columns: auto; }
   /* The chart's own width, so its labels keep their size and the region scrolls instead. */
   .chart svg.wide { min-width: 860px; }
   .minis svg { max-width: 320px; }
