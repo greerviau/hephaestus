@@ -2,18 +2,15 @@
 
 Hephaestus turns your repos into a software factory. You ask for work, AI agents build it on your own machines, a second agent reviews it, and Hephaestus merges it when your policy allows.
 
-<p align="center"><img src="docs/images/demo.gif" alt="Asking for work in Slack, following it in the thread with a screenshot of the change, approving the merge on the dashboard, and approving an improvement proposal" width="800"></p>
+## Key Features
 
-## Features
-
-- Ask for work in chat (Discord, Telegram, or Slack), on the dashboard, or by opening a GitHub issue.
-- A coding agent implements each task in a [T3 Code](https://github.com/pingdotgg/t3code) thread on one of your worker machines.
-- An agent from a different provider reviews each PR.
-- A per-project merge policy decides what merges on its own and what waits for you.
-- A merge that breaks the default branch can be reverted automatically.
-- On a schedule, the factory proposes improvements to its own instructions for you to approve.
-- A dashboard on your LAN shows what needs you, what is running, and the full history.
-- Your own Claude, Codex, Hermes, and T3 setup is left untouched, and uninstall removes everything Hephaestus added.
+- Ask for work in chat (Discord, Telegram, or Slack), or by opening a GitHub issues.
+- Coding agents implement each task in a [T3 Code](https://github.com/pingdotgg/t3code) thread on one of your worker machines.
+- A separate agent reviews each PR.
+- A merge policy decides what merges on its own and what waits for you.
+- When a merge breaks something, it reverts automatically.
+- The nightly self-improvement loop proposes improvements for you to approve.
+- A dashboard to show you what needs you, what is running, and the full history.
 
 ## Requirements
 
