@@ -313,10 +313,11 @@ textarea.config { min-height: 420px; font-size: 13px; }
 .code-big { font-size: 24px; font-weight: 700; letter-spacing: 0.08em; padding: 8px 16px; border: 1px dashed var(--ctl); border-radius: var(--r); display: inline-block; background: var(--sunk); }
 
 /* board */
-.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(200px, 1fr); gap: 16px; overflow-x: auto; padding-bottom: 8px; }
+.board { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(120px, 1fr); gap: 12px; overflow-x: auto; padding-bottom: 8px; }
 .lane h2 { font-size: 14px; display: flex; justify-content: space-between; color: var(--ink-2); padding: 0 0 8px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .lane h2 .n { color: var(--muted); font-weight: 400; }
 .lane ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.lane .empty { padding: 4px 0; font-size: 13px; color: var(--muted); }
 .tile { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r); background: var(--panel); color: inherit; }
 .tile:hover { border-color: var(--ctl); text-decoration: none; }
 .tile .title { font-weight: 500; overflow-wrap: anywhere; }
