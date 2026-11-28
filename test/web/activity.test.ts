@@ -251,3 +251,212 @@ describe("Activity", () => {
     expect(html).toContain("Hephaestus could not read its store");
   });
 });
+
+describe("Activity search", () => {
+  /** The rows the page lists, so the search form's own echo of the query does not match. */
+  function rows(page: string): string {
+    const start = page.indexOf('<ul class="rows">');
+    return start === -1 ? "" : page.slice(start, page.indexOf("</ul>", start));
+  }
+
+  it("keeps only rows whose text contains the query, ignoring case", async () => {
+    dashboard = await startDashboard();
+    const task = runningTask(dashboard.h);
+    const other = dashboard.h.tasks.create({
+      repo: "octo/app",
+      issueNumber: 9,
+      title: "Fix logs",
+    }).id;
+    dashboard.h.tasks.event(other, "waiting", "Rate LIMITED by GitHub");
+    recordCall(dashboard, "lead", "start_work", true, "2026-11-25T13:00:00.000Z");
+    recordCall(
+      dashboard,
+      "improver",
+      "get_config",
+      true,
+      "2026-11-25T13:00:00.000Z",
+      '{"key":"needle"}',
+    );
+    recordCall(dashboard, "communicator", "file_issue", true, "2026-11-25T13:00:00.000Z");
+    notify(dashboard, task, "Task needs a Decision", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, task, "Other notice", "2026-11-25T15:00:00.000Z");
+
+    const search = async (q: string): Promise<string> =>
+      rows(main((await (dashboard as Dashboard).get(`/activity?q=${encodeURIComponent(q)}`)).html));
+
+    // A task event by its task title, its issue number, and its description.
+    const byTitle = await search("add a CACHE");
+    expect(byTitle).toContain("#8 Add a cache</a>: moved to Implementing");
+    expect(byTitle).not.toContain("Fix logs");
+    expect(byTitle).not.toContain("called");
+    expect(byTitle).not.toContain("notice");
+    expect(await search("#9")).toContain("#9 Fix logs");
+    expect(await search("#9")).not.toContain("Add a cache");
+    const byDetail = await search("rate limited");
+    expect(byDetail).toContain("#9 Fix logs");
+    expect(byDetail).not.toContain("Add a cache");
+    expect(await search("moved to implementing")).toContain("#8 Add a cache");
+    // An agent call by its role, its tool, and its raw arguments.
+    expect(await search("IMPROVER")).toContain("improver called get_config");
+    expect(await search("IMPROVER")).not.toContain("lead called");
+    expect(await search("start_WORK")).toContain("lead called start_work");
+    expect(await search("start_WORK")).not.toContain("improver called");
+    expect(await search("NEEDLE")).toContain("improver called get_config");
+    expect(await search("NEEDLE")).not.toContain("communicator called");
+    // A notification by its text.
+    const byNotice = await search("decision");
+    expect(byNotice).toContain("Task needs a Decision");
+    expect(byNotice).not.toContain("Other notice");
+  });
+
+  it("combines with the project, kind, and role filters, and every link keeps the query", async () => {
+    dashboard = await startDashboard();
+    const app = runningTask(dashboard.h);
+    const lib = dashboard.h.tasks.create({
+      repo: "octo/lib",
+      issueNumber: 3,
+      title: "Lib cache",
+    }).id;
+    notify(dashboard, app, "App cache notice", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, lib, "Lib cache notice", "2026-11-25T15:00:00.000Z");
+    const at = "2026-11-25T13:00:00.000Z";
+    recordCall(
+      dashboard,
+      "lead",
+      "start_work",
+      true,
+      at,
+      JSON.stringify({ task_id: app, n: "cache" }),
+    );
+    recordCall(
+      dashboard,
+      "communicator",
+      "file_issue",
+      true,
+      at,
+      JSON.stringify({ repo: "octo/app", n: "cache" }),
+    );
+    recordCall(
+      dashboard,
+      "lead",
+      "escalate",
+      true,
+      at,
+      JSON.stringify({ task_id: lib, n: "cache" }),
+    );
+
+    const forApp = rows(await getFor(dashboard, "octo/app", "/activity?q=cache"));
+    expect(forApp).toContain("#8 Add a cache");
+    expect(forApp).toContain("App cache notice");
+    expect(forApp).toContain("lead called start_work");
+    expect(forApp).not.toContain("Lib cache");
+    expect(forApp).not.toContain("lead called escalate");
+
+    const notices = main((await dashboard.get("/activity?show=notifications&q=cache")).html);
+    expect(rows(notices)).toContain("App cache notice");
+    expect(rows(notices)).toContain("Lib cache notice");
+    expect(rows(notices)).not.toContain("called");
+    expect(rows(notices)).not.toContain("moved to");
+    expect(notices).toContain('<a href="/activity?show=tasks&amp;q=cache">Tasks</a>');
+    expect(notices).toContain('<a href="/activity?q=cache">Everything</a>');
+    expect(notices).toContain('<input type="hidden" name="show" value="notifications">');
+
+    const leadCalls = main((await dashboard.get("/activity?show=calls&role=lead&q=cache")).html);
+    expect(rows(leadCalls)).toContain("lead called start_work");
+    expect(rows(leadCalls)).toContain("lead called escalate");
+    expect(rows(leadCalls)).not.toContain("communicator called");
+    // The role form keeps the query, and the search form keeps the kind and role.
+    expect(leadCalls).toContain('<input type="hidden" name="q" value="cache">');
+    expect(leadCalls).toContain('<input type="hidden" name="role" value="lead">');
+    expect(leadCalls).toContain('<input type="search" name="q" value="cache">');
+  });
+
+  it("finds a match older than the newest 200 rows", async () => {
+    dashboard = await startDashboard();
+    const app = runningTask(dashboard.h);
+    notify(dashboard, app, "Old needle notice", "2026-11-25T10:00:00.000Z");
+    recordCall(dashboard, "lead", "escalate", true, "2026-11-25T10:00:00.000Z", '{"why":"needle"}');
+    const busy = dashboard.h.tasks.create({ repo: "octo/app", issueNumber: 9, title: "Busy" }).id;
+    for (let index = 0; index < 201; index += 1) {
+      dashboard.h.tasks.event(busy, "waiting", `busy ${String(index)}`);
+      notify(dashboard, app, `Notice ${String(index)}`, "2026-11-25T11:00:00.000Z");
+      recordCall(dashboard, "lead", "start_work", true, "2026-11-25T11:00:00.000Z");
+    }
+
+    const found = rows(main((await dashboard.get("/activity?q=NEEDLE")).html));
+    expect(found).toContain("Old needle notice");
+    expect(found).toContain("lead called escalate");
+    expect(found.match(/<li /g)).toHaveLength(2);
+    expect(rows(main((await dashboard.get("/activity?q=add%20a%20cache")).html))).toContain(
+      "moved to Implementing",
+    );
+  });
+
+  it("shows the query in the field and keeps it in the live refresh", async () => {
+    dashboard = await startDashboard();
+
+    const { html } = await dashboard.get("/activity?show=calls&q=start");
+
+    expect(html).toContain('<form class="grp" method="get" action="/activity" role="search">');
+    expect(html).toContain('<input type="search" name="q" value="start">');
+    expect(html).toContain('<button type="submit">Search</button>');
+    expect(html).toContain('content="10;url=/activity?show=calls&amp;q=start"');
+  });
+
+  it("says when nothing matches", async () => {
+    dashboard = await startDashboard();
+    runningTask(dashboard.h);
+
+    const page = main((await dashboard.get("/activity?q=zebra")).html);
+
+    expect(page).toContain("Nothing matches &quot;zebra&quot;.");
+    expect(page).not.toContain('<ul class="rows">');
+  });
+
+  it("matches %, _, quotes, and < as literal text and escapes them on the page", async () => {
+    dashboard = await startDashboard();
+    const task = runningTask(dashboard.h);
+    notify(dashboard, task, "Done 100% of it", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, task, "Done 1000 of it", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, task, "snake_case here", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, task, "snakeXcase here", "2026-11-25T15:00:00.000Z");
+    notify(dashboard, task, `He said "it's <b>"`, "2026-11-25T15:00:00.000Z");
+
+    const search = async (q: string): Promise<string> =>
+      main(
+        (
+          await (dashboard as Dashboard).get(
+            `/activity?show=notifications&q=${encodeURIComponent(q)}`,
+          )
+        ).html,
+      );
+
+    const percent = rows(await search("0%"));
+    expect(percent).toContain("Done 100% of it");
+    expect(percent).not.toContain("Done 1000");
+    const underscore = rows(await search("e_c"));
+    expect(underscore).toContain("snake_case");
+    expect(underscore).not.toContain("snakeXcase");
+    const quoted = await search(`"it's <b>"`);
+    expect(rows(quoted)).toContain("He said &quot;it&#39;s &lt;b&gt;&quot;");
+    expect(rows(quoted).match(/<li /g)).toHaveLength(1);
+    expect(quoted).toContain(
+      '<input type="search" name="q" value="&quot;it&#39;s &lt;b&gt;&quot;">',
+    );
+    expect(quoted).not.toContain("<b>");
+    expect(rows(await search("%"))).toContain("Done 100%");
+    expect(rows(await search("%")).match(/<li /g)).toHaveLength(1);
+  });
+
+  it("treats an empty or whitespace query as no search", async () => {
+    dashboard = await startDashboard();
+    runningTask(dashboard.h);
+
+    for (const q of ["", "%20%20"]) {
+      const page = main((await dashboard.get(`/activity?q=${q}`)).html);
+      expect(page).toContain("3 shown, up to 200.");
+      expect(page).toContain('<input type="search" name="q" value="">');
+      expect(page).toContain('<a href="/activity?show=tasks">Tasks</a>');
+    }
+  });
+});
