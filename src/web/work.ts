@@ -9,6 +9,7 @@ import {
   DEFAULT_PARK_HOURS,
   VALIDATION_FAILED,
   checksPassedAtGate,
+  MergeSettledError,
   escalationReason,
   parkRefusal,
 } from "../factory/pipeline.js";
@@ -22,6 +23,7 @@ import {
   escalationActions,
   failureNotice,
   form,
+  handoffFailedText,
   formHref,
   heldIssueRow,
   here,
@@ -46,6 +48,13 @@ import {
   type Read,
 } from "./factory.js";
 import { ADMITTING_RELOAD_SECONDS, admissionsFor } from "./admissions.js";
+import {
+  SEND_WAIT_MS,
+  SENDING_RELOAD_SECONDS,
+  handoffsFor,
+  type HandoffState,
+} from "./handoffs.js";
+import { setTimeout as delay } from "node:timers/promises";
 import {
   backTo,
   buttonLink,
@@ -589,16 +598,24 @@ function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string
 }
 
 /** The callout under the tracker: what the task waits on, and the owner's actions when it waits on them. */
-function taskCallout(item: Task, back: string, place: number | undefined): string {
+function taskCallout(
+  item: Task,
+  back: string,
+  place: number | undefined,
+  handoff: HandoffState | undefined,
+): string {
   const id = String(item.id);
   const reason = withShortShas(item.reason ?? "");
   if (needsOwner(item)) {
     const actions = taskActions(item);
+    const failed = handoffFailedText(handoff);
     return callout(
       "warn",
       NEEDS_DECISION,
-      reason,
-      `${mergeButton(item, back)}${actions.sendToLead ? buttonLink(formHref(`/work/${id}/lead`, back), "Send to lead") : ""}${actions.park ? buttonLink(formHref(`/work/${id}/park`, back), "Park") : ""}${actions.abandon ? buttonLink(formHref(`/work/${id}/abandon`, back), "Abandon", { variant: "danger" }) : ""}`,
+      failed === "" ? reason : `${reason}<br>${failed}`,
+      handoff === "sending"
+        ? statusText("run", "Sending to lead")
+        : `${mergeButton(item, back)}${actions.sendToLead ? buttonLink(formHref(`/work/${id}/lead`, back), "Send to lead") : ""}${actions.park ? buttonLink(formHref(`/work/${id}/park`, back), "Park") : ""}${actions.abandon ? buttonLink(formHref(`/work/${id}/abandon`, back), "Abandon", { variant: "danger" }) : ""}`,
     );
   }
   if (isParked(item)) {
@@ -832,6 +849,38 @@ export function workRoutes(factory: FactoryPages): Route[] {
     });
   };
 
+  /**
+   * Hands an escalated task back to the lead for the owner. The handoff waits
+   * for the task's turn and for the Hermes board, so the request waits only a
+   * moment for it: one that ends by then says how, and a slower one goes on in
+   * the background while the pages show the task as sending. A form for a task
+   * that no longer waits for the owner, or from before the task changed, is
+   * refused at once, without waiting behind another step on the task.
+   */
+  const sendToLead = async (id: number, note: string, version: string): Promise<NoticeKey> => {
+    const task = read("the task", () => factory.tasks.find(id));
+    if (
+      !task.ok ||
+      task.value === undefined ||
+      !taskActions(task.value).sendToLead ||
+      version !== String(task.value.version)
+    ) {
+      return "send-failed";
+    }
+    const handoffs = handoffsFor(factory.pipeline);
+    const ended = await Promise.race([
+      handoffs.start(id, note, version),
+      delay(factory.sendWaitMs ?? SEND_WAIT_MS),
+    ]);
+    if (ended === undefined) return "sending-to-lead";
+    if (ended.ok) return "sent-to-lead";
+    // A failure the notice reports needs no second word on the task.
+    handoffs.forget(id);
+    return ended.error instanceof MergeSettledError
+      ? failureNotice(ended.error, "send-failed")
+      : "send-failed";
+  };
+
   const leadPage = (
     shell: Shell | undefined,
     item: Task,
@@ -841,6 +890,18 @@ export function workRoutes(factory: FactoryPages): Route[] {
   ): string => {
     const id = String(item.id);
     const crumbs = taskCrumbs(item.id, "Send to lead");
+    if (handoffsFor(factory.pipeline).state(item) === "sending") {
+      return noFormPage(
+        shell,
+        "Send to lead",
+        crumbs,
+        callout(
+          "info",
+          "Sending to the lead",
+          `Your note is on its way to the lead. <a href="/work/${id}">Back to the task</a>`,
+        ),
+      );
+    }
     if (!taskActions(item).sendToLead) {
       return noFormPage(
         shell,
@@ -1050,13 +1111,18 @@ export function workRoutes(factory: FactoryPages): Route[] {
 
         let body: string;
         if (tab === "needs") {
-          const owned = mine.map((item): Row => ({
-            kind: item.ownerAction === null ? "task" : "merge",
-            title: taskLabel(item),
-            href: `/work/${String(item.id)}`,
-            sub: escapeHtml(item.reason ?? ""),
-            aside: escalationActions(item, back),
-          }));
+          const handoffs = handoffsFor(factory.pipeline);
+          const owned = mine.map((item): Row => {
+            const handoff = handoffs.state(item);
+            const failed = handoffFailedText(handoff);
+            return {
+              kind: item.ownerAction === null ? "task" : "merge",
+              title: taskLabel(item),
+              href: `/work/${String(item.id)}`,
+              sub: `${escapeHtml(item.reason ?? "")}${failed === "" ? "" : `<br>${failed}`}`,
+              aside: escalationActions(item, back, handoff),
+            };
+          });
           const admissions = admissionsFor(factory.intake);
           const held = waiting.map((issue) =>
             heldIssueRow(issue, back, admissions.state(issue.repo, issue.number)),
@@ -1203,7 +1269,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
               shell,
               refreshSeconds: admissionsFor(factory.intake).busy()
                 ? ADMITTING_RELOAD_SECONDS
-                : RELOAD_SECONDS,
+                : handoffsFor(factory.pipeline).busy()
+                  ? SENDING_RELOAD_SECONDS
+                  : RELOAD_SECONDS,
             },
           ),
         );
@@ -1444,13 +1512,16 @@ export function workRoutes(factory: FactoryPages): Route[] {
           );
           return;
         }
-        let key: NoticeKey = lead ? "sent-to-lead" : "abandoned";
+        if (lead) {
+          redirect(context.response, withNotice(back, await sendToLead(id, typed, version)));
+          return;
+        }
+        let key: NoticeKey = "abandoned";
         try {
           if (version === "") throw new Error("The version is empty.");
-          if (lead) await factory.pipeline.sendToLead(id, typed, version);
-          else await factory.pipeline.abandon(id, `The owner abandoned it: ${typed}`, version);
+          await factory.pipeline.abandon(id, `The owner abandoned it: ${typed}`, version);
         } catch (error) {
-          key = failureNotice(error, lead ? "send-failed" : "abandon-failed");
+          key = failureNotice(error, "abandon-failed");
         }
         redirect(context.response, withNotice(back, key));
       },
@@ -1500,6 +1571,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
         const track =
           held === undefined ? undefined : tracker(item, held, events.ok ? events.value : []);
         const actions = taskActions(item);
+        const handoffs = handoffsFor(factory.pipeline);
 
         const threadRows = !threads.ok
           ? empty("Threads could not be read.")
@@ -1537,7 +1609,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
               track === undefined
                 ? ""
                 : `<div class="tracker">${track.html}${noteLine(trackNote(item, track.step, events.ok ? events.value : [], now()))}</div>`
-            }${taskCallout(item, back, place)}<div class="cols">${section({
+            }${taskCallout(item, back, place, handoffs.state(item))}<div class="cols">${section({
               title: "Details",
               body: details(item, labels, now()),
             })}${section({
@@ -1558,7 +1630,8 @@ export function workRoutes(factory: FactoryPages): Route[] {
               section: "/work",
               shell,
               crumbs: taskCrumbs(id),
-              refreshSeconds: RELOAD_SECONDS,
+              refreshSeconds:
+                handoffs.state(item) === "sending" ? SENDING_RELOAD_SECONDS : RELOAD_SECONDS,
             },
           ),
         );

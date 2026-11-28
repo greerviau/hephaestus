@@ -9,6 +9,7 @@ import {
   taskActions,
   taskLabel,
   escalationActions,
+  handoffFailedText,
   heldIssueRow,
   notice,
   read,
@@ -35,6 +36,7 @@ import {
 } from "./html.js";
 import { sendHtml, type Route } from "./http.js";
 import { ADMITTING_RELOAD_SECONDS, admissionsFor } from "./admissions.js";
+import { SENDING_RELOAD_SECONDS, handoffsFor } from "./handoffs.js";
 
 /** The page reloads this often, and sooner while it waits for T3 to answer. */
 const RELOAD_SECONDS = 10;
@@ -82,6 +84,7 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
       handle: async ({ response, url, shell }) => {
         const t3 = await readEnvironments(factory.environments, factory.t3WaitMs ?? 2000);
         const admissions = admissionsFor(factory.intake);
+        const handoffs = handoffsFor(factory.pipeline);
         const project = shell?.project;
         const inProject = (repo: string): boolean => project === undefined || repo === project;
         const tasks = read("tasks", () =>
@@ -134,14 +137,16 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         if (tasks.ok) {
           for (const item of tasks.value) {
             if (item.stage !== "Escalated" || item.escalatedTo !== "owner") continue;
-            const reason = escapeHtml(item.reason ?? "Escalated to you.");
+            const handoff = handoffs.state(item);
+            const failed = handoffFailedText(handoff);
+            const reason = `${escapeHtml(item.reason ?? "Escalated to you.")}${failed === "" ? "" : `<br>${failed}`}`;
             needs.push({
               kind: taskActions(item).approveMerge ? "merge" : "task",
               title: taskLabel(item),
               href: `/work/${String(item.id)}`,
               // The repo says nothing new when the page shows one project.
               sub: project === undefined ? `${reason}${DOT}${escapeHtml(item.repo)}` : reason,
-              aside: escalationActions(item, "/"),
+              aside: escalationActions(item, "/", handoff),
             });
           }
         }
@@ -345,9 +350,11 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             shell,
             refreshSeconds: admissions.busy()
               ? ADMITTING_RELOAD_SECONDS
-              : t3.state === "loading"
-                ? LOADING_RELOAD_SECONDS
-                : RELOAD_SECONDS,
+              : handoffs.busy()
+                ? SENDING_RELOAD_SECONDS
+                : t3.state === "loading"
+                  ? LOADING_RELOAD_SECONDS
+                  : RELOAD_SECONDS,
           }),
         );
       },

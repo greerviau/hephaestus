@@ -33,6 +33,7 @@ import { readBody, redirect, type Route, type RouteContext } from "./http.js";
 import type { BackgroundDeploys } from "./deploys.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { ADMIT_WAIT_MS, admissionsFor, type AdmissionState } from "./admissions.js";
+import type { HandoffState } from "./handoffs.js";
 
 /** What the factory pages read and act on. */
 export interface FactoryPages {
@@ -95,6 +96,8 @@ export interface FactoryPages {
   t3WaitMs?: number;
   /** How long Admit waits for the admission before it answers and lets it finish in the background. */
   admitWaitMs?: number;
+  /** How long Send to lead waits for the handoff before it answers and lets it finish in the background. */
+  sendWaitMs?: number;
 }
 
 /** Stages in the order work moves through them. */
@@ -271,12 +274,21 @@ export function mergeButton(task: Task, back: string): string {
   );
 }
 
+/** The line that says a Send to lead the owner pressed failed, for under the task's reason. */
+export function handoffFailedText(handoff: HandoffState | undefined): string {
+  return handoff === "failed"
+    ? `${statusText("bad", "Sending to the lead failed")} The service log has the error.`
+    : "";
+}
+
 /**
  * Owner actions for a task escalated to the owner, as shown in lists: one
  * button, and the rest in a menu. The actions that need typed text are links
  * to their own pages, because a list page reloads and would drop the text.
+ * None while a Send to lead runs, so nothing acts on the task meanwhile.
  */
-export function escalationActions(item: Task, back: string): string {
+export function escalationActions(item: Task, back: string, handoff?: HandoffState): string {
+  if (handoff === "sending") return statusText("run", "Sending to lead");
   const actions = taskActions(item);
   const id = String(item.id);
   const lead = { label: "Send to lead", href: formHref(`/work/${id}/lead`, back) };
@@ -372,6 +384,11 @@ const NOTICES: Record<string, { kind: "err" | "info"; title: string; text: strin
     kind: "info",
     title: "Sent to the lead",
     text: "The lead picks the task up with your note.",
+  },
+  "sending-to-lead": {
+    kind: "info",
+    title: "Sending the task to the lead",
+    text: "The lead gets your note in a moment. Until then the page shows the task as sending.",
   },
   "send-failed": {
     kind: "err",

@@ -1497,6 +1497,143 @@ describe("Send to lead", () => {
   });
 });
 
+describe("A slow send to lead", () => {
+  /** An escalated task with a Hermes task, so the send goes through the board. */
+  function boardTask(h: Harness): number {
+    const task = escalatedTask(h);
+    h.tasks.update(task, { hermesTaskId: "h-7" });
+    return task;
+  }
+
+  /** Holds the board's hand-back until the test opens it, as a busy lead holds the board. */
+  function holdHandBack(h: Harness): { open: () => void; fail: () => void; calls: () => number } {
+    const handBack = h.hermesBoard.handBack.bind(h.hermesBoard);
+    let calls = 0;
+    let open: () => void = () => undefined;
+    let fail: () => void = () => undefined;
+    const held = new Promise<void>((resolve, reject) => {
+      open = resolve;
+      fail = () => {
+        reject(new Error("hermes kanban comment failed: database is locked token=sk-secret"));
+      };
+    });
+    h.hermesBoard.handBack = (id, note) => {
+      calls += 1;
+      return held.then(() => handBack(id, note));
+    };
+    return { open, fail, calls: () => calls };
+  }
+
+  function send(dashboard: Dashboard, task: number, back: string): Promise<Response> {
+    return dashboard.post(`/work/${String(task)}/send-to-lead`, {
+      note: "Split the workflow change out",
+      version: String(dashboard.h.tasks.get(task).version),
+      back,
+    });
+  }
+
+  it("answers within a second and shows the task as sending, with no buttons to press again", async () => {
+    dashboard = await startDashboard();
+    const task = boardTask(dashboard.h);
+    const board = holdHandBack(dashboard.h);
+
+    const started = Date.now();
+    const response = await send(dashboard, task, "/");
+    expect(Date.now() - started).toBeLessThan(1000);
+
+    expect(response.headers.get("location")).toBe("/?notice=sending-to-lead");
+    const home = (await dashboard.get("/?notice=sending-to-lead")).html;
+    expect(home).toContain("Sending the task to the lead");
+    expect(home).toContain("Sending to lead");
+    expect(home).not.toContain(`href="/work/${String(task)}/lead?`);
+    expect(home).not.toContain('action="/work/' + String(task) + '/approve-merge"');
+    expect(home).toContain('data-live-seconds="2"');
+    const page = (await dashboard.get(`/work/${String(task)}`)).html;
+    expect(page).toContain("Sending to lead");
+    expect(page).not.toContain(`href="/work/${String(task)}/lead?`);
+    expect(page).toContain('data-live-seconds="2"');
+    expect(dashboard.h.tasks.get(task).escalatedTo).toBe("owner");
+
+    board.open();
+    await dashboard.handoffsSettled();
+    expect(dashboard.h.tasks.get(task)).toMatchObject({
+      escalatedTo: "lead",
+      reason: "Split the workflow change out",
+    });
+    expect(dashboard.h.board).toContain(
+      "h-7 hand back: Escalated to the lead: Split the workflow change out",
+    );
+    expect((await dashboard.get(`/work/${String(task)}`)).html).not.toContain("Sending to lead");
+  });
+
+  it("sends the note once when Send to lead is pressed twice while it runs", async () => {
+    dashboard = await startDashboard({ sendWaitMs: 0 });
+    const task = boardTask(dashboard.h);
+    const board = holdHandBack(dashboard.h);
+
+    await send(dashboard, task, "/work?tab=needs");
+    const again = await send(dashboard, task, "/work?tab=needs");
+    board.open();
+    await dashboard.handoffsSettled();
+
+    expect(again.headers.get("location")).toBe("/work?tab=needs&notice=sending-to-lead");
+    expect(board.calls()).toBe(1);
+    expect(dashboard.h.board.filter((line) => line.includes("hand back"))).toHaveLength(1);
+    expect(dashboard.h.tasks.events(task).filter((e) => e.kind === "escalated:lead")).toHaveLength(
+      1,
+    );
+  });
+
+  it("shows a failure on the task and offers Send to lead again, without the board's error text", async () => {
+    dashboard = await startDashboard({ sendWaitMs: 0 });
+    const task = boardTask(dashboard.h);
+    const board = holdHandBack(dashboard.h);
+
+    await send(dashboard, task, "/");
+    board.fail();
+    await dashboard.handoffsSettled();
+
+    expect(dashboard.h.tasks.get(task).escalatedTo).toBe("owner");
+    for (const path of ["/", "/work?tab=needs", `/work/${String(task)}`]) {
+      const { html } = await dashboard.get(path);
+      expect(html, path).toContain("Sending to the lead failed");
+      expect(html, path).toContain(`href="/work/${String(task)}/lead?`);
+      expect(html, path).not.toContain("sk-secret");
+      expect(html, path).not.toContain("database is locked");
+    }
+  });
+
+  it("says at once when a quick send fails", async () => {
+    dashboard = await startDashboard();
+    const task = boardTask(dashboard.h);
+    dashboard.h.hermes.handBackFails = true;
+
+    const response = await send(dashboard, task, "/");
+
+    expect(response.headers.get("location")).toBe("/?notice=send-failed");
+    // The notice said it; the row needs no second word.
+    expect((await dashboard.get("/")).html).not.toContain("Sending to the lead failed");
+  });
+
+  it("refuses at once a form from before the task changed, while another step holds the task", async () => {
+    dashboard = await startDashboard({ sendWaitMs: 0 });
+    const task = boardTask(dashboard.h);
+    const board = holdHandBack(dashboard.h);
+    const stale = String(dashboard.h.tasks.get(task).version);
+    await send(dashboard, task, "/");
+    dashboard.h.tasks.update(task, { reason: "A newer question" });
+
+    const response = await dashboard.post(`/work/${String(task)}/send-to-lead`, {
+      note: "Old answer",
+      version: stale,
+      back: "/",
+    });
+    expect(response.headers.get("location")).toBe("/?notice=send-failed");
+    board.open();
+    await dashboard.handoffsSettled();
+  });
+});
+
 describe("Abandon", () => {
   it("is a form on its own page that does not reload", async () => {
     dashboard = await startDashboard();
