@@ -15,6 +15,7 @@ import { dashboardRoutes } from "../../src/web/dashboard.js";
 import { shellSource } from "../../src/web/shell.js";
 import { BackgroundDeploys } from "../../src/web/deploys.js";
 import { admissionsFor } from "../../src/web/admissions.js";
+import { handoffsFor } from "../../src/web/handoffs.js";
 import type { Deploy } from "../../src/web/settings.js";
 import { sampleConfig } from "../config/fixtures.js";
 import { SHA, harness, pr, type Harness } from "../factory/harness.js";
@@ -53,6 +54,8 @@ export interface Dashboard {
   deploysSettled(): Promise<void>;
   /** Resolves once every background admission has ended. */
   admissionsSettled(): Promise<void>;
+  /** Resolves once every background Send to lead has ended. */
+  handoffsSettled(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -62,6 +65,7 @@ export interface DashboardOptions {
   deploy?: Deploy;
   t3WaitMs?: number;
   admitWaitMs?: number;
+  sendWaitMs?: number;
   github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
   configRepo?: string;
   hermesModel?: string;
@@ -118,6 +122,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
     now: () => NOW,
     t3WaitMs: options.t3WaitMs ?? 1000,
     ...(options.admitWaitMs === undefined ? {} : { admitWaitMs: options.admitWaitMs }),
+    ...(options.sendWaitMs === undefined ? {} : { sendWaitMs: options.sendWaitMs }),
   };
   const server: Server = createDashboardServer({
     db: sessions,
@@ -158,6 +163,7 @@ export async function startDashboard(options: DashboardOptions = {}): Promise<Da
       }),
     deploysSettled: () => deploys?.settled() ?? Promise.resolve(),
     admissionsSettled: () => admissionsFor(h.intake).settled(),
+    handoffsSettled: () => handoffsFor(h.pipeline).settled(),
     close: async () => {
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
