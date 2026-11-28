@@ -70,6 +70,8 @@ export interface InstanceCheck {
   at: string;
   /** Where the check falls in the sequence tasks use. */
   seq: number;
+  /** The seq of the latest check since the last deploy that found the instance present, enabled, signed in, and without a problem. */
+  healthySeq?: number;
 }
 
 export type InstanceState =
@@ -360,14 +362,21 @@ export class WorkerManager {
     };
     const claude = state("claude");
     const codex = state("codex");
-    const problems = (["claude", "codex"] as const).flatMap((provider) => {
+    // Each problem as the owner reads it, and as it reads while Hephaestus repairs it.
+    const faults = (["claude", "codex"] as const).flatMap((provider) => {
       const check = worker.instances[provider];
       const name = provider === "claude" ? "Factory Claude" : "Factory Codex";
       if (check === undefined) return [];
-      if (!check.exists) return [`${name} is missing on this worker; deploy again.`];
-      if (!check.enabled) return [`${name} is disabled on this worker; deploy again.`];
-      return check.problem === null ? [] : [`${name}: ${check.problem}`];
+      const state = !check.exists ? "missing" : !check.enabled ? "disabled" : undefined;
+      if (state !== undefined) {
+        const text = `${name} is ${state} on this worker`;
+        return [{ owner: `${text}; deploy again.`, repairing: `${text}.` }];
+      }
+      if (check.problem === null) return [];
+      const text = `${name}: ${check.problem}`;
+      return [{ owner: text, repairing: text }];
     });
+    const problems = faults.map((fault) => fault.owner);
     const desired = this.desired();
     let blocker: string | undefined;
     // Steps Hephaestus takes on its own; everything else waits for the owner.
@@ -394,6 +403,9 @@ export class WorkerManager {
     } else if (this.clonedSinceDeploy(id)) {
       blocker =
         "A project with skills of its own was cloned here since its last deploy; deploying again installs them.";
+      automatic = true;
+    } else if (this.repairDue(worker)) {
+      blocker = `${faults.map((fault) => fault.repairing).join(" ")} Hephaestus deploys again to repair it.`;
       automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
     else if (
@@ -517,6 +529,23 @@ export class WorkerManager {
     );
   }
 
+  /**
+   * Whether T3 reports a factory instance missing, disabled, or broken that no deploy has tried
+   * to repair since the instance last worked. A deploy writes the instances again, which fixes
+   * one whose settings were changed after it, such as a home folder that no longer exists. An
+   * instance still broken after a deploy that saw it broken is left to the owner, so a problem a
+   * deploy cannot fix starts no loop.
+   */
+  private repairDue(worker: Worker): boolean {
+    const last = this.latestTask(worker.environmentId, "deploy");
+    const tried = Array.isArray(last?.detail.repair) ? (last.detail.repair as unknown[]) : [];
+    return broken(worker).some(
+      (provider) =>
+        !tried.includes(provider) ||
+        (last?.createdSeq ?? 0) < (worker.instances[provider]?.healthySeq ?? 0),
+    );
+  }
+
   private redeployDue(worker: Worker): boolean {
     const last = this.latestTask(worker.environmentId, "deploy", "succeeded");
     return last !== undefined && this.now().getTime() - Date.parse(last.updatedAt) >= REDEPLOY_MS;
@@ -560,11 +589,14 @@ export class WorkerManager {
   ): Promise<WorkerTask | undefined> {
     const active = await this.options.activeThreads?.(environmentId, KIND_TITLES.deploy);
     if (active !== undefined && active.length > 0) return undefined;
+    const worker = this.worker(environmentId);
+    const repair = worker === undefined ? [] : broken(worker);
     return this.start(
       environmentId,
       "deploy",
       deployMessage(desired.version, desired.sha, desired.url, desired.tag),
       { version: desired.version, sha: desired.sha },
+      repair.length === 0 ? {} : { repair },
     );
   }
 
@@ -593,7 +625,8 @@ export class WorkerManager {
         current &&
         last?.status === "succeeded" &&
         age < REDEPLOY_MS &&
-        !this.clonedSinceDeploy(environmentId)
+        !this.clonedSinceDeploy(environmentId) &&
+        !this.repairDue(worker)
       ) {
         continue;
       }
@@ -636,6 +669,7 @@ export class WorkerManager {
     kind: TaskKind,
     message: string,
     extra: { version?: number; sha?: string },
+    detail: Record<string, unknown> = {},
   ): Promise<WorkerTask> {
     const at = this.now().toISOString();
     // The task and its request id go in before T3 is called, so a lost reply can be replayed.
@@ -643,8 +677,8 @@ export class WorkerManager {
       this.db
         .prepare(
           `INSERT INTO worker_tasks (environment_id, kind, client_request_id, message, version, sha,
-             status, created_seq, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+             status, detail, created_seq, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
         )
         .run(
           environmentId,
@@ -653,6 +687,7 @@ export class WorkerManager {
           message,
           extra.version ?? null,
           extra.sha ?? null,
+          JSON.stringify(detail),
           this.nextSeq(),
           at,
           at,
@@ -999,7 +1034,8 @@ export class WorkerManager {
       .all() as WorkerRow[]) {
       if (row.checked_at !== null && at.getTime() - Date.parse(row.checked_at) < INSTANCE_CHECK_MS)
         continue;
-      if (this.latestTask(row.environment_id, "deploy")?.status === "running") continue;
+      const deploy = this.latestTask(row.environment_id, "deploy");
+      if (deploy?.status === "running") continue;
       let reports: InstanceReport[] | undefined;
       try {
         reports = await probe(row.environment_id);
@@ -1009,6 +1045,20 @@ export class WorkerManager {
       }
       // A worker whose T3 does not offer the provider list keeps what the last check found.
       if (reports === undefined) continue;
+      // A deploy or another check while T3 answered makes this answer stale.
+      const now = this.db
+        .prepare("SELECT * FROM workers WHERE environment_id = ?")
+        .get(row.environment_id) as WorkerRow | undefined;
+      if (
+        now === undefined ||
+        now.checked_at !== row.checked_at ||
+        // A passed test turn clears checked_at, but a newer check always writes new seqs here.
+        now.instance_problem !== row.instance_problem ||
+        this.latestTask(row.environment_id, "deploy")?.id !== deploy?.id
+      ) {
+        continue;
+      }
+      const previous = toWorker(now).instances;
       const checks: Partial<Record<Provider, InstanceCheck>> = {};
       for (const [provider, id] of [
         ["claude", FACTORY_CLAUDE],
@@ -1016,19 +1066,25 @@ export class WorkerManager {
       ] as const) {
         const report = reports.find((candidate) => candidate.providerInstanceId === id);
         const constraints = report?.constraints ?? [];
-        const auth = constraints.filter((text) => /authenticat|log ?in/i.test(text));
-        const disabled = constraints.filter((text) => /disabled/i.test(text));
+        // Quoted text is a path or a value, such as a home folder named login-test, not the reason.
+        const reason = (text: string): string => text.replace(/"[^"]*"/g, '""');
+        const auth = constraints.filter((text) => /authenticat|log ?in/i.test(reason(text)));
+        const disabled = constraints.filter((text) => /disabled/i.test(reason(text)));
         const other = constraints.filter(
           (text) => !auth.includes(text) && !disabled.includes(text),
         );
-        checks[provider] = {
+        const seq = this.nextSeq();
+        const check: InstanceCheck = {
           exists: report !== undefined,
           enabled: disabled.length === 0,
           authenticated: auth.length === 0,
           problem: other.length === 0 ? null : other.join(" "),
           at: at.toISOString(),
-          seq: this.nextSeq(),
+          seq,
         };
+        const working = !isBroken(check) && check.authenticated;
+        const healthySeq = working ? seq : previous[provider]?.healthySeq;
+        checks[provider] = healthySeq === undefined ? check : { ...check, healthySeq };
       }
       const problem = JSON.stringify(checks);
       this.db
@@ -1036,6 +1092,19 @@ export class WorkerManager {
         .run(problem, at.toISOString(), row.environment_id);
     }
   }
+}
+
+/** Whether T3 reports the instance missing, disabled, or with a problem, which a deploy may fix. */
+function isBroken(check: InstanceCheck): boolean {
+  return !check.exists || !check.enabled || check.problem !== null;
+}
+
+/** The factory instances T3 last reported broken on the worker. */
+function broken(worker: Worker): Provider[] {
+  return (["claude", "codex"] as const).filter((provider) => {
+    const check = worker.instances[provider];
+    return check !== undefined && isBroken(check);
+  });
 }
 
 /** Whether a test started after every task it must follow had finished. */
