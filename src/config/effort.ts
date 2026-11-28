@@ -33,6 +33,18 @@ export const MODELS: Record<EffortProvider, readonly string[]> = {
 
 export const PROVIDER_LABELS: Record<EffortProvider, string> = { claude: "Claude", codex: "Codex" };
 
+/** The providers the factory supports, in the order the Models page lists them. */
+export const PROVIDERS: readonly EffortProvider[] = ["claude", "codex"];
+
+/**
+ * The provider instances T3 creates for each provider, as the Models page lists them for
+ * housekeeping. A saved instance missing here stays selectable under the provider it names.
+ */
+export const INSTANCES: Record<EffortProvider, readonly string[]> = {
+  claude: ["claudeAgent"],
+  codex: ["codex"],
+};
+
 /** The T3 option ids that set effort, for reading back which effort a launch used. */
 export const EFFORT_OPTION_IDS: ReadonlySet<string> = new Set(
   Object.values(EFFORT).map(({ optionId }) => optionId),

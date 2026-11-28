@@ -4,7 +4,15 @@ import {
   type FactoryConfig,
   type ModelChoice,
 } from "../config/document.js";
-import { EFFORT, MODELS, providerOfInstance, type EffortProvider } from "../config/effort.js";
+import {
+  EFFORT,
+  INSTANCES,
+  MODELS,
+  PROVIDERS,
+  PROVIDER_LABELS,
+  providerOfInstance,
+  type EffortProvider,
+} from "../config/effort.js";
 import { checkbox, escapeHtml, fold, section, setting } from "./html.js";
 
 /** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
@@ -199,25 +207,19 @@ function applyJob(role: string, job: CronJob, form: URLSearchParams, errors: str
   else job.enabled = false;
 }
 
-/** The coding jobs, each a model setting that exists today. The provider of the first two is fixed. */
+/**
+ * The coding jobs, each a model setting that exists today. Implement and Review run on the
+ * factory instances, which deploy installs as one provider each, so their provider is fixed.
+ * Housekeeping runs on one of the owner's instances, whose provider its id names.
+ */
 const JOBS = [
-  {
-    key: "claude",
-    job: "Implement",
-    does: "",
-    provider: "Factory Claude",
-  },
-  {
-    key: "codex",
-    job: "Review",
-    does: "",
-    provider: "Factory Codex",
-  },
+  { key: "claude", job: "Implement", does: "", instance: "Factory Claude" },
+  { key: "codex", job: "Review", does: "", instance: "Factory Codex" },
   {
     key: "setup",
     job: "Housekeeping",
     does: "Deploys config to workers and signs them in. Runs on one of your T3 provider instances.",
-    provider: undefined,
+    instance: undefined,
   },
 ] as const;
 
@@ -227,27 +229,67 @@ function choiceOf(config: FactoryConfig, key: JobKey): ModelChoice {
   return key === "setup" ? config.factory.setup : config.factory.models[key];
 }
 
-/** The provider whose effort levels a job offers. Housekeeping's follows its instance id. */
-function providerOf(key: JobKey, instanceId: string): EffortProvider | undefined {
-  return key === "setup" ? providerOfInstance(instanceId) : key;
+/** A provider named in a form, or undefined for any other text. */
+function asProvider(text: string): EffortProvider | undefined {
+  return PROVIDERS.find((provider) => provider === text);
 }
 
-/** The options of a selector: the given values, with a saved or typed one they lack first. */
-function selectOptions(values: readonly string[], current: string): string {
-  const all = current === "" || values.includes(current) ? values : [current, ...values];
-  return all
-    .map(
-      (value) =>
-        `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
-    )
+/**
+ * The options of a selector that follows its row's provider: every provider's values, each
+ * marked with its provider, and only the chosen provider's shown. Sharing one list keeps every
+ * row's choices the same. A saved or typed value the chosen provider lacks comes first in its
+ * group, so the form shows it and saving keeps it or gets the config's refusal. A value of an
+ * instance whose provider is not known gets a group of its own.
+ */
+function providerOptions(
+  byProvider: Record<EffortProvider, readonly string[]>,
+  provider: EffortProvider | undefined,
+  current: string,
+): string {
+  const groups: [string, readonly string[]][] = PROVIDERS.map((each) => {
+    const values = byProvider[each];
+    return [
+      each,
+      each === provider && current !== "" && !values.includes(current)
+        ? [current, ...values]
+        : values,
+    ];
+  });
+  if (provider === undefined && current !== "") groups.unshift(["", [current]]);
+  return groups
+    .flatMap(([group, values]) => {
+      const shown = group === (provider ?? "");
+      return values.map(
+        (value) =>
+          `<option value="${escapeHtml(value)}" data-for="${group}"${shown ? "" : " hidden disabled"}${shown && value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
+      );
+    })
     .join("");
+}
+
+/** A disabled placeholder, so a selector with nothing chosen sends nothing. */
+function placeholder(text: string, current: string): string {
+  return `<option value="" disabled hidden${current === "" ? " selected" : ""}>${text}</option>`;
+}
+
+/**
+ * A job's provider selector. A factory job offers only its instance's provider; the other
+ * stays listed, so every row lists the same providers. A housekeeping instance of a provider
+ * the factory does not know shows as Other.
+ */
+function providerSelect(key: JobKey, job: string, provider: EffortProvider | undefined): string {
+  const fixed = key === "setup" ? undefined : key;
+  const other = provider === undefined ? '<option value="" selected>Other</option>' : "";
+  const options = PROVIDERS.map(
+    (each) =>
+      `<option value="${each}"${fixed !== undefined && fixed !== each ? " disabled" : ""}${each === provider ? " selected" : ""}>${PROVIDER_LABELS[each]}</option>`,
+  ).join("");
+  return `<select name="${key}.provider" aria-label="${job} provider" data-provider>${other}${options}</select>`;
 }
 
 /**
  * A job's effort selector: the provider's levels only. A choice without effort shows a
  * placeholder that is disabled, so the browser sends no effort and the save leaves it unset.
- * A saved or typed level the provider does not list stays as an option, so the form shows it
- * and saving it again gets the config's refusal rather than silently dropping it.
  */
 function effortSelect(
   key: JobKey,
@@ -255,52 +297,58 @@ function effortSelect(
   provider: EffortProvider | undefined,
   current: string,
 ): string {
-  const levels = provider === undefined ? [] : EFFORT[provider].levels;
-  const placeholder = provider === undefined ? "No effort levels" : "Select effort";
-  const options = `<option value="" disabled hidden${current === "" ? " selected" : ""}>${placeholder}</option>${selectOptions(levels, current)}`;
-  return `<select class="effort" name="${key}.effort" aria-label="${job} effort">${options}</select>`;
+  const levels = Object.fromEntries(PROVIDERS.map((each) => [each, EFFORT[each].levels])) as Record<
+    EffortProvider,
+    readonly string[]
+  >;
+  const text = provider === undefined ? "No effort levels" : "Select effort";
+  return `<select class="effort" name="${key}.effort" aria-label="${job} effort" data-follows-provider data-placeholder="Select effort" data-placeholder-none="No effort levels">${placeholder(text, current)}${providerOptions(levels, provider, current)}</select>`;
 }
 
-/**
- * A job's model selector: the models T3 offers for its provider, with the saved model first
- * when the list lacks it, so saving keeps it. An instance whose provider is not known has no
- * list, so its model stays a text field.
- */
-function modelField(
+/** A job's model selector: the models T3 offers for its provider. */
+function modelSelect(
   key: JobKey,
   job: string,
   provider: EffortProvider | undefined,
   current: string,
 ): string {
-  if (provider === undefined) {
-    return `<input type="text" name="${key}.model" value="${escapeHtml(current)}" aria-label="${job} model" required>`;
-  }
-  return `<select class="model" name="${key}.model" aria-label="${job} model" required>${selectOptions(MODELS[provider], current)}</select>`;
+  return `<select class="model" name="${key}.model" aria-label="${job} model" required data-follows-provider>${placeholder("Select model", current)}${providerOptions(MODELS, provider, current)}</select>`;
+}
+
+/** The housekeeping instance selector: the instances T3 creates for its provider. */
+function instanceSelect(provider: EffortProvider | undefined, current: string): string {
+  return `<select class="w-144" name="setup.instanceId" aria-label="Housekeeping provider instance" required data-follows-provider>${placeholder("Select instance", current)}${providerOptions(INSTANCES, provider, current)}</select>`;
 }
 
 /** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */
 export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchParams): string {
   const value = valueFrom(submitted);
-  const rows = JOBS.map(({ key, job, does, provider }) => {
-    const where =
-      provider === undefined
-        ? `<input type="text" class="w-144" name="setup.instanceId" value="${escapeHtml(value("setup.instanceId", config.factory.setup.instanceId))}" aria-label="Housekeeping provider instance" placeholder="claudeAgent" required>`
-        : `<span class="muted">${provider}</span>`;
+  const rows = JOBS.map(({ key, job, does, instance }) => {
     const instanceId = value("setup.instanceId", config.factory.setup.instanceId);
-    const jobProvider = providerOf(key, instanceId);
-    const model = modelField(
+    // A refused form shows the provider it chose, with that provider's choices.
+    const provider =
+      key === "setup"
+        ? submitted?.has("setup.provider") === true
+          ? asProvider(submitted.get("setup.provider") ?? "")
+          : providerOfInstance(instanceId)
+        : key;
+    const where =
+      instance === undefined
+        ? instanceSelect(provider, instanceId)
+        : `<span class="muted">${instance}</span>`;
+    const model = modelSelect(
       key,
       job,
-      jobProvider,
+      provider,
       value(`${key}.model`, choiceOf(config, key).model),
     );
     const effort = effortSelect(
       key,
       job,
-      jobProvider,
+      provider,
       value(`${key}.effort`, choiceOf(config, key).effort ?? ""),
     );
-    return `<li class="row job"><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${where}${model}${effort}</div></li>`;
+    return `<li class="row job" data-provider-row><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${providerSelect(key, job, provider)}${where}${model}${effort}</div></li>`;
   }).join("");
   const options = JOBS.map(({ key, job }) => {
     const saved = Object.entries(choiceOf(config, key).options ?? {})
@@ -332,20 +380,79 @@ export function applyCodingModels(
 ): { config: FactoryConfig; errors: string[] } {
   const next = structuredClone(config);
   const errors: string[] = [];
-  for (const { key, job } of JOBS) {
-    const choice = model(form, key, job, errors, choiceOf(next, key));
+  for (const { key, job, instance } of JOBS) {
+    const saved = choiceOf(next, key);
+    const choice = model(form, key, job, errors, saved);
+    const posted = form.get(`${key}.provider`);
     if (key !== "setup") {
+      // Deploy installs each factory instance as one provider, so another cannot run there.
+      if (posted !== null && posted !== key) {
+        errors.push(`${job} provider: ${instance} runs ${PROVIDER_LABELS[key]} only.`);
+      }
+      modelProblem(job, key, choice, saved, false, errors);
       next.factory.models[key] = choice;
       continue;
     }
     const instanceId = (form.get("setup.instanceId") ?? "").trim();
     if (instanceId === "") errors.push("Housekeeping provider instance: name one.");
+    const named = providerOfInstance(
+      instanceId === "" ? next.factory.setup.instanceId : instanceId,
+    );
+    // A form without the provider selector, such as one posted by a script, follows the instance.
+    const chosen = posted === null ? named : asProvider(posted);
+    if (posted !== null && posted !== "" && chosen === undefined) {
+      errors.push(
+        `${job} provider: choose ${PROVIDERS.map((each) => PROVIDER_LABELS[each]).join(" or ")}.`,
+      );
+    } else if (instanceId !== "" && chosen !== named) {
+      errors.push(
+        chosen === undefined
+          ? `${job} provider instance: ${instanceId} is a ${PROVIDER_LABELS[named ?? "claude"]} instance, so choose that provider.`
+          : `${job} provider instance: ${instanceId} is not a ${PROVIDER_LABELS[chosen]} instance.`,
+      );
+    }
+    if (chosen !== undefined) {
+      modelProblem(
+        job,
+        chosen,
+        choice,
+        saved,
+        chosen !== providerOfInstance(config.factory.setup.instanceId),
+        errors,
+      );
+      // The config checks effort against the instance's provider, which can differ from the one chosen.
+      if (choice.effort !== undefined && !EFFORT[chosen].levels.includes(choice.effort)) {
+        errors.push(`${job} effort: ${choice.effort} is not a ${PROVIDER_LABELS[chosen]} level.`);
+      }
+    }
     next.factory.setup = {
       ...choice,
       instanceId: instanceId === "" ? next.factory.setup.instanceId : instanceId,
     };
   }
   return { config: next, errors };
+}
+
+/**
+ * Refuses a model another provider lists, when the owner chose it or switched provider. A
+ * model no provider lists passes, so one T3 adds later can still be set, and a saved choice
+ * left untouched always saves back.
+ */
+function modelProblem(
+  job: string,
+  provider: EffortProvider,
+  choice: ModelChoice,
+  saved: ModelChoice,
+  switched: boolean,
+  errors: string[],
+): void {
+  if (!switched && choice.model === saved.model) return;
+  const owner = PROVIDERS.find((each) => each !== provider && MODELS[each].includes(choice.model));
+  if (owner !== undefined) {
+    errors.push(
+      `${job} model: ${choice.model} is a ${PROVIDER_LABELS[owner]} model, not a ${PROVIDER_LABELS[provider]} one.`,
+    );
+  }
 }
 
 function model(
