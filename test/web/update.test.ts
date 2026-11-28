@@ -32,6 +32,13 @@ function fakeUpdater(state: {
   };
 }
 
+/** The HTML of the page section with this heading. */
+function sectionNamed(html: string, title: string): string | undefined {
+  return new RegExp(
+    `<section class="sec"><div class="sec-head"><h2>${title}</h2>[^]*?</section>`,
+  ).exec(html)?.[0];
+}
+
 const version = () => ({
   commit: "abcdef1234567890",
   behind: 2,
@@ -47,9 +54,14 @@ describe("Update", () => {
     expect(home.html).toContain('<a href="/update">Update</a>');
     const page = await dashboard.get("/update");
     expect(page.status).toBe(200);
-    expect(page.html).toContain("2 new commits on origin/main");
-    expect(page.html).toContain('action="/update"');
-    expect(page.html).toContain("node /srv/hephaestus/dist/cli.js update");
+    // The button sits at the right of the page head, as on other pages with one main action.
+    const head = /<div class="head">[^]*?<\/div><\/div>/.exec(page.html)?.[0];
+    expect(head).toContain('action="/update"');
+    expect(head).toContain("Update now");
+    const versionSection = sectionNamed(page.html, "Version");
+    expect(versionSection).toContain("<dt>Running</dt><dd><code>abcdef1</code></dd>");
+    expect(versionSection).toContain("<dt>origin/main</dt><dd>2 new commits</dd>");
+    expect(versionSection).toContain("node /srv/hephaestus/dist/cli.js update");
 
     const response = await dashboard.post("/update");
     expect(response.status).toBe(303);
@@ -113,12 +125,29 @@ describe("Update", () => {
     expect(running.html).toContain('http-equiv="refresh"');
     expect(running.html).toContain("Fast-forwarded &lt;a&gt; to &lt;b&gt;");
     expect(running.html).not.toContain('action="/update"');
+    expect(sectionNamed(running.html, "Last run")).toContain("Running");
 
     state.running = false;
     state.exitCode = 1;
     const failed = await dashboard.get("/update");
     expect(failed.html).not.toContain('http-equiv="refresh"');
     expect(failed.html).toMatch(/did not finish|failed/i);
+  });
+
+  it("marks a finished update in its log's heading, without a callout", async () => {
+    dashboard = await startDashboard({
+      updater: fakeUpdater({ running: false, log: "Fast-forwarded a to b\n", exitCode: 0 }).updater,
+      version: () => ({ ...version(), behind: 0 }),
+    });
+
+    const page = await dashboard.get("/update");
+    expect(page.html).not.toContain('class="box');
+    expect(sectionNamed(page.html, "Version")).toContain(
+      "<dt>origin/main</dt><dd>Nothing newer at the last check</dd>",
+    );
+    const lastRun = sectionNamed(page.html, "Last run");
+    expect(lastRun).toContain("Finished");
+    expect(lastRun).toContain("Fast-forwarded a to b");
   });
 
   it("says when the last update stopped before it finished", async () => {
