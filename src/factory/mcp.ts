@@ -29,6 +29,7 @@ import { ChatChanges, type Deploy } from "./chat-changes.js";
 import type { Intake } from "./intake.js";
 import { DEFAULT_PARK_HOURS, MAX_PARK_HOURS, type Pipeline } from "./pipeline.js";
 import { factoryStats, formatFactoryStats, formatUsageStats, usageStats } from "./stats.js";
+import { ProjectContext, type ProjectDocsSource } from "./project-context.js";
 
 export interface FactoryMcpOptions {
   db: Database;
@@ -48,6 +49,8 @@ export interface FactoryMcpOptions {
   now?: () => Date;
   /** Reads the host's health; defaults to the system's. Tests supply their own. */
   health?: (window: string | undefined) => HostHealth;
+  /** Reads each project's README and docs from GitHub; without it, project context is unavailable. */
+  projectDocs?: ProjectDocsSource;
 }
 
 type Tool =
@@ -69,7 +72,8 @@ type Tool =
   | "get_factory_stats"
   | "get_usage_stats"
   | "get_factory_chart"
-  | "get_host_health";
+  | "get_host_health"
+  | "get_project_context";
 
 /** Each tool's argument schema, shared by its handler and the check at the request boundary. */
 const TOOL_SHAPES = {
@@ -160,6 +164,18 @@ const TOOL_SHAPES = {
       .optional()
       .describe("how far back to look for recent errors, such as 24h or 7d; default 24h"),
   },
+  get_project_context: {
+    repo: z
+      .string()
+      .optional()
+      .describe("owner/repo of one factory project; leave it out for every project"),
+    doc: z
+      .string()
+      .optional()
+      .describe(
+        "a path from the project's docs list, such as docs/architecture.md, to read that doc",
+      ),
+  },
   propose_version: {
     title: z
       .string()
@@ -202,6 +218,7 @@ export const ROLE_TOOLS: Record<RoleName, readonly Tool[]> = {
     "get_usage_stats",
     "get_factory_chart",
     "get_host_health",
+    "get_project_context",
     ...CHANGE_TOOLS,
   ],
   lead: [
@@ -315,10 +332,24 @@ function sameToken(given: string, expected: string): boolean {
 export class FactoryMcp {
   private readonly now: () => Date;
   private readonly changes: ChatChanges;
+  private readonly projectContext: ProjectContext | undefined;
 
   constructor(private readonly options: FactoryMcpOptions) {
     this.now = options.now ?? (() => new Date());
     this.changes = new ChatChanges({ ...options, now: this.now });
+    // One reader for the server's life, so its short cache outlives each stateless request.
+    this.projectContext =
+      options.projectDocs === undefined
+        ? undefined
+        : new ProjectContext(
+            options.projectDocs,
+            () =>
+              Object.keys(
+                options.store.list().find((version) => version.state === "deployed")?.document
+                  .projects ?? {},
+              ),
+            () => this.now().getTime(),
+          );
   }
 
   /** The role a request's bearer token belongs to, or undefined. */
@@ -704,6 +735,19 @@ export class FactoryMcp {
           this.options.health?.(window) ??
           hostHealth(this.options.db, { path: homedir(), window, now: this.now() });
         return { ...health, report: formatHostHealth(health) };
+      },
+    );
+    register(
+      "get_project_context",
+      "Read-only context about the factory's projects: each project's README, which says what the project is, its main parts, and its terms, and the list of its docs, read from the project's default branch. Leave repo out for every project; pass repo and a path from its docs list as doc to read that doc. It reads only, and cannot change a repo or run its code.",
+      async ({ repo, doc }) => {
+        const context = this.projectContext;
+        if (context === undefined) throw new Error("Project context is not available.");
+        if (doc !== undefined) {
+          if (repo === undefined) throw new Error("Pass repo with doc.");
+          return context.doc(repo, doc);
+        }
+        return { projects: await context.summaries(repo) };
       },
     );
     register(

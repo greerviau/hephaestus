@@ -103,6 +103,14 @@ describe("the communicator's shipped instructions", () => {
     }
   });
 
+  it("send a question about what a project is or its terms to the project context tool", () => {
+    const text = collapse(shippedInstructions("communicator"));
+    expect(text).toContain("A question about what a project is, its parts, or its terms");
+    expect(text).toMatch(/answer from `get_project_context`/);
+    expect(text).toMatch(/never say you lack a project's context before you have called it/);
+    expect(text).toMatch(/when it does not cover the question, say so/);
+  });
+
   it("describe a communicator that answers from its tools and still files by the same rules", () => {
     const text = shippedInstructions("communicator");
 

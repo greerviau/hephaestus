@@ -706,3 +706,48 @@ describe("GitHub comments whose reply was lost", () => {
     );
   });
 });
+
+describe("GitHub project docs", () => {
+  /** A gh that answers from `answers` by endpoint, or with a 404, and records every call. */
+  function fake(answers: Record<string, string>): { exec: CommandRun; calls: string[][] } {
+    const calls: string[][] = [];
+    const exec: CommandRun = (_file, args) => {
+      calls.push(args);
+      const endpoint = args.find((arg) => arg.startsWith("repos/")) ?? "";
+      const answer = answers[endpoint];
+      return answer === undefined
+        ? Promise.reject(new Error("gh api failed: gh: Not Found (HTTP 404)"))
+        : Promise.resolve(answer);
+    };
+    return { exec, calls };
+  }
+
+  it("reads the README, the docs list, and a doc from the default branch with GET requests only", async () => {
+    const gh = fake({
+      "repos/octo/app/readme": "# App",
+      "repos/octo/app/contents/docs": "docs/a.md\ndocs/b.md\n",
+      "repos/octo/app/contents/docs/a%20b.md": "A doc",
+    });
+    const github = new GitHub("gh", gh.exec);
+    expect(await github.readme("octo/app")).toBe("# App");
+    expect(await github.docs("octo/app")).toEqual(["docs/a.md", "docs/b.md"]);
+    expect(await github.file("octo/app", "docs/a b.md")).toBe("A doc");
+    for (const args of gh.calls) {
+      expect(args[0]).toBe("api");
+      // No method other than gh api's default GET, no request body, and no ref to another branch.
+      expect(args.join(" ")).not.toMatch(/--method|-X\b|--input|--field|-f\b|-F\b|ref=/);
+    }
+  });
+
+  it("gives no README, no docs, and no file for a 404", async () => {
+    const github = new GitHub("gh", fake({}).exec);
+    expect(await github.readme("octo/app")).toBeUndefined();
+    expect(await github.docs("octo/app")).toEqual([]);
+    expect(await github.file("octo/app", "docs/a.md")).toBeUndefined();
+  });
+
+  it("passes on any other failure", async () => {
+    const exec: CommandRun = () => Promise.reject(new Error("gh api failed: timeout"));
+    await expect(new GitHub("gh", exec).readme("octo/app")).rejects.toThrow("timeout");
+  });
+});

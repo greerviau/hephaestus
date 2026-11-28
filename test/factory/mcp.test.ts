@@ -53,12 +53,27 @@ async function start(): Promise<{ h: Harness; url: string; store: ConfigStore; m
     attachmentRoots: (role) => chatCacheDirs(join(caches ?? tmpdir(), role)),
     ...(caches === undefined ? {} : { chartDir: join(caches, "charts") }),
     health: () => FAKE_HEALTH,
+    projectDocs: PROJECT_DOCS,
   });
   server = mcp.listen(0);
   await new Promise<void>((resolve) => server?.once("listening", resolve));
   const port = (server.address() as AddressInfo).port;
   return { h, url: `http://127.0.0.1:${String(port)}/mcp`, store, mcp };
 }
+
+/** octo/app's files on its default branch, as the project docs source reads them. */
+const APP_FILES: Record<string, string> = {
+  "README.md":
+    "# App\nAn app that ships features.\n\n## Parts\n- The Lead: the agent that starts and unblocks work.\n",
+  "docs/architecture.md": "# Architecture\nThe pipeline moves tasks.\n",
+};
+const PROJECT_DOCS = {
+  readme: (repo: string) =>
+    Promise.resolve(repo === "octo/app" ? APP_FILES["README.md"] : undefined),
+  docs: (repo: string) => Promise.resolve(repo === "octo/app" ? ["docs/architecture.md"] : []),
+  file: (repo: string, path: string) =>
+    Promise.resolve(repo === "octo/app" ? APP_FILES[path] : undefined),
+};
 
 const FAKE_HEALTH = {
   cpu: { cores: 4, load: { oneMinute: 0.1, fiveMinutes: 0.2, fifteenMinutes: 0.3 } },
@@ -294,6 +309,72 @@ describe("FactoryMcp", () => {
         const c = await client(url, token);
         const names = (await c.listTools()).tools.map((tool) => tool.name);
         expect(names.includes("comment_issue")).toBe(role === "communicator");
+        await c.close();
+      }
+    });
+  });
+
+  describe("get_project_context", () => {
+    it("gives the communicator every project's README and docs list, which says what a named part is", async () => {
+      const { url, mcp } = await start();
+      const c = await client(url, TOKENS.communicator);
+      const result = json(await c.callTool({ name: "get_project_context", arguments: {} }));
+      expect(result).toEqual({
+        projects: [
+          {
+            repo: "octo/app",
+            readme: APP_FILES["README.md"],
+            readme_truncated: false,
+            docs: ["docs/architecture.md"],
+          },
+        ],
+      });
+      expect(JSON.stringify(result)).toMatch(/The Lead: the agent that starts and unblocks work/);
+      const doc = json(
+        await c.callTool({
+          name: "get_project_context",
+          arguments: { repo: "octo/app", doc: "docs/architecture.md" },
+        }),
+      );
+      expect(doc).toMatchObject({
+        path: "docs/architecture.md",
+        text: APP_FILES["docs/architecture.md"],
+      });
+      expect(mcp.calls()[0]).toMatchObject({
+        role: "communicator",
+        tool: "get_project_context",
+        ok: true,
+      });
+      await c.close();
+    });
+
+    it("refuses a file outside the project's docs list", async () => {
+      const { url } = await start();
+      const c = await client(url, TOKENS.communicator);
+      const result = await c.callTool({
+        name: "get_project_context",
+        arguments: { repo: "octo/app", doc: "src/index.ts" },
+      });
+      expect(result.isError).toBe(true);
+      expect(JSON.stringify(result)).toContain("is not one of octo/app's docs");
+      await c.close();
+    });
+
+    it("is offered to the communicator only, and says it only reads", async () => {
+      const { url } = await start();
+      for (const [role, token] of Object.entries(TOKENS)) {
+        const c = await client(url, token);
+        const { tools } = await c.listTools();
+        const tool = tools.find((entry) => entry.name === "get_project_context");
+        expect(tool !== undefined).toBe(role === "communicator");
+        if (tool !== undefined) {
+          expect(tool.description).toMatch(/^Read-only/);
+          expect(tool.description).toMatch(/cannot change a repo or run its code/);
+          expect(Object.keys((tool.inputSchema.properties ?? {}) as object).sort()).toEqual([
+            "doc",
+            "repo",
+          ]);
+        }
         await c.close();
       }
     });

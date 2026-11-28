@@ -417,6 +417,52 @@ export class GitHub {
     await this.gh(["issue", "reopen", String(number), "-R", repo, "--comment", comment]);
   }
 
+  /** A file's raw text on the default branch, or undefined on a 404. Reads only. */
+  private async rawFile(repo: string, endpoint: string): Promise<string | undefined> {
+    try {
+      return await this.gh(
+        ["api", "-H", "Accept: application/vnd.github.raw", `repos/${repo}/${endpoint}`],
+        INTAKE_READ_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (/\(HTTP 404\)/.test(error instanceof Error ? error.message : String(error))) {
+        return undefined;
+      }
+      throw error;
+    }
+  }
+
+  /** The README on the default branch, whatever its name, or undefined when the repo has none. */
+  readme(repo: string): Promise<string | undefined> {
+    return this.rawFile(repo, "readme");
+  }
+
+  /** Paths of the files directly under docs/ on the default branch; empty when there is no docs folder. */
+  async docs(repo: string): Promise<string[]> {
+    let listed: string;
+    try {
+      listed = await this.gh(
+        [
+          "api",
+          `repos/${repo}/contents/docs`,
+          "--jq",
+          'if type == "array" then .[] | select(.type == "file") | .path else empty end',
+        ],
+        INTAKE_READ_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (/\(HTTP 404\)/.test(error instanceof Error ? error.message : String(error))) return [];
+      throw error;
+    }
+    return listed.split("\n").filter((line) => line !== "");
+  }
+
+  /** One file's text on the default branch, or undefined when it does not exist. */
+  file(repo: string, path: string): Promise<string | undefined> {
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    return this.rawFile(repo, `contents/${encoded}`);
+  }
+
   /** Repos the gh account owns, collaborates on, or reaches through an organization, for the Projects page's suggestions. */
   async repos(): Promise<string[]> {
     const listed = await this.gh(
