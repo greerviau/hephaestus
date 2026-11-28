@@ -321,6 +321,24 @@ describe("Work", () => {
     expect(abandonedPage).not.toContain("Until a task finishes");
   });
 
+  it("keeps every board lane the same width, with tasks inside their own lane", () => {
+    // Every lane takes an equal share with the same fixed floor, so a lane's
+    // tasks never decide its width.
+    expect(STYLESHEET).toContain("grid-auto-columns: minmax(120px, 1fr);");
+    expect(STYLESHEET).toContain(".lane { min-width: 0; }");
+    // The task list's one column may shrink below its tasks' min-content, so a
+    // task fills its lane instead of spilling into the next one.
+    expect(STYLESHEET).toContain(
+      ".lane ul { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; }",
+    );
+    expect(STYLESHEET).toMatch(/\.tile \{[^}]*min-width: 0;/);
+    // The status line under a task wraps inside the task instead of holding
+    // the task at the status's full width.
+    expect(STYLESHEET).toContain(".tile .st { white-space: normal; overflow-wrap: anywhere; }");
+    // Narrow screens keep the lanes side by side and scroll the board.
+    expect(STYLESHEET).not.toContain("grid-auto-flow: row");
+  });
+
   it("keeps the board view on the tabs and the reload", async () => {
     dashboard = await startDashboard();
 
