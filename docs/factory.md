@@ -59,13 +59,24 @@ After a merge, Hephaestus watches the merge commit's checks on the default branc
 
 The factory profiles reach Hephaestus through an MCP server on `127.0.0.1`, on the port after the dashboard's. Each profile has its own bearer token, kept in `~/.hephaestus/secrets.json` and in the profile's `.env`, and each role gets only its tools:
 
-| Role         | Tools                                                                                                                                                   |
-| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| communicator | `file_issue`, `comment_issue`, `park_task`, `unpark_task`, `get_status`, `list_tasks`, `read_thread`, the stats tools below, and the change tools below |
-| lead         | `queue_work`, `defer_work`, `start_work`, `escalate`, `file_issue`, `get_status`, `list_tasks`, `read_thread`                                           |
-| improver     | `propose_version`, `get_config`, `get_status`, `list_tasks`, `list_threads`, `read_thread`                                                              |
+| Role         | Tools                                                                                                                                                                          |
+| ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| communicator | `file_issue`, `comment_issue`, `park_task`, `unpark_task`, `get_status`, `list_tasks`, `read_thread`, `get_project_context`, the stats tools below, and the change tools below |
+| lead         | `queue_work`, `defer_work`, `start_work`, `escalate`, `file_issue`, `get_status`, `list_tasks`, `read_thread`                                                                  |
+| improver     | `propose_version`, `get_config`, `get_status`, `list_tasks`, `list_threads`, `read_thread`                                                                                     |
 
 The communicator is the factory's chat agent. It is general-purpose: it talks, answers questions about the factory from `get_status`, `list_tasks`, and `read_thread` (a task carries `merged_at`, its recorded merge time, which is not its last update), uses `file_issue` only when the user asks for work, uses `comment_issue` only when the user asks for a comment on an existing issue, and uses `park_task` and `unpark_task` only when the owner asks to set a task aside or gives their answer to a parked one. Besides those its only write tools are the change tools below.
+
+### Project context
+
+The communicator answers questions about what a project is, its parts, and its terms, such as "what is the Lead?", from `get_project_context`, and its instructions tell it to read that before it answers such a question or scopes work on a project. With no arguments the tool gives every factory project's README and the list of Markdown and text files directly under its `docs/` folder. With `repo` it gives one project, and with `repo` and `doc`, a path from that list, it gives that doc. It refuses a repo that is not a factory project and a path that is not in the docs list, so it reads nothing else in the repo.
+
+- The text comes from each project's default branch through the `gh` account on the Hermes host, with GET requests only. The tool cannot change a repo or run its code.
+- Hephaestus keeps each project's README and docs list for 10 minutes, then reads them from the default branch again, so a merged change to a README or a doc reaches the chat agent within 10 minutes, with no deploy or restart. A failed read is not kept.
+- All READMEs together give at most 48,000 characters, shared equally between the projects and at most 16,000 for one, and a doc gives at most 24,000. Cut text ends with a note that says so, and the docs list holds at most 50 files.
+- A project with no README or no `docs/` folder gives an empty context. A project whose README or docs GitHub cannot give is listed with the reason, and the other projects are still given.
+
+To check it by hand, ask the chat agent "what is the Lead?" about a project whose README defines it. The agent reads the project's context and answers from the README, instead of saying it lacks the context.
 
 Every call is recorded with the calling role, including calls to a tool the role does not have. `propose_version` creates a draft config version authored by the improver, with a short title of at most 72 characters, a message that describes the change, and the factory threads it cites as evidence; a longer title is refused. It also refuses a proposal that adds a skill the deployed version lacks when nothing in the proposed config loads it, neither `factory.threadSkills`, any project's `skills`, nor any role's `skills`; the refusal names the skill and says to load it from one of them. The improver's instructions say to choose a project's `skills` for a mistake that comes from one repo, and `factory.threadSkills` only for one that threads on several projects make. A skill the deployed version already has may stay unloaded, since the owner may unload one on purpose. It changes nothing until the owner approves it.
 
