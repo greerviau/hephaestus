@@ -13,6 +13,7 @@ import {
   buttonLink,
   callout,
   checkbox,
+  choiceOptions,
   empty,
   escapeHtml,
   externalLink,
@@ -462,7 +463,7 @@ function modelSection(
           "Model",
           modelSelect(
             "model",
-            provider.models,
+            choiceOptions(provider.models, current),
             current,
             ' id="model" aria-describedby="model-hint"',
           ),

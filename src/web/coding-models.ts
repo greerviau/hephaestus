@@ -13,6 +13,7 @@ import type { FactoryPages } from "./factory.js";
 import { buttonLink, empty, escapeHtml, section, statusText } from "./html.js";
 import { sendHtml, type Route, type RouteContext } from "./http.js";
 import { LAZY_SCRIPT_TAG } from "./lazy.js";
+import { PROVIDER_CHOICE_SCRIPT_TAG } from "./provider-choice.js";
 import {
   PLANNING_PATH,
   PLANNING_SUMMARY_PATH,
@@ -50,7 +51,7 @@ export function codingModelsRoutes(factory: FactoryPages): Route[] {
     const coding =
       current === undefined
         ? empty("No config version yet.")
-        : `${problems("Not saved", errors)}<form method="post" action="/config/models"><input type="hidden" name="parentId" value="${String(current.id)}">${codingModelsFields(current.document, submitted)}${versionSaveBar("Save coding models", current, submitted)}</form>`;
+        : `${problems("Not saved", errors)}<form method="post" action="/config/models"><input type="hidden" name="parentId" value="${String(current.id)}">${codingModelsFields(current.document, submitted)}${versionSaveBar("Save coding models", current, submitted)}</form>${PROVIDER_CHOICE_SCRIPT_TAG}`;
     sendHtml(
       context.response,
       errors === undefined ? 200 : 400,

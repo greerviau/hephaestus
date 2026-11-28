@@ -250,9 +250,11 @@ describe("Planning model page", () => {
     const page = (await dashboard.get("/config/models/planning?provider=anthropic")).html;
     const control = /<select [^>]*name="model"[^>]*>(.*?)<\/select>/.exec(page);
     expect(control?.[0]).toContain('class="model"');
-    expect([...(control?.[1] ?? "").matchAll(/<option value="([^"]*)"/g)].map((m) => m[1])).toEqual(
-      ["claude-sonnet-5", "claude-opus-5-5"],
-    );
+    expect(
+      [...(control?.[1] ?? "").matchAll(/<option value="([^"]*)"(?![^>]*disabled)/g)].map(
+        (m) => m[1],
+      ),
+    ).toEqual(["claude-sonnet-5", "claude-opus-5-5"]);
     expect(control?.[1]).toContain('<option value="claude-sonnet-5" selected>');
     expect(page).not.toContain("<datalist");
     expect(page).not.toContain('list="models"');

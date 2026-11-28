@@ -20,6 +20,7 @@ import { LIVE_SCRIPT, LIVE_SCRIPT_PATH } from "./web/live.js";
 import { PENDING_SCRIPT, PENDING_SCRIPT_PATH } from "./web/pending.js";
 import { UNCHANGED_SCRIPT, UNCHANGED_SCRIPT_PATH } from "./web/unchanged.js";
 import { PROJECT_FILTER_SCRIPT, PROJECT_FILTER_SCRIPT_PATH } from "./web/project-filter.js";
+import { PROVIDER_CHOICE_SCRIPT, PROVIDER_CHOICE_SCRIPT_PATH } from "./web/provider-choice.js";
 import { STYLESHEET } from "./web/style.js";
 import { LOGO_PATH, brandFile } from "./web/brand.js";
 
@@ -110,6 +111,10 @@ export function createDashboardServer({
     }
     if (path === PROJECT_FILTER_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
       send(response, 200, "text/javascript; charset=utf-8", PROJECT_FILTER_SCRIPT);
+      return;
+    }
+    if (path === PROVIDER_CHOICE_SCRIPT_PATH && (method === "GET" || method === "HEAD")) {
+      send(response, 200, "text/javascript; charset=utf-8", PROVIDER_CHOICE_SCRIPT);
       return;
     }
     const brand = method === "GET" || method === "HEAD" ? brandFile(path) : undefined;
