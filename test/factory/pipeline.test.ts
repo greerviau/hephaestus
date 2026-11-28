@@ -1064,6 +1064,32 @@ describe("Pipeline", () => {
     expect(h.tasks.get(id).stage).toBe("Done");
   });
 
+  it("names the checks still running on the merge commit as the owner writes them", async () => {
+    const h = harness();
+    const id = admitted(h);
+    await toReview(h, id);
+    h.github.prs.set(
+      5,
+      pr(5, SHA, {
+        checkNames: ["check:check", "check:container", "check:e2e:smoke", "status:ci/build"],
+      }),
+    );
+    h.finish("t2", reviewResult("approve", SHA));
+    await h.pipeline.tick();
+    h.github.commits.set(MERGE, checks("pending", []));
+    await h.pipeline.tick();
+    expect(h.tasks.get(id).waiting).toBe(
+      "checks are running on the merge commit: check, container, e2e:smoke, status:ci/build",
+    );
+
+    h.github.commits.set(
+      MERGE,
+      checks("success", ["check:container", "check:e2e:smoke", "status:ci/build"]),
+    );
+    await h.pipeline.tick();
+    expect(h.tasks.get(id).waiting).toBe("checks are running on the merge commit: check");
+  });
+
   it("merges a repo without CI only when the policy allows no checks", async () => {
     const h = harness((config) => {
       config.projects["octo/app"] = {
