@@ -191,6 +191,34 @@ describe("WorkerManager", () => {
     expect(events.thread("env-1", "t1")?.kind).toBe("setup");
   });
 
+  it("starts housekeeping threads at the configured effort after a deploy, and records it", async () => {
+    const document = sampleConfig();
+    document.factory.setup = { instanceId: "codex", model: "gpt-6.2-sol", effort: "max" };
+    const second = store.createVersion({
+      document,
+      author: "test",
+      message: "effort",
+      parentId: 1,
+    });
+    store.approve(second.id);
+
+    await manager.deployVersion(second.id);
+
+    expect(t3.launches[0]).toMatchObject({
+      providerInstanceId: "codex",
+      model: "gpt-6.2-sol",
+      options: [{ id: "reasoningEffort", value: "max" }],
+    });
+    expect(events.thread("env-1", "t1")).toMatchObject({ kind: "setup", effort: "max" });
+  });
+
+  it("sends no effort for housekeeping when none is set", async () => {
+    await manager.deployVersion(1);
+
+    expect(t3.launches[0]).not.toHaveProperty("options");
+    expect(events.thread("env-1", "t1")?.effort).toBeNull();
+  });
+
   it("tells a usage limit from a lost sign-in, and checks again once the limit may have reset", async () => {
     await manager.deployVersion(1);
     finishThread("t1", deployed(1, SHA));

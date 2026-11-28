@@ -1,4 +1,5 @@
 import { renameLegacyRole } from "../legacy-planner.js";
+import { effortProblem, providerOfInstance, type EffortProvider } from "./effort.js";
 import { POLICY_SETTING_NAMES, PRESET_NAMES, type Policy } from "./policy.js";
 
 export const ROLE_NAMES = ["communicator", "lead", "improver"] as const;
@@ -36,6 +37,8 @@ export interface ModelChoice {
   model: string;
   /** Provider options such as `effort`, by T3 option id. */
   options?: Record<string, string | boolean>;
+  /** The effort level the provider runs at, from `EFFORT` in effort.ts. Absent leaves the model's default. */
+  effort?: string;
 }
 
 /** How Hephaestus runs factory threads and the setup threads on each worker. */
@@ -225,9 +228,15 @@ export function validateConfig(value: unknown): FactoryConfig {
 
   const factory = object("factory", root.factory);
   if (factory !== undefined) {
-    const model = (path: string, v: unknown): Record<string, unknown> | undefined => {
+    const model = (
+      path: string,
+      v: unknown,
+      provider: (choice: Record<string, unknown>) => EffortProvider | undefined,
+    ): Record<string, unknown> | undefined => {
       const choice = object(path, v);
       if (choice === undefined) return undefined;
+      const effort = effortProblem(path, choice.effort, provider(choice), choice.options);
+      if (effort !== undefined) problems.push(effort);
       if (typeof choice.model !== "string" || choice.model === "") {
         problems.push(`${path}.model must be a non-empty string`);
       }
@@ -243,10 +252,12 @@ export function validateConfig(value: unknown): FactoryConfig {
     };
     const models = object("factory.models", factory.models);
     if (models !== undefined) {
-      model("factory.models.claude", models.claude);
-      model("factory.models.codex", models.codex);
+      model("factory.models.claude", models.claude, () => "claude");
+      model("factory.models.codex", models.codex, () => "codex");
     }
-    const setup = model("factory.setup", factory.setup);
+    const setup = model("factory.setup", factory.setup, (choice) =>
+      typeof choice.instanceId === "string" ? providerOfInstance(choice.instanceId) : undefined,
+    );
     if (setup !== undefined && (typeof setup.instanceId !== "string" || setup.instanceId === "")) {
       problems.push("factory.setup.instanceId must be a non-empty string");
     }

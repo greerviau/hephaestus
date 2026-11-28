@@ -30,8 +30,15 @@ function backToCardSchema(db: Database): void {
 }
 
 /** Puts a current database back into the shape it had before tasks could be parked. */
+/** Puts a current database back into the shape it had before threads recorded their effort. */
+function backToBeforeEffort(db: Database): void {
+  db.exec(`ALTER TABLE factory_threads DROP COLUMN effort;
+    ALTER TABLE factory_launches DROP COLUMN effort;`);
+}
+
 /** Puts a current database back into the shape it had before project skills. */
 function backToBeforeProjectSkills(db: Database): void {
+  backToBeforeEffort(db);
   db.exec("ALTER TABLE worker_projects DROP COLUMN skills_cloned_at;");
 }
 
@@ -109,7 +116,7 @@ describe("store migrations", () => {
       INSERT INTO card_events (card_id, at, kind, detail)
       VALUES (1, 'x', 'stage:Implementing', ''), (1, 'x', 'stage:Reverting', ''),
              (2, 'x', 'stage:Reverting', ''), (2, 'x', 'stage:Implementing', '');`);
-    db.pragma(`user_version = ${String(latest - 21)}`);
+    db.pragma(`user_version = ${String(latest - 22)}`);
     db.close();
 
     db = openStore(path);
@@ -153,7 +160,7 @@ describe("store migrations", () => {
       INSERT INTO mcp_calls (role, tool, arguments, ok, result, at)
         VALUES ('lead', 'start_work', '{"card_id":8,"brief":"b"}', 1, '{"card_id":8,"stage":"Implementing"}', 'x'),
                ('lead', 'list_cards', '{}', 1, '[{"card_id":8,"title":"Rename the card"}]', 'x');`);
-    db.pragma(`user_version = ${String(latest - 8)}`);
+    db.pragma(`user_version = ${String(latest - 9)}`);
     db.close();
 
     db = openStore(path);
@@ -235,7 +242,7 @@ describe("store migrations", () => {
         INSERT INTO chat_changes (target, summary, conversation, state, after_text, proposed_at)
           VALUES ('persona:planner', 's', 'c', 'proposed', 'a', 'x'), ('instruction:factory', 's', 'c', 'proposed', 'a', 'x');`);
       backToBeforeQueue(db);
-      db.pragma(`user_version = ${String(latest - 6)}`);
+      db.pragma(`user_version = ${String(latest - 7)}`);
     };
     const expectRenamed = (): void => {
       expect(db.pragma("user_version", { simple: true })).toBe(latest);
@@ -270,10 +277,29 @@ describe("store migrations", () => {
     expectRenamed();
     // Run again over the renamed rows, as after a crash between the rename and the version bump.
     backToBeforeQueue(db);
-    db.pragma(`user_version = ${String(latest - 6)}`);
+    db.pragma(`user_version = ${String(latest - 7)}`);
     db.close();
     db = openStore(path);
     expectRenamed();
+    db.close();
+  });
+
+  it("keeps threads recorded before effort, which read as launched with no effort set", () => {
+    dir = mkdtempSync(join(tmpdir(), "hephaestus-store-"));
+    const path = join(dir, "state.db");
+    let db = openStore(path);
+    const latest = db.pragma("user_version", { simple: true }) as number;
+    backToBeforeEffort(db);
+    db.exec(`INSERT INTO factory_threads (environment_id, thread_id, title, provider_instance_id, model,
+        config_version, task_id, kind, status, created_at, updated_at)
+      VALUES ('w1', 't1', 'Implement', 'hephaestus-claude', 'm', 1, '1', 'implement', 'completed', 'x', 'x')`);
+    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.close();
+    db = openStore(path);
+    expect(db.pragma("user_version", { simple: true })).toBe(latest);
+    expect(db.prepare("SELECT thread_id, effort FROM factory_threads").all()).toEqual([
+      { thread_id: "t1", effort: null },
+    ]);
     db.close();
   });
 
@@ -286,7 +312,7 @@ describe("store migrations", () => {
     db.exec(
       "INSERT INTO worker_projects (environment_id, repo, project_id) VALUES ('w1', 'octo/app', 'p1')",
     );
-    db.pragma(`user_version = ${String(latest - 1)}`);
+    db.pragma(`user_version = ${String(latest - 2)}`);
     db.close();
     db = openStore(path);
     expect(db.pragma("user_version", { simple: true })).toBe(latest);
@@ -303,7 +329,7 @@ describe("store migrations", () => {
     let db = openStore(path);
     const latest = db.pragma("user_version", { simple: true }) as number;
     backToBeforePendingIssues(db);
-    db.pragma(`user_version = ${String(latest - 3)}`);
+    db.pragma(`user_version = ${String(latest - 4)}`);
     db.close();
     db = openStore(path);
     expect(db.pragma("user_version", { simple: true })).toBe(latest);
@@ -330,7 +356,7 @@ describe("store migrations", () => {
              (3, 'x', 'stage:Escalated', 'to the owner: strict policy'),
              (4, 'x', 'stage:Escalated', 'to the owner: PR #5 comes from another repository'),
              (5, 'x', 'escalated:owner', 'Which format?');`);
-    db.pragma(`user_version = ${String(latest - 2)}`);
+    db.pragma(`user_version = ${String(latest - 3)}`);
     db.close();
 
     db = openStore(path);
@@ -366,7 +392,7 @@ describe("store migrations", () => {
       VALUES ('hephaestus-implement-3-0', 'w1', 'Task 3', 'p', 'm', 1, '3', 'pending', 'x', 'x'),
              ('hephaestus-implement-7-0', 'w1', 'Task 7', 'p', 'm', 1, '7', 'launched', 'x', 'x'),
              ('hephaestus-implement-8-0', 'w1', 'Task 8', 'p', 'm', 1, '8', 'failed', 'x', 'x');`);
-    db.pragma(`user_version = ${String(latest - 5)}`);
+    db.pragma(`user_version = ${String(latest - 6)}`);
     db.close();
 
     db = openStore(path);
@@ -438,7 +464,7 @@ describe("store migrations", () => {
     backToUntitledVersions(db);
     db.exec(`INSERT INTO config_versions (state, author, message, created_at, document)
       VALUES ('draft', 'improver', 'Tighten the review skill. It missed two failing tests.', 'x', '{}');`);
-    db.pragma(`user_version = ${String(latest - 4)}`);
+    db.pragma(`user_version = ${String(latest - 5)}`);
     db.close();
 
     db = openStore(path);
