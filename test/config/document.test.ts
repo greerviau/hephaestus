@@ -79,6 +79,57 @@ describe("factory settings", () => {
   });
 });
 
+describe("coding model effort", () => {
+  it("accepts a config with no effort, as configs from before effort have", () => {
+    const config = sampleConfig();
+    config.factory.models.codex = { model: "gpt-6.2-sol", options: { effort: "high" } };
+    expect(problems(config)).toEqual([]);
+    expect(validateConfig(normalizeConfig(config)).factory.models.claude.effort).toBeUndefined();
+  });
+
+  it("accepts each provider's own levels", () => {
+    const config = sampleConfig();
+    config.factory.models.claude.effort = "ultrathink";
+    config.factory.models.codex.effort = "ultra";
+    config.factory.setup = { instanceId: "codex", model: "gpt-6.2-sol", effort: "xhigh" };
+    expect(problems(config)).toEqual([]);
+  });
+
+  it("refuses a level the role's provider does not offer, naming the ones it does", () => {
+    const config = sampleConfig();
+    config.factory.models.claude.effort = "ultra";
+    config.factory.models.codex.effort = "ultrathink";
+    config.factory.setup.effort = "extreme";
+    expect(problems(config)).toEqual([
+      'factory.models.claude.effort must be one of low, medium, high, xhigh, max, ultrathink for Claude, not "ultra"',
+      'factory.models.codex.effort must be one of low, medium, high, xhigh, max, ultra for Codex, not "ultrathink"',
+      'factory.setup.effort must be one of low, medium, high, xhigh, max, ultrathink for Claude, not "extreme"',
+    ]);
+  });
+
+  it("refuses effort for a housekeeping instance whose provider is not known", () => {
+    const config = sampleConfig();
+    config.factory.setup = { instanceId: "myCursor", model: "m", effort: "high" };
+    expect(problems(config)).toEqual([
+      "factory.setup.effort can only be set for a Claude or Codex provider instance",
+    ]);
+    delete config.factory.setup.effort;
+    expect(problems(config)).toEqual([]);
+  });
+
+  it("refuses effort set both as effort and as the provider's effort option", () => {
+    const config = sampleConfig();
+    config.factory.models.codex = {
+      model: "gpt-6.2-sol",
+      effort: "high",
+      options: { reasoningEffort: "low" },
+    };
+    expect(problems(config)).toEqual([
+      "factory.models.codex sets effort twice: remove options.reasoningEffort or effort",
+    ]);
+  });
+});
+
 describe("project skills", () => {
   it("loads a config whose projects name no skills, and accepts skills that exist", () => {
     const config = sampleConfig();

@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "better-sqlite3";
 import type { FactoryConfig } from "../config/document.js";
+import { launchModel, providerOfInstance } from "../config/effort.js";
 import type { ConfigStore } from "../config/store.js";
 import { getMeta, setMeta } from "../meta.js";
 import type { T3Adapter } from "../t3/adapter.js";
@@ -711,15 +712,21 @@ export class WorkerManager {
     const config = this.config();
     const choice =
       kind === "test-claude"
-        ? { providerInstanceId: FACTORY_CLAUDE, ...config.factory.models.claude }
+        ? {
+            providerInstanceId: FACTORY_CLAUDE,
+            ...launchModel(config.factory.models.claude, "claude"),
+          }
         : kind === "test-codex"
-          ? { providerInstanceId: FACTORY_CODEX, ...config.factory.models.codex }
+          ? {
+              providerInstanceId: FACTORY_CODEX,
+              ...launchModel(config.factory.models.codex, "codex"),
+            }
           : {
               providerInstanceId: config.factory.setup.instanceId,
-              model: config.factory.setup.model,
-              ...(config.factory.setup.options === undefined
-                ? {}
-                : { options: config.factory.setup.options }),
+              ...launchModel(
+                config.factory.setup,
+                providerOfInstance(config.factory.setup.instanceId),
+              ),
             };
     try {
       const threadId = await this.options.threads.launch(
@@ -728,14 +735,7 @@ export class WorkerManager {
           title: KIND_TITLES[kind],
           providerInstanceId: choice.providerInstanceId,
           model: choice.model,
-          ...(choice.options === undefined
-            ? {}
-            : {
-                options: Object.entries(choice.options).map(([optionId, value]) => ({
-                  id: optionId,
-                  value,
-                })),
-              }),
+          ...(choice.options === undefined ? {} : { options: choice.options }),
           runtimeMode: "full-access",
           message: row.message,
           clientRequestId,

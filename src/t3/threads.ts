@@ -1,4 +1,5 @@
 import type { LaunchOptions, T3Adapter } from "./adapter.js";
+import { effortOf } from "../config/effort.js";
 import { T3ToolError } from "./connection.js";
 import type { FactoryThread, ThreadEvents } from "./events.js";
 
@@ -34,6 +35,7 @@ export class FactoryThreads {
       title: options.title,
       providerInstanceId: options.providerInstanceId,
       model: options.model,
+      effort: effortOf(options.options),
       configVersion: record.configVersion,
       taskId: record.taskId,
       kind: record.kind ?? "factory",

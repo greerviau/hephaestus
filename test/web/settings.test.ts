@@ -470,6 +470,100 @@ describe("Models tab", () => {
     expect(dashboard.store.list()).toHaveLength(1);
   });
 
+  it("shows an effort selector beside each model with only its provider's levels and a default", async () => {
+    await start();
+
+    const { html } = await dashboard.get("/config/models");
+
+    const select = (job: string): string =>
+      new RegExp(`<select [^>]*aria-label="${job} effort">(.*?)</select>`).exec(html)?.[1] ?? "";
+    const values = (job: string): string[] =>
+      [...select(job).matchAll(/<option value="([^"]*)"/g)].map((match) => match[1] ?? "");
+    expect(values("Implement")).toEqual([
+      "",
+      "low",
+      "medium",
+      "high",
+      "xhigh",
+      "max",
+      "ultrathink",
+    ]);
+    expect(values("Review")).toEqual(["", "low", "medium", "high", "xhigh", "max", "ultra"]);
+    // The default housekeeping instance is a Claude one.
+    expect(values("Housekeeping")).toEqual(values("Implement"));
+    expect(select("Implement")).toContain('<option value="" selected>Default effort</option>');
+    // The selector sits in the job's row, after its model field.
+    expect(html).toMatch(/name="codex.model"[^>]*>\s*<select name="codex.effort"/);
+  });
+
+  it("saves the chosen effort levels in a new version whose diff shows them", async () => {
+    await start();
+
+    const response = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      "claude.effort": "xhigh",
+      "codex.effort": "ultra",
+      "setup.effort": "",
+    });
+
+    expect(response.status).toBe(303);
+    const saved = dashboard.store.list()[0];
+    expect(saved?.document.factory.models).toEqual({
+      claude: { model: "claude-sonnet-5-5", effort: "xhigh" },
+      codex: { model: "gpt-6.2-sol", effort: "ultra" },
+    });
+    // Default leaves effort unset.
+    expect(saved?.document.factory.setup).toEqual({
+      instanceId: "claudeAgent",
+      model: "claude-sonnet-5-5",
+    });
+    const { html } = await dashboard.get(`/config/versions/${String(saved?.id)}`);
+    expect(html).toContain("factory.models.claude.effort");
+    expect(html).toContain("xhigh");
+    expect(html).toContain("factory.models.codex.effort");
+    expect(html).toContain("ultra");
+  });
+
+  it("refuses an effort level the role's provider does not offer, and says which it does", async () => {
+    await start();
+
+    const bad = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      "codex.effort": "ultrathink",
+    });
+    const html = await bad.text();
+
+    expect(bad.status).toBe(400);
+    expect(html).toContain(
+      "factory.models.codex.effort must be one of low, medium, high, xhigh, max, ultra for Codex, not &quot;ultrathink&quot;",
+    );
+    // What was chosen stays chosen, so the owner sees what was refused.
+    expect(html).toContain('<option value="ultrathink" selected>ultrathink</option>');
+    expect(dashboard.store.list()).toHaveLength(1);
+  });
+
+  it("keeps a saved effort when a form leaves out the selector", async () => {
+    await start();
+    const tuned = sampleConfig();
+    tuned.factory.models.claude = { model: "claude-sonnet-5-5", effort: "high" };
+    const id = deployVersion(tuned);
+    expect((await dashboard.get("/config/models")).html).toContain(
+      '<option value="high" selected>high</option>',
+    );
+
+    const response = await dashboard.post("/config/models", {
+      ...MODEL_FIELDS,
+      parentId: String(id),
+      "codex.model": "gpt-6.2-astra",
+    });
+
+    expect(response.status).toBe(303);
+    expect(dashboard.store.list()[0]?.document.factory.models.claude).toEqual({
+      model: "claude-sonnet-5-5",
+      effort: "high",
+    });
+  });
+
   it("keeps a string option that reads like a switch a string", async () => {
     await start();
     const quoted = sampleConfig();

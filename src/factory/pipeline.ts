@@ -1,5 +1,6 @@
 import type { Database } from "better-sqlite3";
 import { projectFor, type FactoryConfig } from "../config/document.js";
+import { launchModel } from "../config/effort.js";
 import { resolvePolicy, type PolicySettings } from "../config/policy.js";
 import type { Stage } from "../hermes/board.js";
 import { getMeta, setMeta } from "../meta.js";
@@ -1286,12 +1287,7 @@ export class Pipeline {
   private modelOptions(provider: Provider): Pick<LaunchOptions, "model" | "options"> {
     const model = this.options.config()?.document.factory.models[provider];
     if (model === undefined) throw new Error("No config version is deployed.");
-    return {
-      model: model.model,
-      ...(model.options === undefined
-        ? {}
-        : { options: Object.entries(model.options).map(([id, value]) => ({ id, value })) }),
-    };
+    return launchModel(model, provider);
   }
 
   /**

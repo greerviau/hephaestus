@@ -33,6 +33,8 @@ export interface FactoryThread {
   title: string;
   providerInstanceId: string;
   model: string;
+  /** The effort level the thread was launched with; null when none was set. Absent means null. */
+  effort?: string | null;
   configVersion: number;
   taskId: string | null;
   /** What the thread is for, such as `implement`, `review`, or `setup`. */
@@ -60,6 +62,7 @@ interface ThreadRow {
   title: string;
   provider_instance_id: string;
   model: string;
+  effort: string | null;
   config_version: number;
   task_id: string | null;
   kind: string;
@@ -76,6 +79,7 @@ function toThread(row: ThreadRow): StoredThread {
     title: row.title,
     providerInstanceId: row.provider_instance_id,
     model: row.model,
+    effort: row.effort,
     configVersion: row.config_version,
     taskId: row.task_id,
     kind: row.kind,
@@ -102,8 +106,8 @@ export class ThreadEvents {
     this.db
       .prepare(
         `INSERT INTO factory_threads (environment_id, thread_id, title, provider_instance_id, model,
-           config_version, task_id, kind, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?)
+           effort, config_version, task_id, kind, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'starting', ?, ?)
          ON CONFLICT (environment_id, thread_id) DO NOTHING`,
       )
       .run(
@@ -112,6 +116,7 @@ export class ThreadEvents {
         thread.title,
         thread.providerInstanceId,
         thread.model,
+        thread.effort ?? null,
         thread.configVersion,
         thread.taskId,
         thread.kind ?? "factory",
@@ -267,8 +272,8 @@ export class ThreadEvents {
     this.db
       .prepare(
         `INSERT INTO factory_launches (client_request_id, environment_id, title, provider_instance_id,
-           model, config_version, task_id, kind, status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
+           model, effort, config_version, task_id, kind, status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
          ON CONFLICT (client_request_id) DO UPDATE SET status = 'pending', error = NULL,
            environment_id = CASE WHEN factory_launches.status = 'failed' THEN excluded.environment_id ELSE factory_launches.environment_id END,
            updated_at = excluded.updated_at`,
@@ -279,6 +284,7 @@ export class ThreadEvents {
         thread.title,
         thread.providerInstanceId,
         thread.model,
+        thread.effort ?? null,
         thread.configVersion,
         thread.taskId,
         thread.kind ?? "factory",
@@ -309,7 +315,7 @@ export class ThreadEvents {
     return this.db
       .prepare(
         `SELECT client_request_id AS clientRequestId, environment_id AS environmentId, title,
-           provider_instance_id AS providerInstanceId, model, config_version AS configVersion,
+           provider_instance_id AS providerInstanceId, model, effort, config_version AS configVersion,
            task_id AS taskId, kind, updated_at AS updatedAt
          FROM factory_launches WHERE status = 'pending' ORDER BY created_at, client_request_id`,
       )

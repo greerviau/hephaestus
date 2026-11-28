@@ -1573,7 +1573,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
                   href: threadHref(thread),
                   wholeRow: true,
                   sub: escapeHtml(
-                    `${labels.get(thread.environmentId) ?? thread.environmentId}, ${providerName(thread.providerInstanceId)}, ${thread.model}`,
+                    `${labels.get(thread.environmentId) ?? thread.environmentId}, ${providerName(thread.providerInstanceId)}, ${thread.model}${effortText(thread.effort)}`,
                   ),
                   aside: threadStatus(thread),
                 })),
@@ -1695,7 +1695,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
             `${pageHead({
               title: record.title,
               lede: `${threadStatus(record)}${DOT}${escapeHtml(
-                `${workerLabels(factory).get(record.environmentId) ?? record.environmentId}, ${providerName(record.providerInstanceId)}, ${record.model}`,
+                `${workerLabels(factory).get(record.environmentId) ?? record.environmentId}, ${providerName(record.providerInstanceId)}, ${record.model}${effortText(record.effort)}`,
               )}${DOT}config v${String(record.configVersion)}`,
             })}${section({
               title: "Transcript",
@@ -1715,4 +1715,9 @@ export function workRoutes(factory: FactoryPages): Route[] {
       },
     },
   ];
+}
+
+/** How a thread's effort reads after its model: nothing when none was set, as the model's default ran. */
+function effortText(effort: string | null | undefined): string {
+  return effort === null || effort === undefined ? "" : `, ${effort} effort`;
 }

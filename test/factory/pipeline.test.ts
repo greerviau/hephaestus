@@ -162,6 +162,45 @@ describe("Pipeline", () => {
     expect(h.events.thread("w1", "t2")?.providerInstanceId).toBe(FACTORY_CODEX);
   });
 
+  it("starts implement and review threads at the configured effort, and records it", async () => {
+    const h = harness((config) => {
+      config.factory.models.claude = {
+        model: "claude-opus-5-5",
+        options: { fastMode: true },
+        effort: "xhigh",
+      };
+      config.factory.models.codex = { model: "gpt-6.2-sol", effort: "ultra" };
+    });
+    const id = admitted(h);
+
+    await h.pipeline.queue(id, "Add the flag to the CLI.");
+    expect(h.t3.launches[0]).toMatchObject({
+      model: "claude-opus-5-5",
+      options: [
+        { id: "fastMode", value: true },
+        { id: "effort", value: "xhigh" },
+      ],
+    });
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    expect(h.t3.launches[1]).toMatchObject({
+      providerInstanceId: FACTORY_CODEX,
+      options: [{ id: "reasoningEffort", value: "ultra" }],
+    });
+    expect(h.events.thread("w1", "t1")?.effort).toBe("xhigh");
+    expect(h.events.thread("w1", "t2")?.effort).toBe("ultra");
+  });
+
+  it("sends no effort to T3 when none is set, as before", async () => {
+    const h = harness();
+    const id = admitted(h);
+
+    await h.pipeline.queue(id, "Add the flag to the CLI.");
+    expect(h.t3.launches[0]).not.toHaveProperty("options");
+    expect(h.events.thread("w1", "t1")?.effort).toBeNull();
+  });
+
   it("sends review findings to the implement thread while rounds remain, then escalates to the lead", async () => {
     const h = harness();
     const id = admitted(h);

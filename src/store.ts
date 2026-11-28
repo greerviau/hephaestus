@@ -394,6 +394,10 @@ const MIGRATIONS: Migration[] = [
   // When a worker cloned a project that loads skills of its own. Only a deploy started after it
   // puts the clone's hook in place, which links the skills into each new worktree.
   `ALTER TABLE worker_projects ADD COLUMN skills_cloned_at TEXT;`,
+  // The effort level each factory thread was launched with. NULL means none was set, so the
+  // model ran at its own default.
+  `ALTER TABLE factory_threads ADD COLUMN effort TEXT;
+   ALTER TABLE factory_launches ADD COLUMN effort TEXT;`,
 ];
 
 /** Opens Hephaestus's SQLite state database and applies any pending migrations. */
