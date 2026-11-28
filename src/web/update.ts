@@ -1,5 +1,15 @@
 import { UpdateRunningError } from "../self-update.js";
-import { escapeHtml, callout, layout, pageHead, postButton, section, empty } from "./html.js";
+import {
+  escapeHtml,
+  callout,
+  keyValues,
+  layout,
+  pageHead,
+  postButton,
+  section,
+  statusText,
+  empty,
+} from "./html.js";
 import type { FactoryPages } from "./factory.js";
 import { sendHtml, redirect, type Route, type RouteContext } from "./http.js";
 
@@ -26,43 +36,60 @@ export function updateRoutes(factory: FactoryPages): Route[] {
     const version = factory.version?.();
     const run = updater.status();
     const behind = version?.behind ?? 0;
-    const where =
+    const versionSection =
       version === undefined
         ? ""
-        : `<p>The service runs <code>${escapeHtml(version.commit.slice(0, 7))}</code>. ${
-            version.behind === undefined
-              ? "Whether origin/main is ahead is not known yet."
-              : behind === 0
-                ? "origin/main had nothing newer at the last check."
-                : `${behind === 1 ? "1 new commit" : `${String(behind)} new commits`} on origin/main.`
-          }</p>`;
+        : section({
+            title: "Version",
+            body: `<div class="sec-body">${keyValues([
+              ["Running", `<code>${escapeHtml(version.commit.slice(0, 7))}</code>`],
+              [
+                "origin/main",
+                // Unset both before the first fetch and after a failed one.
+                version.behind === undefined
+                  ? "Unknown"
+                  : behind === 0
+                    ? "Nothing newer at the last check"
+                    : behind === 1
+                      ? "1 new commit"
+                      : `${String(behind)} new commits`,
+              ],
+            ])}<p class="hint">If the dashboard does not come back after an update, run <code>${escapeHtml(version.command)}</code> on the Hermes host.</p></div>`,
+          });
+    // A finished run needs no callout: the status beside the log says so.
     const state = run.running
       ? callout(
           "info",
           "Updating",
           "The service restarts near the end, so this page may fail to load for a few seconds. Reload it then.",
         )
-      : run.log === undefined
+      : run.log === undefined || run.exitCode === 0
         ? ""
         : run.exitCode === undefined
           ? callout(
               "err",
               "The last update stopped before it finished",
-              "It was stopped, or the host restarted, partway through, so the checkout may be half updated. Run the command below on the Hermes host to finish it or roll it back.",
+              `It was stopped, or the host restarted, partway through, so the checkout may be half updated. Run ${
+                version === undefined ? "<code>update</code>" : "the command below"
+              } on the Hermes host to finish it or roll it back.`,
             )
-          : run.exitCode === 0
-            ? callout("info", "The last update finished", "Its log is below.")
-            : callout("err", "The last update did not finish", "Its log below says why.");
+          : callout("err", "The last update did not finish", "Its log below says why.");
     const refusal = refused === undefined ? "" : callout("err", "Not started", escapeHtml(refused));
-    const button = run.running ? "" : postButton(PATH, "Update now", { variant: "primary" });
-    const fallback =
-      version === undefined
-        ? ""
-        : `<p class="hint">If the dashboard does not come back, run <code>${escapeHtml(version.command)}</code> on the Hermes host.</p>`;
+    const outcome = run.running
+      ? statusText("run", "Running")
+      : run.exitCode === undefined
+        ? statusText("bad", "Stopped")
+        : run.exitCode === 0
+          ? statusText("done", "Finished")
+          : statusText("bad", "Failed");
     const log =
       run.log === undefined
         ? ""
-        : section({ title: "Last run", body: `<pre class="block">${escapeHtml(run.log)}</pre>` });
+        : section({
+            title: "Last run",
+            right: outcome,
+            body: `<div class="sec-body"><pre class="block">${escapeHtml(run.log)}</pre></div>`,
+          });
     sendHtml(
       context.response,
       status,
@@ -71,7 +98,10 @@ export function updateRoutes(factory: FactoryPages): Route[] {
         `${pageHead({
           title: "Update",
           lede: "Pulls origin/main, builds, and restarts the service. A failed build rolls back.",
-        })}${refusal}${state}${where}${button}${fallback}${log}`,
+          ...(run.running
+            ? {}
+            : { actions: postButton(PATH, "Update now", { variant: "primary" }) }),
+        })}${refusal}${state}${versionSection}${log}`,
         {
           shell: context.shell,
           updateNotice: false,

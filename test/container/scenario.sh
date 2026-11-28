@@ -264,7 +264,7 @@ grep -q "Update finished with exit code 0" "$HOME/.hephaestus/update.log" \
 test -f "$co/dist/mark2.js" || fail "the dashboard's update did not build the new commit"
 test "$(main_pid)" != "$pid" || fail "the dashboard's update did not restart the service"
 wait_for_dashboard
-curl --silent --header "cookie: $cookie" "$base/update" | grep -q "The last update finished" \
+curl --silent --header "cookie: $cookie" "$base/update" | grep -q ">Finished</span>" \
   || fail "the update page does not show the finished update"
 
 echo "== a build that fails is rolled back, and the old build keeps running"
