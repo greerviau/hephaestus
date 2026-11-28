@@ -5,7 +5,7 @@ Hephaestus turns your repos into a software factory. You ask for work, AI agents
 ## Key Features
 
 - Ask for work in chat (Discord, Telegram, or Slack), or by opening a GitHub issues.
-- Coding agents implement each task in a [T3 Code](https://github.com/pingdotgg/t3code) thread on one of your worker machines.
+- Coding agents implement each task in a [T3 Code](https://github.com/pingdotgg/t3code) thread on one of your t3 environments.
 - Separate agents review each PR.
 - A merge policy decides what merges on its own and what waits for you.
 - When a merge breaks something, it reverts automatically.
