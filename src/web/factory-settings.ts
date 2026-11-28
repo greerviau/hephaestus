@@ -9,6 +9,7 @@ import {
   INSTANCES,
   MODELS,
   PROVIDERS,
+  defaultEffort,
   PROVIDER_LABELS,
   providerOfInstance,
   type EffortProvider,
@@ -218,7 +219,8 @@ function applyJob(role: string, job: CronJob, form: URLSearchParams, errors: str
 /**
  * The coding jobs, each a model setting that exists today. Implement and Review run on the
  * factory instances, which deploy installs as one provider each, so their provider is fixed.
- * Housekeeping runs on one of the owner's instances, whose provider its id names.
+ * Housekeeping runs on one of the owner's instances, whose provider its id names, and the
+ * save picks that instance from the provider chosen, so every row shows the same controls.
  */
 const JOBS = [
   { key: "claude", job: "Implement", does: "", instance: "Factory Claude" },
@@ -253,8 +255,9 @@ function providerOptions(
   byProvider: Record<EffortProvider, readonly string[]>,
   provider: EffortProvider | undefined,
   current: string,
+  extra: (value: string, group: EffortProvider | undefined) => string = () => "",
 ): string {
-  const groups: [string, readonly string[]][] = PROVIDERS.map((each) => {
+  const groups: [EffortProvider | "", readonly string[]][] = PROVIDERS.map((each) => {
     const values = byProvider[each];
     return [
       each,
@@ -269,7 +272,7 @@ function providerOptions(
       const shown = group === (provider ?? "");
       return values.map(
         (value) =>
-          `<option value="${escapeHtml(value)}" data-for="${group}"${shown ? "" : " hidden disabled"}${shown && value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
+          `<option value="${escapeHtml(value)}" data-for="${group}"${extra(value, group === "" ? undefined : group)}${shown ? "" : " hidden disabled"}${shown && value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
       );
     })
     .join("");
@@ -291,24 +294,31 @@ function providerSelect(key: JobKey, job: string, provider: EffortProvider | und
 }
 
 /**
- * A job's effort selector: the provider's levels only. A choice without effort shows a
- * placeholder that is disabled, so the browser sends no effort and the save leaves it unset.
+ * A job's effort selector: the provider's levels only. A choice without effort shows its
+ * model's default level chosen. The placeholder, which is disabled, shows only while no model
+ * is chosen, such as just after the provider changes, or when the provider has no levels.
  */
 function effortSelect(
   key: JobKey,
   job: string,
   provider: EffortProvider | undefined,
-  current: string,
+  model: string,
+  saved: string,
 ): string {
+  const current =
+    saved === "" && provider !== undefined && model !== "" ? defaultEffort(provider, model) : saved;
   const levels = Object.fromEntries(PROVIDERS.map((each) => [each, EFFORT[each].levels])) as Record<
     EffortProvider,
     readonly string[]
   >;
   const text = provider === undefined ? "No effort levels" : "Select effort";
-  return `<select class="effort" name="${key}.effort" aria-label="${job} effort" data-follows-provider data-placeholder="Select effort" data-placeholder-none="No effort levels">${placeholderOption(text, current)}${providerOptions(levels, provider, current)}</select>`;
+  return `<select class="effort" name="${key}.effort" aria-label="${job} effort" data-follows-provider data-effort-levels data-placeholder="Select effort" data-placeholder-none="No effort levels">${placeholderOption(text, current)}${providerOptions(levels, provider, current)}</select>`;
 }
 
-/** A job's model selector: the models T3 offers for its provider. */
+/**
+ * A job's model selector: the models T3 offers for its provider. Each model names its default
+ * level in `data-effort`, which the effort selector takes when the model changes.
+ */
 function modelChoice(
   key: JobKey,
   job: string,
@@ -317,46 +327,35 @@ function modelChoice(
 ): string {
   return modelSelect(
     `${key}.model`,
-    providerOptions(MODELS, provider, current),
+    providerOptions(MODELS, provider, current, (value, group) =>
+      group === undefined ? "" : ` data-effort="${escapeHtml(defaultEffort(group, value))}"`,
+    ),
     current,
     ` aria-label="${job} model" data-follows-provider`,
   );
 }
 
-/** The housekeeping instance selector: the instances T3 creates for its provider. */
-function instanceSelect(provider: EffortProvider | undefined, current: string): string {
-  return `<select class="w-144" name="setup.instanceId" aria-label="Housekeeping provider instance" required data-follows-provider>${placeholderOption("Select instance", current)}${providerOptions(INSTANCES, provider, current)}</select>`;
-}
-
 /** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */
 export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchParams): string {
   const value = valueFrom(submitted);
-  const rows = JOBS.map(({ key, job, does, instance }) => {
-    const instanceId = value("setup.instanceId", config.factory.setup.instanceId);
+  const rows = JOBS.map(({ key, job, does }) => {
     // A refused form shows the provider it chose, with that provider's choices.
     const provider =
       key === "setup"
         ? submitted?.has("setup.provider") === true
           ? asProvider(submitted.get("setup.provider") ?? "")
-          : providerOfInstance(instanceId)
+          : providerOfInstance(value("setup.instanceId", config.factory.setup.instanceId))
         : key;
-    const where =
-      instance === undefined
-        ? instanceSelect(provider, instanceId)
-        : `<span class="muted">${instance}</span>`;
-    const model = modelChoice(
-      key,
-      job,
-      provider,
-      value(`${key}.model`, choiceOf(config, key).model),
-    );
+    const modelName = value(`${key}.model`, choiceOf(config, key).model);
+    const model = modelChoice(key, job, provider, modelName);
     const effort = effortSelect(
       key,
       job,
       provider,
+      modelName,
       value(`${key}.effort`, choiceOf(config, key).effort ?? ""),
     );
-    return `<li class="row job" data-provider-row><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${providerSelect(key, job, provider)}${where}${model}${effort}</div></li>`;
+    return `<li class="row job" data-provider-row><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${providerSelect(key, job, provider)}${model}${effort}</div></li>`;
   }).join("");
   const options = JOBS.map(({ key, job }) => {
     const saved = Object.entries(choiceOf(config, key).options ?? {})
@@ -390,29 +389,40 @@ export function applyCodingModels(
   const errors: string[] = [];
   for (const { key, job, instance } of JOBS) {
     const saved = choiceOf(next, key);
-    const choice = model(form, key, job, errors, saved);
     const posted = form.get(`${key}.provider`);
     if (key !== "setup") {
       // Deploy installs each factory instance as one provider, so another cannot run there.
       if (posted !== null && posted !== key) {
         errors.push(`${job} provider: ${instance} runs ${PROVIDER_LABELS[key]} only.`);
       }
+      const choice = model(form, key, job, errors, saved, key);
       modelProblem(job, key, choice, saved, false, errors);
       next.factory.models[key] = choice;
       continue;
     }
-    const instanceId = (form.get("setup.instanceId") ?? "").trim();
-    if (instanceId === "") errors.push("Housekeeping provider instance: name one.");
-    const named = providerOfInstance(
-      instanceId === "" ? next.factory.setup.instanceId : instanceId,
-    );
+    const savedInstance = next.factory.setup.instanceId;
+    const savedProvider = providerOfInstance(savedInstance);
+    // The page sends no instance, so the save picks it. A script may still name one.
+    const typed = (form.get("setup.instanceId") ?? "").trim();
     // A form without the provider selector, such as one posted by a script, follows the instance.
-    const chosen = posted === null ? named : asProvider(posted);
+    const chosen =
+      posted === null
+        ? providerOfInstance(typed === "" ? savedInstance : typed)
+        : asProvider(posted);
+    // The saved instance stays while its provider is the one chosen, so a custom id is kept.
+    const instanceId =
+      typed !== ""
+        ? typed
+        : chosen === undefined || chosen === savedProvider
+          ? savedInstance
+          : (INSTANCES[chosen][0] ?? savedInstance);
+    const named = providerOfInstance(instanceId);
+    const choice = model(form, key, job, errors, saved, chosen);
     if (posted !== null && posted !== "" && chosen === undefined) {
       errors.push(
         `${job} provider: choose ${PROVIDERS.map((each) => PROVIDER_LABELS[each]).join(" or ")}.`,
       );
-    } else if (instanceId !== "" && chosen !== named) {
+    } else if (chosen !== named) {
       errors.push(
         chosen === undefined
           ? `${job} provider instance: ${instanceId} is a ${PROVIDER_LABELS[named ?? "claude"]} instance, so choose that provider.`
@@ -420,23 +430,13 @@ export function applyCodingModels(
       );
     }
     if (chosen !== undefined) {
-      modelProblem(
-        job,
-        chosen,
-        choice,
-        saved,
-        chosen !== providerOfInstance(config.factory.setup.instanceId),
-        errors,
-      );
+      modelProblem(job, chosen, choice, saved, chosen !== savedProvider, errors);
       // The config checks effort against the instance's provider, which can differ from the one chosen.
       if (choice.effort !== undefined && !EFFORT[chosen].levels.includes(choice.effort)) {
         errors.push(`${job} effort: ${choice.effort} is not a ${PROVIDER_LABELS[chosen]} level.`);
       }
     }
-    next.factory.setup = {
-      ...choice,
-      instanceId: instanceId === "" ? next.factory.setup.instanceId : instanceId,
-    };
+    next.factory.setup = { ...choice, instanceId };
   }
   return { config: next, errors };
 }
@@ -469,6 +469,7 @@ function model(
   job: string,
   errors: string[],
   current: ModelChoice,
+  provider: EffortProvider | undefined,
 ): ModelChoice {
   const name = (form.get(`${key}.model`) ?? "").trim();
   if (name === "") {
@@ -488,9 +489,16 @@ function model(
     options[text.slice(0, at).trim()] = optionValue(value);
   }
   // A form without the selector, such as one posted by a script, keeps the saved effort.
-  const effort = form.has(`${key}.effort`)
-    ? (form.get(`${key}.effort`) ?? "").trim()
-    : (current.effort ?? "");
+  const posted = form.has(`${key}.effort`) ? (form.get(`${key}.effort`) ?? "").trim() : undefined;
+  // The page preselects the model's default level for a choice without effort, so a form that
+  // sends that level back for the same model leaves effort unset, as it was.
+  const untouched =
+    posted !== undefined &&
+    current.effort === undefined &&
+    name === current.model &&
+    provider !== undefined &&
+    posted === defaultEffort(provider, name);
+  const effort = posted === undefined || untouched ? (current.effort ?? "") : posted;
   return {
     model: name,
     ...(Object.keys(options).length === 0 ? {} : { options }),

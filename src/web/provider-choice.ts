@@ -10,8 +10,11 @@ export const PROVIDER_CHOICE_SCRIPT_TAG = `<script src="${PROVIDER_CHOICE_SCRIPT
  * provider also offers, such as an effort level both have, stays chosen. Any other choice is
  * cleared to the placeholder, which is disabled, so a required selector asks for a new pick and
  * an effort is left unset. The placeholder takes the selector's `data-placeholder` text, or
- * `data-placeholder-none` when the provider offers nothing there. Without scripts every row
- * keeps the choices it was rendered with, and the server refuses a mismatch.
+ * `data-placeholder-none` when the provider offers nothing there. When a row's model changes,
+ * its effort selector (`data-effort-levels`) takes the new model's default level, which the
+ * model's option names in `data-effort`, unless it already shows a level of that provider,
+ * since every level a provider offers is valid for each of its models. Without scripts every
+ * row keeps the choices it was rendered with, and the server refuses a mismatch.
  */
 export const PROVIDER_CHOICE_SCRIPT = `(function () {
   function follow(select, provider) {
@@ -35,11 +38,37 @@ export const PROVIDER_CHOICE_SCRIPT = `(function () {
     if (first && first.getAttribute("data-for") === null && text !== null) first.textContent = text;
   }
 
+  function pick(select, value) {
+    for (var i = 0; i < select.options.length; i++) {
+      var option = select.options[i];
+      if (option.value === value && !option.disabled && option.getAttribute("data-for") !== null) {
+        select.selectedIndex = i;
+        return;
+      }
+    }
+  }
+
+  function modelChanged(select, row) {
+    var chosen = select.options[select.selectedIndex];
+    var level = chosen ? chosen.getAttribute("data-effort") : null;
+    if (level === null) return;
+    var efforts = row.querySelectorAll("select[data-effort-levels]");
+    for (var i = 0; i < efforts.length; i++) {
+      var effort = efforts[i];
+      var shown = effort.options[effort.selectedIndex];
+      if (effort.value === "" || !shown || shown.disabled) pick(effort, level);
+    }
+  }
+
   document.addEventListener("change", function (event) {
     var select = event.target;
-    if (!select || !select.hasAttribute || !select.hasAttribute("data-provider")) return;
+    if (!select || !select.hasAttribute) return;
     var row = select.closest ? select.closest("[data-provider-row]") : null;
     if (!row) return;
+    if (!select.hasAttribute("data-provider")) {
+      if (select.options) modelChanged(select, row);
+      return;
+    }
     var follows = row.querySelectorAll("select[data-follows-provider]");
     for (var i = 0; i < follows.length; i++) follow(follows[i], select.value);
   });

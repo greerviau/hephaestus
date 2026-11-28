@@ -22,6 +22,13 @@ interface FakeSelect {
   closest(selector: string): unknown;
 }
 
+const LEVELS: Record<string, string> = {
+  "claude-sonnet-5-5": "high",
+  "claude-opus-5-5": "ultrathink",
+  "gpt-6.2-sol": "medium",
+  "gpt-6.1-sol": "low",
+};
+
 function option(value: string, group: string | null, chosen: string, shown: string): FakeOption {
   return {
     value,
@@ -30,7 +37,8 @@ function option(value: string, group: string | null, chosen: string, shown: stri
     disabled: group !== shown,
     selected: value === chosen && group === shown,
     group,
-    getAttribute: (name) => (name === "data-for" ? group : null),
+    getAttribute: (name) =>
+      name === "data-for" ? group : name === "data-effort" ? (LEVELS[value] ?? null) : null,
   };
 }
 
@@ -68,13 +76,8 @@ function select(
   return node;
 }
 
-/** The setup row, saved with a Claude instance, model, and effort, and the script running. */
+/** The setup row, saved with a Claude model and effort, and the script running. */
 function setupRow() {
-  const instance = select(
-    { "": [], claude: ["claudeAgent"], codex: ["codex"] },
-    "claudeAgent",
-    "claude",
-  );
   const model = select(
     { claude: ["claude-sonnet-5-5", "claude-opus-5-5"], codex: ["gpt-6.2-sol", "gpt-6.1-sol"] },
     "claude-sonnet-5-5",
@@ -84,9 +87,18 @@ function setupRow() {
     { claude: ["low", "high", "ultrathink"], codex: ["low", "high", "ultra"] },
     "high",
     "claude",
-    { "data-placeholder": "Select effort", "data-placeholder-none": "No effort levels" },
+    {
+      "data-placeholder": "Select effort",
+      "data-placeholder-none": "No effort levels",
+      "data-effort-levels": "",
+    },
   );
-  const row = { querySelectorAll: () => [instance, model, effort] };
+  model.closest = () => row;
+  effort.closest = () => row;
+  const row = {
+    querySelectorAll: (selector: string) =>
+      selector.includes("data-effort-levels") ? [effort] : [model, effort],
+  };
   const provider = {
     value: "claude",
     hasAttribute: (name: string) => name === "data-provider",
@@ -108,26 +120,28 @@ function setupRow() {
     node.options
       .filter((each) => each.group !== null && !each.hidden && !each.disabled)
       .map((each) => each.value);
-  return { instance, model, effort, choose, shown };
+  const pickModel = (value: string): void => {
+    model.selectedIndex = model.options.findIndex((each) => each.value === value && !each.disabled);
+    listener?.({ target: model });
+  };
+  return { model, effort, choose, pickModel, shown };
 }
 
 describe("the provider choice script", () => {
-  it("shows only the new provider's instances, models, and levels when the provider changes", () => {
+  it("shows only the new provider's models and levels when the provider changes", () => {
     const row = setupRow();
 
     row.choose("codex");
 
-    expect(row.shown(row.instance)).toEqual(["codex"]);
     expect(row.shown(row.model)).toEqual(["gpt-6.2-sol", "gpt-6.1-sol"]);
     expect(row.shown(row.effort)).toEqual(["low", "high", "ultra"]);
   });
 
-  it("clears an instance and model the new provider does not offer, and keeps a level it does", () => {
+  it("clears a model the new provider does not offer, and keeps a level it does", () => {
     const row = setupRow();
 
     row.choose("codex");
 
-    expect(row.instance.value).toBe("");
     expect(row.model.value).toBe("");
     expect(row.effort.value).toBe("high");
     expect(row.effort.options[row.effort.selectedIndex]?.group).toBe("codex");
@@ -150,5 +164,25 @@ describe("the provider choice script", () => {
 
     expect(row.shown(row.effort)).toEqual([]);
     expect(row.effort.options[0]?.textContent).toBe("No effort levels");
+  });
+
+  it("keeps a level the provider offers when the model changes", () => {
+    const row = setupRow();
+
+    row.pickModel("claude-opus-5-5");
+
+    expect(row.effort.value).toBe("high");
+  });
+
+  it("picks the new model's default level when no level is chosen", () => {
+    const row = setupRow();
+    row.effort.selectedIndex = row.effort.options.findIndex((each) => each.value === "ultrathink");
+    row.choose("codex");
+    expect(row.effort.value).toBe("");
+
+    row.pickModel("gpt-6.1-sol");
+
+    expect(row.effort.value).toBe("low");
+    expect(row.effort.options[row.effort.selectedIndex]?.group).toBe("codex");
   });
 });
