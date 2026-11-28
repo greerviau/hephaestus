@@ -103,6 +103,9 @@ export interface TaskEvent {
   detail: string;
 }
 
+/** An event with the task it belongs to, as the Activity page lists it. */
+export type RecentEvent = TaskEvent & { title: string; repo: string; issueNumber: number | null };
+
 /**
  * Every stage change the pipeline may make. Tests walk this table, and
  * {@link TaskStore.transition} refuses any change it does not list.
@@ -494,14 +497,31 @@ export class TaskStore {
 
   /** The newest events across all tasks, for the Activity page. */
   /** The newest task events, of one project's tasks when `repo` is given. */
-  recentEvents(limit = 200, repo?: string): (TaskEvent & { title: string; repo: string })[] {
-    return this.db
-      .prepare(
-        `SELECT e.id, e.task_id AS taskId, e.at, e.kind, e.detail, c.title, c.repo
-         FROM task_events e JOIN tasks c ON c.id = e.task_id
-         WHERE @repo IS NULL OR c.repo = @repo ORDER BY e.id DESC LIMIT @limit`,
-      )
-      .all({ limit, repo: repo ?? null }) as (TaskEvent & { title: string; repo: string })[];
+  /**
+   * The newest events. `matches` keeps only the events it accepts, and is
+   * applied before `limit` so an older match still counts.
+   */
+  recentEvents(
+    limit = 200,
+    repo?: string,
+    matches?: (event: RecentEvent) => boolean,
+  ): RecentEvent[] {
+    const statement = this.db.prepare(
+      `SELECT e.id, e.task_id AS taskId, e.at, e.kind, e.detail, c.title, c.repo,
+              c.issue_number AS issueNumber
+       FROM task_events e JOIN tasks c ON c.id = e.task_id
+       WHERE @repo IS NULL OR c.repo = @repo ORDER BY e.id DESC${matches === undefined ? " LIMIT @limit" : ""}`,
+    );
+    if (matches === undefined) {
+      return statement.all({ limit, repo: repo ?? null }) as RecentEvent[];
+    }
+    // The page matches the text it shows, which is built here in code, so the filter cannot be SQL.
+    const found: RecentEvent[] = [];
+    for (const row of statement.iterate({ repo: repo ?? null }) as Iterable<RecentEvent>) {
+      if (found.length >= limit) break;
+      if (matches(row)) found.push(row);
+    }
+    return found;
   }
 
   recordReview(review: {
@@ -628,18 +648,21 @@ export class TaskStore {
    * The newest notifications, dismissed or not, for the Activity page. With
    * `repo`, only those about one of that project's tasks.
    */
+  /** The newest notifications. `text` keeps those whose text contains it, ignoring ASCII case. */
   recentNotifications(
     limit = 200,
     repo?: string,
+    text?: string,
   ): { id: number; at: string; taskId: number | null; text: string; dismissed: boolean }[] {
     return (
       this.db
         .prepare(
           `SELECT id, at, task_id AS taskId, text, dismissed FROM notifications
-           WHERE @repo IS NULL OR task_id IN (SELECT id FROM tasks WHERE repo = @repo)
+           WHERE (@repo IS NULL OR task_id IN (SELECT id FROM tasks WHERE repo = @repo))
+             AND (@text IS NULL OR instr(lower(text), lower(@text)) > 0)
            ORDER BY id DESC LIMIT @limit`,
         )
-        .all({ limit, repo: repo ?? null }) as {
+        .all({ limit, repo: repo ?? null, text: text ?? null }) as {
         id: number;
         at: string;
         taskId: number | null;
