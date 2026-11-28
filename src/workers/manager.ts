@@ -360,14 +360,21 @@ export class WorkerManager {
     };
     const claude = state("claude");
     const codex = state("codex");
-    const problems = (["claude", "codex"] as const).flatMap((provider) => {
+    // Each problem as the owner reads it, and as it reads while Hephaestus repairs it.
+    const broken = (["claude", "codex"] as const).flatMap((provider) => {
       const check = worker.instances[provider];
       const name = provider === "claude" ? "Factory Claude" : "Factory Codex";
       if (check === undefined) return [];
-      if (!check.exists) return [`${name} is missing on this worker; deploy again.`];
-      if (!check.enabled) return [`${name} is disabled on this worker; deploy again.`];
-      return check.problem === null ? [] : [`${name}: ${check.problem}`];
+      const state = !check.exists ? "missing" : !check.enabled ? "disabled" : undefined;
+      if (state !== undefined) {
+        const text = `${name} is ${state} on this worker`;
+        return [{ owner: `${text}; deploy again.`, repairing: `${text}.` }];
+      }
+      if (check.problem === null) return [];
+      const text = `${name}: ${check.problem}`;
+      return [{ owner: text, repairing: text }];
     });
+    const problems = broken.map((problem) => problem.owner);
     const desired = this.desired();
     let blocker: string | undefined;
     // Steps Hephaestus takes on its own; everything else waits for the owner.
@@ -394,6 +401,9 @@ export class WorkerManager {
     } else if (this.clonedSinceDeploy(id)) {
       blocker =
         "A project with skills of its own was cloned here since its last deploy; deploying again installs them.";
+      automatic = true;
+    } else if (this.repairDue(worker)) {
+      blocker = `${broken.map((problem) => problem.repairing).join(" ")} Hephaestus deploys again to repair it.`;
       automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
     else if (
@@ -517,6 +527,18 @@ export class WorkerManager {
     );
   }
 
+  /**
+   * Whether T3 reports a factory instance missing, disabled, or broken in a way no deploy has
+   * tried to repair. A deploy writes the instances again, which fixes one whose settings were
+   * changed after it, such as a home folder that no longer exists. The same problem after a
+   * deploy that saw it is left to the owner, so a problem a deploy cannot fix starts no loop.
+   */
+  private repairDue(worker: Worker): boolean {
+    const repair = repairable(worker);
+    if (repair === undefined) return false;
+    return this.latestTask(worker.environmentId, "deploy")?.detail.repair !== repair;
+  }
+
   private redeployDue(worker: Worker): boolean {
     const last = this.latestTask(worker.environmentId, "deploy", "succeeded");
     return last !== undefined && this.now().getTime() - Date.parse(last.updatedAt) >= REDEPLOY_MS;
@@ -560,11 +582,14 @@ export class WorkerManager {
   ): Promise<WorkerTask | undefined> {
     const active = await this.options.activeThreads?.(environmentId, KIND_TITLES.deploy);
     if (active !== undefined && active.length > 0) return undefined;
+    const worker = this.worker(environmentId);
+    const repair = worker === undefined ? undefined : repairable(worker);
     return this.start(
       environmentId,
       "deploy",
       deployMessage(desired.version, desired.sha, desired.url, desired.tag),
       { version: desired.version, sha: desired.sha },
+      repair === undefined ? {} : { repair },
     );
   }
 
@@ -593,7 +618,8 @@ export class WorkerManager {
         current &&
         last?.status === "succeeded" &&
         age < REDEPLOY_MS &&
-        !this.clonedSinceDeploy(environmentId)
+        !this.clonedSinceDeploy(environmentId) &&
+        !this.repairDue(worker)
       ) {
         continue;
       }
@@ -636,6 +662,7 @@ export class WorkerManager {
     kind: TaskKind,
     message: string,
     extra: { version?: number; sha?: string },
+    detail: Record<string, unknown> = {},
   ): Promise<WorkerTask> {
     const at = this.now().toISOString();
     // The task and its request id go in before T3 is called, so a lost reply can be replayed.
@@ -643,8 +670,8 @@ export class WorkerManager {
       this.db
         .prepare(
           `INSERT INTO worker_tasks (environment_id, kind, client_request_id, message, version, sha,
-             status, created_seq, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?)`,
+             status, detail, created_seq, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'running', ?, ?, ?, ?)`,
         )
         .run(
           environmentId,
@@ -653,6 +680,7 @@ export class WorkerManager {
           message,
           extra.version ?? null,
           extra.sha ?? null,
+          JSON.stringify(detail),
           this.nextSeq(),
           at,
           at,
@@ -1036,6 +1064,18 @@ export class WorkerManager {
         .run(problem, at.toISOString(), row.environment_id);
     }
   }
+}
+
+/** What T3 reports wrong with the worker's factory instances that a deploy may fix, or undefined. */
+function repairable(worker: Worker): string | undefined {
+  const found = (["claude", "codex"] as const).flatMap((provider) => {
+    const check = worker.instances[provider];
+    if (check === undefined) return [];
+    if (!check.exists) return [`${provider}: missing`];
+    if (!check.enabled) return [`${provider}: disabled`];
+    return check.problem === null ? [] : [`${provider}: ${check.problem}`];
+  });
+  return found.length === 0 ? undefined : found.join("\n");
 }
 
 /** Whether a test started after every task it must follow had finished. */

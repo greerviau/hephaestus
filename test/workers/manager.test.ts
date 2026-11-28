@@ -124,6 +124,17 @@ async function makeReady(): Promise<void> {
   await manager.tick();
 }
 
+/** Finishes the repair deploy the next tick starts, and both test turns after it. */
+async function finishRepair(): Promise<void> {
+  await manager.tick();
+  const deploy = t3.launches.length;
+  expect(t3.launches[deploy - 1]?.title).toBe("Hephaestus: deploy config");
+  finishThread(`t${String(deploy)}`, deployed(1, SHA));
+  await manager.tick();
+  finishThread(`t${String(deploy + 1)}`, "FACTORY-READY");
+  finishThread(`t${String(deploy + 2)}`, "FACTORY-READY");
+}
+
 beforeEach(() => {
   clock = Date.parse("2026-11-25T12:00:00Z");
   const now = (): Date => new Date(clock);
@@ -532,6 +543,45 @@ describe("WorkerManager", () => {
     expect(viewOf("env-1").blocker ?? "").not.toMatch(/cloned/);
   });
 
+  it("deploys again to repair a factory instance T3 reports broken", async () => {
+    await makeReady();
+    const broken =
+      'CODEX_HOME points to "/tmp/gone/.hephaestus/codex", but that path does not exist.';
+    const report = (codex: string[]): InstanceReport[] => [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints: codex },
+    ];
+    reports = report([broken]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1")).toMatchObject({ ready: false, ownerStep: false });
+    expect(viewOf("env-1").blocker).toMatch(/deploys again to repair/);
+
+    await finishRepair();
+    reports = report([]);
+    clock += 11 * 60_000;
+    await manager.tick();
+    expect(viewOf("env-1").ready).toBe(true);
+  });
+
+  it("leaves a factory instance problem that a deploy did not repair to the owner", async () => {
+    await makeReady();
+    const broken = "Codex App Server process exited with code 1";
+    reports = [
+      { providerInstanceId: FACTORY_CLAUDE, constraints: [] },
+      { providerInstanceId: FACTORY_CODEX, constraints: [broken] },
+    ];
+    clock += 11 * 60_000;
+    await manager.tick();
+    await finishRepair();
+    clock += 11 * 60_000;
+    await manager.tick();
+    const launched = t3.launches.length;
+    await manager.tick();
+    expect(t3.launches).toHaveLength(launched);
+    expect(viewOf("env-1")).toMatchObject({ blocker: `Factory Codex: ${broken}`, ownerStep: true });
+  });
+
   it("times out a task whose thread never ends", async () => {
     const task = await manager.startCodexSignIn("env-1");
     clock += 31 * 60_000;
@@ -578,7 +628,10 @@ describe("WorkerManager", () => {
     clock += 11 * 60_000;
     await manager.tick();
     expect(viewOf("env-1")).toMatchObject({ claude: "signed-in", codex: "disabled" });
-    expect(viewOf("env-1").blocker).toBe("Factory Codex is disabled on this worker; deploy again.");
+    expect(viewOf("env-1").blocker).toBe(
+      "Factory Codex is disabled on this worker. Hephaestus deploys again to repair it.",
+    );
+    await finishRepair();
 
     reports = [];
     clock += 11 * 60_000;
@@ -590,6 +643,7 @@ describe("WorkerManager", () => {
     clock += 11 * 60_000;
     await manager.tick();
     expect(viewOf("env-1").codex).toBe("missing");
+    await finishRepair();
 
     reports = [
       { providerInstanceId: FACTORY_CLAUDE, constraints: ["Provider is not authenticated."] },

@@ -65,6 +65,8 @@ describe("worker scripts", () => {
   let home: string;
   let remote: string;
   let sha: string;
+  /** Holds a getent that names `home` as the account's home folder, as the real one would. */
+  let account: string;
 
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "hephaestus-worker-"));
@@ -87,7 +89,18 @@ describe("worker scripts", () => {
     writeFileSync(join(home, ".t3/userdata/settings.json"), JSON.stringify({ theme: "dark" }));
     mkdirSync(join(home, ".agents/skills/tdd"), { recursive: true });
     writeFileSync(join(home, ".agents/skills/tdd/SKILL.md"), "# TDD\n");
+    account = join(home, "account-bin");
+    mkdirSync(account);
+    passwdHome(home);
   });
+
+  function passwdHome(path: string): void {
+    writeFileSync(
+      join(account, "getent"),
+      `#!/bin/sh\necho "owner:x:1000:1000::${path}:/bin/bash"\n`,
+      { mode: 0o755 },
+    );
+  }
 
   afterEach(() => {
     rmSync(home, { recursive: true, force: true });
@@ -99,7 +112,7 @@ describe("worker scripts", () => {
     try {
       return execFileSync("bash", [path, ...args], {
         encoding: "utf8",
-        env: { PATH: process.env.PATH, HOME: home },
+        env: { PATH: `${account}:${process.env.PATH ?? ""}`, HOME: home },
         stdio: ["ignore", "pipe", "pipe"],
       });
     } catch (error) {
@@ -225,6 +238,31 @@ describe("worker scripts", () => {
       }),
     ).toThrow();
     expect(readFileSync(join(home, ".hephaestus/codex/auth.json"), "utf8")).toBe("{}");
+  });
+
+  it("deploy.sh changes nothing when HOME is not the account's home folder", () => {
+    // An agent testing the script under a scratch HOME still has T3's own T3CODE_HOME.
+    passwdHome(join(tmpdir(), "the-real-home"));
+    const t3 = join(home, ".t3");
+    const script = scriptOf(deployMessage(1, sha, remote, "p-v1"));
+    const path = join(home, "deploy.sh");
+    writeFileSync(path, script);
+    let output = "";
+    try {
+      execFileSync("bash", [path, "1", sha, remote, "p-v1"], {
+        encoding: "utf8",
+        env: { PATH: `${account}:${process.env.PATH ?? ""}`, HOME: home, T3CODE_HOME: t3 },
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      output = (error as { stdout?: string }).stdout ?? "";
+    }
+
+    expect(output).toMatch(/^DEPLOY-FAILED HOME is .+, not this account's home folder/m);
+    expect(readFileSync(join(t3, "userdata/settings.json"), "utf8")).toBe(
+      JSON.stringify({ theme: "dark" }),
+    );
+    expect(existsSync(join(home, ".hephaestus"))).toBe(false);
   });
 
   it("deploy.sh stops when the tag points at another commit", () => {
