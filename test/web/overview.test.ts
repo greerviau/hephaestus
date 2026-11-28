@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import type { WorkerView } from "../../src/workers/manager.js";
 import { MERGE, SHA, pr } from "../factory/harness.js";
 import { PROJECT_COOKIE } from "../../src/web/shell.js";
+import { sampleConfig } from "../config/fixtures.js";
 import {
   escalatedTask,
   externalIssue,
@@ -215,7 +216,31 @@ describe("Home", () => {
     expect(filtered).toContain("Finished tasks appear here");
   });
 
-  it("leaves out a notification about another project's task, and still counts it in the sidebar", async () => {
+  it("badges Home with the chosen project's count, and none when only another project needs the owner", async () => {
+    dashboard = await startDashboard(setUp());
+    const document = sampleConfig();
+    document.projects["octo/site"] = { policy: { preset: "standard", overrides: {} } };
+    const version = dashboard.store.createVersion({
+      document,
+      author: "t",
+      message: "second",
+      parentId: dashboard.store.list()[0]?.id ?? 1,
+    });
+    dashboard.store.approve(version.id);
+    dashboard.store.markDeployed(version.id);
+    escalatedTask(dashboard.h);
+    await externalIssue(dashboard.h);
+
+    const other = await getFor(dashboard, "octo/site");
+    expect(other).toContain("Nothing needs you.");
+    expect(other).not.toContain("need you</span></span>");
+
+    const mine = await getFor(dashboard, "octo/app");
+    expect(mine).toContain("2 things need you.");
+    expect(mine).toContain('<span class="count">2<span class="sr-only"> need you</span></span>');
+  });
+
+  it("leaves out a notification about another project's task, on Home and in the sidebar", async () => {
     dashboard = await startDashboard(setUp());
     const { h } = dashboard;
     const mine = runningTask(h);
@@ -235,9 +260,8 @@ describe("Home", () => {
     expect(filtered).toContain("Reverted PR #2 in octo/app");
     expect(filtered).toContain("Something factory-wide happened");
     expect(filtered).toContain("2 things need you.");
-    // The badge next to Home counts every project.
     expect(filtered).toMatch(
-      /<span class="count">3<span class="sr-only"> need you<\/span><\/span>/,
+      /<span class="count">2<span class="sr-only"> need you<\/span><\/span>/,
     );
   });
 
