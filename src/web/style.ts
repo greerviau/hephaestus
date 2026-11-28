@@ -139,7 +139,9 @@ ul.rows { list-style: none; margin: 0; padding: 0; }
 a.title:hover, .row a.title:hover, .row .title a:hover { color: var(--accent); }
 .row .subline, .grid-row .subline { display: block; color: var(--muted); font-size: 13px; overflow-wrap: anywhere; }
 .row .aside { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; justify-content: flex-end; }
-.row.job .aside select { width: 104px; }
+/* A selector sizes to its longest option, so no level or model name is cut off, and shrinks to the row on a narrow screen. */
+.row.job .aside select { width: auto; max-width: 100%; }
+.row.job .aside select.model { min-width: 200px; }
 .row.job .aside input { width: 200px; }
 .grid-head, .grid-row { display: grid; grid-template-columns: minmax(0, 1fr) 144px 64px 72px; gap: 4px 16px; align-items: center; padding: 12px 8px; border-bottom: 1px solid var(--line); }
 .grid-head { color: var(--muted); font-size: 13px; padding-top: 8px; padding-bottom: 8px; }

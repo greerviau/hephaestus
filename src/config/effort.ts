@@ -14,6 +14,23 @@ export const EFFORT: Record<EffortProvider, { optionId: string; levels: readonly
   },
 };
 
+/**
+ * The models T3 offers for each provider, as the Models page lists them in its model
+ * selectors. Config validation does not read this list, so a model T3 adds later can still be
+ * set on the JSON tab, and a saved model missing here stays selectable on the page.
+ */
+export const MODELS: Record<EffortProvider, readonly string[]> = {
+  claude: ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-2", "claude-haiku-5-5"],
+  codex: [
+    "gpt-6.2-sol",
+    "gpt-6.2-astra",
+    "gpt-6.1-terra",
+    "gpt-6.1-sol",
+    "gpt-6-astra",
+    "gpt-6-luna",
+  ],
+};
+
 export const PROVIDER_LABELS: Record<EffortProvider, string> = { claude: "Claude", codex: "Codex" };
 
 /** The T3 option ids that set effort, for reading back which effort a launch used. */

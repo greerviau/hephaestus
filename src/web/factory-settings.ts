@@ -4,7 +4,7 @@ import {
   type FactoryConfig,
   type ModelChoice,
 } from "../config/document.js";
-import { EFFORT, providerOfInstance, type EffortProvider } from "../config/effort.js";
+import { EFFORT, MODELS, providerOfInstance, type EffortProvider } from "../config/effort.js";
 import { checkbox, escapeHtml, fold, section, setting } from "./html.js";
 
 /** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
@@ -232,10 +232,22 @@ function providerOf(key: JobKey, instanceId: string): EffortProvider | undefined
   return key === "setup" ? providerOfInstance(instanceId) : key;
 }
 
+/** The options of a selector: the given values, with a saved or typed one they lack first. */
+function selectOptions(values: readonly string[], current: string): string {
+  const all = current === "" || values.includes(current) ? values : [current, ...values];
+  return all
+    .map(
+      (value) =>
+        `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
+    )
+    .join("");
+}
+
 /**
- * A job's effort selector: Default, which leaves effort unset, then the provider's levels. A
- * saved or typed level the provider does not list stays as an option, so the form shows it and
- * saving it again gets the config's refusal rather than silently dropping it.
+ * A job's effort selector: the provider's levels only. A choice without effort shows a
+ * placeholder that is disabled, so the browser sends no effort and the save leaves it unset.
+ * A saved or typed level the provider does not list stays as an option, so the form shows it
+ * and saving it again gets the config's refusal rather than silently dropping it.
  */
 function effortSelect(
   key: JobKey,
@@ -243,16 +255,27 @@ function effortSelect(
   provider: EffortProvider | undefined,
   current: string,
 ): string {
-  const levels = [...(provider === undefined ? [] : EFFORT[provider].levels)];
-  if (current !== "" && !levels.includes(current)) levels.push(current);
-  const options = [
-    `<option value=""${current === "" ? " selected" : ""}>Default effort</option>`,
-    ...levels.map(
-      (level) =>
-        `<option value="${escapeHtml(level)}"${level === current ? " selected" : ""}>${escapeHtml(level)}</option>`,
-    ),
-  ].join("");
-  return `<select name="${key}.effort" aria-label="${job} effort">${options}</select>`;
+  const levels = provider === undefined ? [] : EFFORT[provider].levels;
+  const placeholder = provider === undefined ? "No effort levels" : "Select effort";
+  const options = `<option value="" disabled hidden${current === "" ? " selected" : ""}>${placeholder}</option>${selectOptions(levels, current)}`;
+  return `<select class="effort" name="${key}.effort" aria-label="${job} effort">${options}</select>`;
+}
+
+/**
+ * A job's model selector: the models T3 offers for its provider, with the saved model first
+ * when the list lacks it, so saving keeps it. An instance whose provider is not known has no
+ * list, so its model stays a text field.
+ */
+function modelField(
+  key: JobKey,
+  job: string,
+  provider: EffortProvider | undefined,
+  current: string,
+): string {
+  if (provider === undefined) {
+    return `<input type="text" name="${key}.model" value="${escapeHtml(current)}" aria-label="${job} model" required>`;
+  }
+  return `<select class="model" name="${key}.model" aria-label="${job} model" required>${selectOptions(MODELS[provider], current)}</select>`;
 }
 
 /** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */
@@ -264,13 +287,20 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
         ? `<input type="text" class="w-144" name="setup.instanceId" value="${escapeHtml(value("setup.instanceId", config.factory.setup.instanceId))}" aria-label="Housekeeping provider instance" placeholder="claudeAgent" required>`
         : `<span class="muted">${provider}</span>`;
     const instanceId = value("setup.instanceId", config.factory.setup.instanceId);
+    const jobProvider = providerOf(key, instanceId);
+    const model = modelField(
+      key,
+      job,
+      jobProvider,
+      value(`${key}.model`, choiceOf(config, key).model),
+    );
     const effort = effortSelect(
       key,
       job,
-      providerOf(key, instanceId),
+      jobProvider,
       value(`${key}.effort`, choiceOf(config, key).effort ?? ""),
     );
-    return `<li class="row job"><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${where}<input type="text" name="${key}.model" value="${escapeHtml(value(`${key}.model`, choiceOf(config, key).model))}" aria-label="${job} model" required>${effort}</div></li>`;
+    return `<li class="row job"><div class="main"><span class="title">${job}</span>${does === "" ? "" : `<span class="subline">${does}</span>`}</div><div class="aside">${where}${model}${effort}</div></li>`;
   }).join("");
   const options = JOBS.map(({ key, job }) => {
     const saved = Object.entries(choiceOf(config, key).options ?? {})
@@ -349,7 +379,7 @@ function model(
   return {
     model: name,
     ...(Object.keys(options).length === 0 ? {} : { options }),
-    // Default sends nothing, so the model runs at its own default as before.
+    // An empty effort leaves it unset, so the model runs at its own default as before.
     ...(effort === "" ? {} : { effort }),
   };
 }
