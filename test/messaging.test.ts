@@ -455,6 +455,20 @@ describe("Messaging", () => {
     expect(calls).toHaveLength(1);
   });
 
+  it("links an alert about a task to that task's page on the dashboard", async () => {
+    await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
+    messaging.setAlerts(true);
+    tasks.notify("Task 46 in acme/widgets needs you: approve the merge", 46, "escalation");
+    tasks.notify("Config version 2 is proposed");
+
+    await messaging.sendAlerts();
+
+    expect(calls.map((call) => call.input)).toEqual([
+      "Hephaestus: Task 46 in acme/widgets needs you: approve the merge\nhttp://192.168.1.5:7700/work/46",
+      "Hephaestus: Config version 2 is proposed\nhttp://192.168.1.5:7700/",
+    ]);
+  });
+
   it("sends one pass at a time, never backwards, and retries a failed alert", async () => {
     await messaging.connect("discord", { token: DISCORD_TOKEN, users: USER, status: CHANNEL });
     messaging.setAlerts(true);

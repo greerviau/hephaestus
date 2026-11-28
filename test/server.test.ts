@@ -69,13 +69,57 @@ async function sessionCookie(): Promise<string> {
 }
 
 describe("dashboard without a session", () => {
-  it.each(["/", "/workers", "/anything/else"])(
-    "redirects page %s to the login page",
-    async (path) => {
-      const response = await fetch(`${base}${path}`, { redirect: "manual" });
+  it.each([
+    ["/", "/login"],
+    ["/workers", "/login?next=%2Fworkers"],
+    ["/anything/else", "/login?next=%2Fanything%2Felse"],
+  ])("redirects page %s to the login page", async (path, location) => {
+    const response = await fetch(`${base}${path}`, { redirect: "manual" });
 
-      expect(response.status).toBe(303);
-      expect(response.headers.get("location")).toBe("/login");
+    expect(response.status).toBe(303);
+    expect(response.headers.get("location")).toBe(location);
+  });
+
+  it("sends a page link opened without a session back to that page after sign-in", async () => {
+    const opened = await fetch(`${base}/work/46?tab=proof`, { redirect: "manual" });
+    expect(opened.status).toBe(303);
+    const loginPath = opened.headers.get("location") ?? "";
+    expect(loginPath).toBe("/login?next=%2Fwork%2F46%3Ftab%3Dproof");
+
+    const form = await (await fetch(`${base}${loginPath}`)).text();
+    const action = /<form class="form" method="post" action="([^"]*)">/.exec(form)?.[1] ?? "";
+    const signedIn = await fetch(`${base}${action.replaceAll("&amp;", "&")}`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: PASSWORD }).toString(),
+      redirect: "manual",
+    });
+
+    expect(signedIn.status).toBe(303);
+    expect(signedIn.headers.get("location")).toBe("/work/46?tab=proof");
+  });
+
+  it("keeps the page to return to through a wrong password", async () => {
+    const response = await fetch(`${base}/login?next=%2Fwork%2F46`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ password: "wrong horse battery" }).toString(),
+    });
+
+    expect(await response.text()).toContain('action="/login?next=%2Fwork%2F46"');
+  });
+
+  it.each(["//evil.example/", "/\\evil.example/", "https://evil.example/", "work/46"])(
+    "never sends a sign-in on to %s",
+    async (next) => {
+      const response = await fetch(`${base}/login?next=${encodeURIComponent(next)}`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password: PASSWORD }).toString(),
+        redirect: "manual",
+      });
+
+      expect(response.headers.get("location")).toBe("/");
     },
   );
 

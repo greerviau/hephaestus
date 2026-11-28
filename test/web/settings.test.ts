@@ -1257,7 +1257,10 @@ describe("Version page", () => {
     const response = await fetch(`${dashboard.base}${path}`, { method, redirect: "manual" });
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/login");
+    // A page asked for returns there after sign-in; a form post cannot be replayed, so it goes home.
+    expect(response.headers.get("location")).toBe(
+      method === "GET" ? `/login?next=${encodeURIComponent(path)}` : "/login",
+    );
   });
 
   it("rejects the config API without a session", async () => {

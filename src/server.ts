@@ -1,7 +1,16 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Database } from "better-sqlite3";
 import { SESSION_TTL_MS, Sessions, readPasswordHash, verifyPassword } from "./auth.js";
-import { STYLESHEET_PATH, callout, empty, field, layout, page, pageHead } from "./web/html.js";
+import {
+  STYLESHEET_PATH,
+  callout,
+  empty,
+  escapeHtml,
+  field,
+  layout,
+  page,
+  pageHead,
+} from "./web/html.js";
 import {
   HTML,
   cookie,
@@ -128,11 +137,11 @@ export function createDashboardServer({
       return;
     }
     if (path === "/login" && method === "GET") {
-      send(response, 200, HTML, loginPage());
+      send(response, 200, HTML, loginPage(returnTo(url)));
       return;
     }
     if (path === "/login" && method === "POST") {
-      await login(request, response);
+      await login(request, response, returnTo(url));
       return;
     }
 
@@ -149,7 +158,7 @@ export function createDashboardServer({
     }
     if (token === undefined || !valid) {
       if (path.startsWith("/api/")) sendJson(response, 401, { error: "unauthorized" });
-      else redirect(response, "/login");
+      else redirect(response, loginPath(method === "GET" ? `${path}${url.search}` : "/"));
       return;
     }
 
@@ -195,15 +204,19 @@ export function createDashboardServer({
     else sendHtml(response, 404, layout("Not found", notFound(), { shell: shellOnce() }));
   }
 
-  async function login(request: IncomingMessage, response: ServerResponse): Promise<void> {
+  async function login(
+    request: IncomingMessage,
+    response: ServerResponse,
+    next: string,
+  ): Promise<void> {
     const client = request.socket.remoteAddress ?? "unknown";
     // Reserve a check before any await, so concurrent requests cannot all pass the limits.
     if (isLockedOut(client)) {
-      send(response, 429, HTML, loginPage("Too many wrong passwords. Try again later."));
+      send(response, 429, HTML, loginPage(next, "Too many wrong passwords. Try again later."));
       return;
     }
     if (loginsInFlight >= MAX_CONCURRENT_LOGINS) {
-      send(response, 429, HTML, loginPage("The server is busy. Try again."));
+      send(response, 429, HTML, loginPage(next, "The server is busy. Try again."));
       return;
     }
     loginsInFlight += 1;
@@ -233,7 +246,7 @@ export function createDashboardServer({
       if (valid) failures.delete(client);
     }
     if (!valid) {
-      send(response, 401, HTML, loginPage("Wrong password."));
+      send(response, 401, HTML, loginPage(next, "Wrong password."));
       return;
     }
     const token = sessions.create();
@@ -241,7 +254,7 @@ export function createDashboardServer({
       "set-cookie",
       `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${String(SESSION_TTL_MS / 1000)}`,
     );
-    redirect(response, "/");
+    redirect(response, next);
   }
 
   function isLockedOut(client: string): boolean {
@@ -296,7 +309,24 @@ function storeDownPage(): string {
   );
 }
 
-function loginPage(error?: string): string {
+/**
+ * The page to open after sign-in, from the login page's `next`. Only a path on this
+ * dashboard is kept, so a crafted link cannot send a fresh session to another site.
+ */
+function returnTo(url: URL): string {
+  const next = url.searchParams.get("next");
+  if (next === null || !next.startsWith("/") || next.startsWith("//") || next.includes("\\")) {
+    return "/";
+  }
+  return next;
+}
+
+/** The login page that returns to `next` after sign-in. */
+function loginPath(next: string): string {
+  return next === "/" ? "/login" : `/login?next=${encodeURIComponent(next)}`;
+}
+
+function loginPage(next: string, error?: string): string {
   const password = field(
     "password",
     "Dashboard password",
@@ -305,7 +335,7 @@ function loginPage(error?: string): string {
   );
   return page(
     "Sign in",
-    `<main class="login" id="main">${LOGIN_TOP}<form class="form" method="post" action="/login">${password}<button type="submit" class="primary">Sign in</button></form></main>`,
+    `<main class="login" id="main">${LOGIN_TOP}<form class="form" method="post" action="${escapeHtml(loginPath(next))}">${password}<button type="submit" class="primary">Sign in</button></form></main>`,
   );
 }
 
