@@ -200,7 +200,7 @@ describe("Work", () => {
     }
   });
 
-  it("shows the tasks in progress as a board of the stages that hold tasks", async () => {
+  it("shows the tasks in progress as a board of every stage, empty ones included", async () => {
     dashboard = await startDashboard();
     const { h } = dashboard;
     const implementing = runningTask(h);
@@ -217,16 +217,32 @@ describe("Work", () => {
     expect(status).toBe(200);
     expect(html).toContain('<a href="/work?view=board" aria-current="true">Board</a>');
     expect(html).toContain('<a href="/work">List</a>');
-    expect(html).toContain('<section class="lane" aria-label="Implementing">');
-    expect(html).toContain('<section class="lane" aria-label="Testing">');
-    expect(html).toContain('<section class="lane" aria-label="Replanning">');
-    expect(html).not.toContain('aria-label="Reviewing"');
+    const page = main(html);
+    const counts: Record<string, number> = {
+      Implementing: 1,
+      Reviewing: 0,
+      Testing: 1,
+      Merging: 0,
+      Verifying: 0,
+      Reverting: 0,
+      Replanning: 1,
+    };
+    const places = Object.entries(counts).map(([lane, count]) => {
+      const header = `<section class="lane" aria-label="${lane}"><h2>${lane}<span class="n">${String(count)}</span></h2>`;
+      expect(page).toContain(header);
+      return page.indexOf(header);
+    });
+    expect(places).toEqual([...places].sort((a, b) => a - b));
+    expect(page).toContain(
+      '<section class="lane" aria-label="Reviewing"><h2>Reviewing<span class="n">0</span></h2><p class="empty muted">No tasks</p></section>',
+    );
+    expect(page.split("No tasks</p>").length - 1).toBe(4);
+    expect(page).not.toContain("No tasks in");
     expect(html).toContain(`<a class="tile" href="/work/${String(implementing)}">`);
     expect(html).toContain(`<a class="tile" href="/work/${String(merging)}">`);
     expect(html).toContain("Implement on w1, Factory Codex");
     expect(html).toContain("checks are running");
     expect(html).toContain("no PR to merge");
-    expect(html).toContain("No tasks in Reviewing, Merging, Verifying, or Reverting.");
     expect(html).not.toContain("Fix &lt;the&gt; parser");
     expect(html).toContain("1 of 4 threads running");
   });
@@ -311,7 +327,21 @@ describe("Work", () => {
     const { html } = await dashboard.get("/work?view=board");
 
     expect(html).toContain('content="10;url=/work?view=board"');
-    expect(html).toContain("No task is in progress.");
+    const page = main(html);
+    for (const lane of [
+      "Implementing",
+      "Reviewing",
+      "Testing",
+      "Merging",
+      "Verifying",
+      "Reverting",
+      "Replanning",
+    ]) {
+      expect(page).toContain(
+        `<section class="lane" aria-label="${lane}"><h2>${lane}<span class="n">0</span></h2><p class="empty muted">No tasks</p></section>`,
+      );
+    }
+    expect(page).not.toContain("No task is in progress.");
   });
 
   it("gives a task with no merge to approve a Send to lead button, as Home does", async () => {

@@ -331,12 +331,14 @@ function gridRows(items: Task[], why: (item: Task) => string, now: number): stri
   );
 }
 
-/** The tasks in progress, in a lane for each stage that holds one. */
+/**
+ * The tasks in progress, in a lane for every stage. Empty lanes stay so the
+ * board keeps one layout as tasks move through the pipeline.
+ */
 function board(items: Task[], lines: Map<number, string>): string {
-  if (items.length === 0) return empty("No task is in progress.");
   const laneOf = (item: Task): string =>
     item.stage === "Escalated" ? REPLANNING : taskStage(item);
-  const lanes = LANES.filter((lane) => items.some((item) => laneOf(item) === lane)).map((lane) => {
+  const lanes = LANES.map((lane) => {
     const inLane = items.filter((item) => laneOf(item) === lane);
     const tiles = inLane
       .map((item) => {
@@ -347,16 +349,10 @@ function board(items: Task[], lines: Map<number, string>): string {
         return `<li><a class="tile" href="/work/${String(item.id)}"><span class="title">${escapeHtml(taskLabel(item))}</span><span class="subline">${escapeHtml(sub)}</span>${stagePill(item)}</a></li>`;
       })
       .join("");
-    return `<section class="lane" aria-label="${lane}"><h2>${lane}<span class="n">${String(inLane.length)}</span></h2><ul>${tiles}</ul></section>`;
+    const content = tiles === "" ? '<p class="empty muted">No tasks</p>' : `<ul>${tiles}</ul>`;
+    return `<section class="lane" aria-label="${lane}"><h2>${lane}<span class="n">${String(inLane.length)}</span></h2>${content}</section>`;
   });
-  const idle = LANES.filter(
-    (lane) => lane !== REPLANNING && !items.some((item) => laneOf(item) === lane),
-  );
-  const list =
-    idle.length < 3
-      ? idle.join(" or ")
-      : `${idle.slice(0, -1).join(", ")}, or ${idle.at(-1) ?? ""}`;
-  return `<div class="board" tabindex="0" role="region" aria-label="Tasks by stage">${lanes.join("")}</div>${idle.length === 0 ? "" : `<p class="empty muted">No tasks in ${list}.</p>`}`;
+  return `<div class="board" tabindex="0" role="region" aria-label="Tasks by stage">${lanes.join("")}</div>`;
 }
 
 /** The steps the task page shows. Testing and Merging are both the internal Merging stage. */
