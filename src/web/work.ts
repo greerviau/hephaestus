@@ -85,6 +85,7 @@ import {
   type Row,
   type Shell,
 } from "./html.js";
+import { evidenceRoutes, evidenceRow, evidenceScript } from "./evidence.js";
 import { redirect, sendHtml, type Route, type RouteContext } from "./http.js";
 
 /** How often Work, the task page, and the transcript reload, so they follow the factory. */
@@ -557,10 +558,10 @@ function checksAfterMerge(item: Task, events: TaskEvent[]): string {
 /**
  * What Hephaestus holds as proof for the head commit: whether the other
  * provider approved it, and how the merge commit's checks ended. It stores no
- * result for single checks and no list of the implementer's evidence files,
- * so the page shows neither.
+ * result for single checks, so the page shows none. `evidence` is the row
+ * that lists the screenshots and links on the PR, or empty.
  */
-function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string {
+function proof(item: Task, approved: Read<boolean>, events: TaskEvent[], evidence: string): string {
   if (item.prNumber === null || item.headSha === null) return "";
   const reviewNote =
     item.policy?.requireReview === false
@@ -588,7 +589,7 @@ function proof(item: Task, approved: Read<boolean>, events: TaskEvent[]): string
     body: rowList([
       { title: "Review by the other provider", sub: escapeHtml(reviewNote), aside: review },
       { title: "Checks after the merge", sub: afterNote, aside: after },
-    ]),
+    ]).replace(/<\/ul>$/, `${evidence}</ul>`),
   });
 }
 
@@ -1047,6 +1048,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
   };
 
   return [
+    ...evidenceRoutes(factory),
     {
       method: "GET",
       path: /^\/work$/,
@@ -1602,7 +1604,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
               title: "Threads",
               count: threads.ok ? threads.value.length : undefined,
               body: threadRows,
-            })}</div>${proof(item, approved, events.ok ? events.value : [])}${events.ok ? attempts(item, events.value, now()) : ""}${section(
+            })}</div>${proof(item, approved, events.ok ? events.value : [], evidenceRow(factory, item))}${events.ok ? attempts(item, events.value, now()) : ""}${section(
               {
                 title: "History",
                 body: !events.ok
@@ -1611,7 +1613,7 @@ export function workRoutes(factory: FactoryPages): Route[] {
                     ? empty("Nothing has happened yet.")
                     : history(events.value, now()),
               },
-            )}`,
+            )}${evidenceScript(factory, item)}`,
             {
               section: "/work",
               shell,

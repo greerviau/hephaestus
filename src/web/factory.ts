@@ -5,6 +5,7 @@ import type { ConfigStore } from "../config/store.js";
 import type { Analytics } from "../factory/analytics.js";
 import type { Task, TaskStore } from "../factory/tasks.js";
 import type { FactoryMcp } from "../factory/mcp.js";
+import type { PullRequestEvidence } from "../factory/pr-evidence.js";
 import type { Intake, TrackedIssue } from "../factory/intake.js";
 import {
   MergeSettledError,
@@ -91,6 +92,8 @@ export interface FactoryPages {
   hermesModel?: () => string | undefined;
   /** GitHub reads for the Projects page: repo suggestions, and a check that a new repo is readable. */
   github?: { repos(): Promise<string[]>; canonicalName(repo: string): Promise<string> };
+  /** The screenshots and evidence links on a task's PR, for the Proof section; absent in tests that leave it out. */
+  evidence?: Pick<PullRequestEvidence, "list" | "image">;
   now?: () => number;
   /** How long a page waits for T3 before it shows that section as loading. */
   t3WaitMs?: number;

@@ -68,6 +68,7 @@ import { ROLE_NAMES } from "./config/document.js";
 import type { ConfigVersion } from "./config/store.js";
 import { TaskStore } from "./factory/tasks.js";
 import { GitHub } from "./factory/github.js";
+import { PullRequestEvidence } from "./factory/pr-evidence.js";
 import { Intake } from "./factory/intake.js";
 import { FactoryMcp } from "./factory/mcp.js";
 import { Pipeline } from "./factory/pipeline.js";
@@ -738,6 +739,7 @@ async function main(argv: string[]): Promise<number> {
         environments,
         deploys: new BackgroundDeploys((id) => workers.deployVersion(id)),
         github: engine.github,
+        evidence: new PullRequestEvidence({ github: engine.github }),
         configRepo: () => getMeta(db, CONFIG_REPO_KEY),
         setConfigRepo: (slug) => {
           setMeta(db, CONFIG_REPO_KEY, slug);
