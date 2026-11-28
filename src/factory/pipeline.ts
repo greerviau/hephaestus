@@ -114,6 +114,15 @@ const FOREIGN_CHECK_MS = 5 * 60_000;
 const CHECKS_GRACE_MS = 10 * 60_000;
 /** A head or merge commit whose checks have not all appeared is escalated after this. */
 const CHECKS_DEADLINE_MS = 60 * 60_000;
+
+/**
+ * A check's name as the owner writes it in requiredChecks: check runs are
+ * stored as `check:<name>` but written bare, while `status:<context>` keeps
+ * its prefix. Only the first prefix goes, so a name with a colon stays whole.
+ */
+function checkLabel(id: string): string {
+  return id.startsWith("check:") ? id.slice("check:".length) : id;
+}
 /** A new head's checks get this long to register before the gate may merge it. */
 const CHECKS_SETTLE_MS = 3 * 60_000;
 /** A thread waiting on a question runs nothing, so it holds no slot. */
@@ -2055,20 +2064,21 @@ export class Pipeline {
     if (checks.state !== "failure") {
       // Every check that ran on the head must also run and finish on the merge commit.
       const missing = (task.expectedChecks ?? []).filter((name) => !checks.finished.includes(name));
+      const named = missing.map(checkLabel);
       if (checks.state === "pending" || missing.length > 0) {
         if (this.olderThan(mergedAt, CHECKS_DEADLINE_MS) && !task.waiting?.startsWith("overdue")) {
           // The owner hears about it, and validation goes on, so a late failure still reverts.
           this.tasks.notify(
-            `Checks have not finished on the merge commit of PR #${String(task.prNumber)} in ${task.repo} (task ${String(task.id)}) after an hour: ${missing.join(", ") || "still running"}.`,
+            `Checks have not finished on the merge commit of PR #${String(task.prNumber)} in ${task.repo} (task ${String(task.id)}) after an hour: ${named.join(", ") || "still running"}.`,
             task.id,
           );
-          this.wait(task, `overdue: ${missing.join(", ") || "checks still running"}`);
+          this.wait(task, `overdue: ${named.join(", ") || "checks still running"}`);
           return;
         }
         if (task.waiting?.startsWith("overdue") === true) return;
         this.wait(
           task,
-          `checks are running on the merge commit${missing.length > 0 ? `: ${missing.join(", ")}` : ""}`,
+          `checks are running on the merge commit${named.length > 0 ? `: ${named.join(", ")}` : ""}`,
         );
         return;
       }
