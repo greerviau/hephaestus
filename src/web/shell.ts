@@ -1,7 +1,7 @@
-import { isProposal } from "../config/store.js";
-import { here, read, workerNeedsOwner, type FactoryPages } from "./factory.js";
+import { here, read, type FactoryPages } from "./factory.js";
 import { PROJECT_FILTER_PATH, backTo, type Shell } from "./html.js";
 import { cookie, readBody, redirect, type Route, type ShellSource } from "./http.js";
+import { ownerCount, ownerItems, ownerSources } from "./needs-owner.js";
 
 export const PROJECT_COOKIE = "hephaestus_project";
 /** A year: the picker is a standing preference, and a stale one is ignored anyway. */
@@ -29,41 +29,15 @@ function chosen(raw: string | undefined, projects: readonly string[]): string | 
   return projects.includes(repo) ? repo : undefined;
 }
 
-/**
- * How many things wait for the owner, across every project: tasks escalated
- * to the owner, issues waiting to be admitted, proposals, workers whose next
- * step is the owner's, and notifications. T3 links about to expire are left
- * out, because every page would have to wait on T3 to count them. A part
- * that cannot be read counts as none.
- */
-function needsYou(factory: FactoryPages, proposals: number): number {
-  const tasks = read("tasks", () =>
-    factory.tasks
-      .list()
-      .filter((task) => task.stage === "Escalated" && task.escalatedTo === "owner"),
-  );
-  const issues = read("issues", () => factory.intake.issues(["awaiting-owner", "held-cap"]));
-  const workers = read("workers", () => (factory.workers?.views() ?? []).filter(workerNeedsOwner));
-  // An escalation is counted from its task, as on Home.
-  const notifications = read("notifications", () =>
-    factory.tasks.notifications().filter((item) => item.kind !== "escalation"),
-  );
-  return [tasks, issues, workers, notifications].reduce(
-    (sum, part) => sum + (part.ok ? part.value.length : 0),
-    proposals,
-  );
-}
-
 /** Reads what the sidebar shows for a request; the server calls it once per page. */
 export function shellSource(factory: FactoryPages): ShellSource {
   return (request, url): Shell => {
     const paused = read("the pause switch", () => factory.pipeline.paused());
     const running = read("running threads", () => factory.pipeline.runningThreads());
-    const drafts = read("proposals", () =>
-      factory.store.list().filter((version) => isProposal(version) && version.state === "draft"),
-    );
-    const proposals = drafts.ok ? drafts.value.length : 0;
     const projects = factoryProjects(factory);
+    const project = chosen(cookie(request, PROJECT_COOKIE), projects);
+    // The count on Home is Home's own list of what needs the owner, for the project it shows.
+    const needs = ownerItems(ownerSources(factory, project), project);
     const version = factory.version?.();
     const { updating: locked } = factory;
     const status =
@@ -75,10 +49,10 @@ export function shellSource(factory: FactoryPages): ShellSource {
     return {
       paused: paused.ok ? paused.value : undefined,
       runningThreads: running.ok ? running.value : undefined,
-      needsYou: needsYou(factory, proposals),
-      proposals,
+      needsYou: ownerCount(needs),
+      proposals: needs.proposals.length,
       projects,
-      project: chosen(cookie(request, PROJECT_COOKIE), projects),
+      project,
       ...(version === undefined
         ? {}
         : {

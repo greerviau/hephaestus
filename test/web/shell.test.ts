@@ -84,15 +84,28 @@ describe("the page shell", () => {
     expect(html).toContain('<span class="count">1<span class="sr-only"> waiting</span></span>');
   });
 
-  it("counts every project on Home whatever the picker says", async () => {
+  it("recounts Home when the picker changes, on the page it returns to", async () => {
     dashboard = await startDashboard();
     addProject(dashboard, "octo/site");
     escalatedTask(dashboard.h);
+    const running = dashboard;
 
-    const html = await page(dashboard, "/activity", "octo/site");
+    async function pick(project: string): Promise<string> {
+      const response = await running.post("/project-filter", { project, back: "/activity" });
+      const set = (response.headers.get("set-cookie") ?? "").split(";")[0] ?? "";
+      const next = await fetch(`${running.base}${response.headers.get("location") ?? ""}`, {
+        headers: { cookie: `${running.cookie}; ${set}` },
+      });
+      return next.text();
+    }
 
-    expect(html).toContain('<option value="octo/site" selected>site</option>');
-    expect(html).toContain('<span class="count">1<span class="sr-only"> need you</span></span>');
+    expect(await pick("octo/site")).not.toContain("need you</span></span>");
+    expect(await pick("octo/app")).toContain(
+      '<span class="count">1<span class="sr-only"> need you</span></span>',
+    );
+    expect(await pick("")).toContain(
+      '<span class="count">1<span class="sr-only"> need you</span></span>',
+    );
   });
 
   it("offers the factory's projects in the picker, returning to the page it is on", async () => {

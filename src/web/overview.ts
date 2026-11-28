@@ -1,4 +1,3 @@
-import { isProposal } from "../config/store.js";
 import { setupChecklist } from "./setup.js";
 import type { Task } from "../factory/tasks.js";
 import type { WorkerView } from "../workers/manager.js";
@@ -16,7 +15,6 @@ import {
   runningThreads,
   stagePill,
   t3Error,
-  workerNeedsOwner,
   type FactoryPages,
 } from "./factory.js";
 import {
@@ -35,6 +33,7 @@ import {
   type Row,
 } from "./html.js";
 import { sendHtml, type Route } from "./http.js";
+import { ownerItems, ownerSources } from "./needs-owner.js";
 import { ADMITTING_RELOAD_SECONDS, admissionsFor } from "./admissions.js";
 import { SENDING_RELOAD_SECONDS, handoffsFor } from "./handoffs.js";
 
@@ -86,22 +85,9 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         const admissions = admissionsFor(factory.intake);
         const handoffs = handoffsFor(factory.pipeline);
         const project = shell?.project;
-        const inProject = (repo: string): boolean => project === undefined || repo === project;
-        const tasks = read("tasks", () =>
-          factory.tasks.list().filter((item) => inProject(item.repo)),
-        );
-        const issues = read("issues", () =>
-          factory.intake
-            .issues(["awaiting-owner", "held-cap"])
-            .filter((issue) => inProject(issue.repo)),
-        );
-        const proposals = read("proposals", () =>
-          factory.store
-            .list()
-            .filter((version) => isProposal(version) && version.state === "draft"),
-        );
-        const notifications = read("notifications", () => factory.tasks.notifications());
-        const workers = read("workers", () => factory.workers?.views() ?? []);
+        const sources = ownerSources(factory, project);
+        const { tasks, issues, proposals, notifications, workers } = sources;
+        const owner = ownerItems(sources, project);
         const paused = read("the pause switch", () => factory.pipeline.paused());
         const blocked = read("the thread caps", () => factory.pipeline.blockedBecause(undefined));
         const labels = new Map(
@@ -134,41 +120,34 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
         ].some((result) => !result.ok);
 
         const needs: Row[] = [];
-        if (tasks.ok) {
-          for (const item of tasks.value) {
-            if (item.stage !== "Escalated" || item.escalatedTo !== "owner") continue;
-            const handoff = handoffs.state(item);
-            const failed = handoffFailedText(handoff);
-            const reason = `${escapeHtml(item.reason ?? "Escalated to you.")}${failed === "" ? "" : `<br>${failed}`}`;
-            needs.push({
-              kind: taskActions(item).approveMerge ? "merge" : "task",
-              title: taskLabel(item),
-              href: `/work/${String(item.id)}`,
-              // The repo says nothing new when the page shows one project.
-              sub: project === undefined ? `${reason}${DOT}${escapeHtml(item.repo)}` : reason,
-              aside: escalationActions(item, "/", handoff),
-            });
-          }
+        for (const item of owner.tasks) {
+          const handoff = handoffs.state(item);
+          const failed = handoffFailedText(handoff);
+          const reason = `${escapeHtml(item.reason ?? "Escalated to you.")}${failed === "" ? "" : `<br>${failed}`}`;
+          needs.push({
+            kind: taskActions(item).approveMerge ? "merge" : "task",
+            title: taskLabel(item),
+            href: `/work/${String(item.id)}`,
+            // The repo says nothing new when the page shows one project.
+            sub: project === undefined ? `${reason}${DOT}${escapeHtml(item.repo)}` : reason,
+            aside: escalationActions(item, "/", handoff),
+          });
         }
-        if (issues.ok) {
-          for (const issue of issues.value) {
-            needs.push(heldIssueRow(issue, "/", admissions.state(issue.repo, issue.number)));
-          }
+        for (const issue of owner.issues) {
+          needs.push(heldIssueRow(issue, "/", admissions.state(issue.repo, issue.number)));
         }
-        if (proposals.ok) {
-          for (const version of proposals.value) {
-            const href = `/proposals/${String(version.id)}`;
-            needs.push({
-              kind: "proposal",
-              title: `Proposal v${String(version.id)}: ${version.title}`,
-              href,
-              sub:
-                version.author === "improver"
-                  ? "Config change from the improver."
-                  : "Starter skills from an update.",
-              aside: buttonLink(href, "Review proposal"),
-            });
-          }
+        for (const version of owner.proposals) {
+          const href = `/proposals/${String(version.id)}`;
+          needs.push({
+            kind: "proposal",
+            title: `Proposal v${String(version.id)}: ${version.title}`,
+            href,
+            sub:
+              version.author === "improver"
+                ? "Config change from the improver."
+                : "Starter skills from an update.",
+            aside: buttonLink(href, "Review proposal"),
+          });
         }
         if (t3.state === "ok") {
           for (const environment of t3.value.environments) {
@@ -182,35 +161,25 @@ export function overviewRoutes(factory: FactoryPages): Route[] {
             });
           }
         }
-        if (workers.ok) {
-          for (const view of workers.value.filter(workerNeedsOwner)) {
-            needs.push({
-              kind: "worker",
-              title: view.label,
-              href: "/workers",
-              sub: escapeHtml(workerStep(view)),
-              aside: buttonLink("/workers", "Open workers"),
-            });
-          }
+        for (const view of owner.workers) {
+          needs.push({
+            kind: "worker",
+            title: view.label,
+            href: "/workers",
+            sub: escapeHtml(workerStep(view)),
+            aside: buttonLink("/workers", "Open workers"),
+          });
         }
-        if (notifications.ok) {
-          // The tasks read above are the chosen project's, so they say which notifications are too.
-          const shown = new Set((tasks.ok ? tasks.value : []).map((item) => item.id));
-          for (const item of notifications.value) {
-            // Escalations are listed from the task's state above; their notifications stay in Activity.
-            if (item.kind === "escalation") continue;
-            // A notification about another project's task is left out, as on Activity; one about no task stays.
-            if (project !== undefined && item.taskId !== null && !shown.has(item.taskId)) continue;
-            needs.push({
-              kind: "notice",
-              title: item.text,
-              href: item.taskId === null ? undefined : `/work/${String(item.taskId)}`,
-              sub: when(item.at, now()),
-              aside: postButton(`/notifications/${String(item.id)}/dismiss`, "Dismiss", {
-                fields: { back: "/" },
-              }),
-            });
-          }
+        for (const item of owner.notifications) {
+          needs.push({
+            kind: "notice",
+            title: item.text,
+            href: item.taskId === null ? undefined : `/work/${String(item.taskId)}`,
+            sub: when(item.at, now()),
+            aside: postButton(`/notifications/${String(item.id)}/dismiss`, "Dismiss", {
+              fields: { back: "/" },
+            }),
+          });
         }
 
         const isWaiting = (item: Task): boolean =>
