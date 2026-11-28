@@ -48,14 +48,16 @@ describe("the stage diagram", () => {
 });
 
 describe("reviews", () => {
-  it("counts only an approval by another provider on the exact head commit", () => {
+  it("counts an approval on the exact head commit, whichever provider gave it", () => {
     const store = new TaskStore(openStore(":memory:"));
     const id = store.create({ repo: "octo/app", issueNumber: 1, title: "t" }).id;
     const base = { taskId: id, threadId: "r", author: "claude" as const };
     store.recordReview({ ...base, headSha: "old", reviewer: "codex", verdict: "approve" });
-    store.recordReview({ ...base, headSha: "new", reviewer: "claude", verdict: "approve" });
     expect(store.approvedAt(id, "new")).toBe(false);
-    store.recordReview({ ...base, headSha: "new", reviewer: "codex", verdict: "approve" });
+    store.recordReview({ ...base, headSha: "new", reviewer: "claude", verdict: "changes" });
+    expect(store.approvedAt(id, "new")).toBe(false);
+    // The Review job may run on the author's own provider.
+    store.recordReview({ ...base, headSha: "new", reviewer: "claude", verdict: "approve" });
     expect(store.approvedAt(id, "new")).toBe(true);
   });
 });

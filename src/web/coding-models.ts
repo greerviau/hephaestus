@@ -8,8 +8,9 @@ import {
   savedNotice,
   versionSaveBar,
 } from "./config-page.js";
-import { applyCodingModels, codingModelsFields } from "./factory-settings.js";
-import type { FactoryPages } from "./factory.js";
+import type { EffortProvider } from "../config/effort.js";
+import { applyCodingModels, codingModelsFields, unavailableProviders } from "./factory-settings.js";
+import { read, type FactoryPages } from "./factory.js";
 import { buttonLink, empty, escapeHtml, section, statusText } from "./html.js";
 import { sendHtml, type Route, type RouteContext } from "./http.js";
 import { LAZY_SCRIPT_TAG } from "./lazy.js";
@@ -46,12 +47,18 @@ export function codingModelsRoutes(factory: FactoryPages): Route[] {
     },
   ];
 
+  /** The providers no worker has signed in; none when the workers cannot be read. */
+  function unavailable(): EffortProvider[] {
+    const views = read("workers", () => factory.workers?.views() ?? []);
+    return views.ok ? unavailableProviders(views.value) : [];
+  }
+
   function show(context: RouteContext, errors?: string[], submitted?: URLSearchParams): void {
     const current = factory.store.current();
     const coding =
       current === undefined
         ? empty("No config version yet.")
-        : `${problems("Not saved", errors)}<form method="post" action="/config/models"><input type="hidden" name="parentId" value="${String(current.id)}">${codingModelsFields(current.document, submitted)}${versionSaveBar("Save coding models", current, submitted)}</form>${PROVIDER_CHOICE_SCRIPT_TAG}`;
+        : `${problems("Not saved", errors)}<form method="post" action="/config/models"><input type="hidden" name="parentId" value="${String(current.id)}">${codingModelsFields(current.document, submitted, unavailable())}${versionSaveBar("Save coding models", current, submitted)}</form>${PROVIDER_CHOICE_SCRIPT_TAG}`;
     sendHtml(
       context.response,
       errors === undefined ? 200 : 400,

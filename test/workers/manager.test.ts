@@ -788,6 +788,65 @@ describe("WorkerManager", () => {
     expect(t3.launches).toHaveLength(2);
   });
 
+  it.each([
+    ["Claude", "claude", "codex", "FACTORY-READY", "Not logged in"],
+    ["Codex", "codex", "claude", "Not logged in", "FACTORY-READY"],
+  ] as const)(
+    "is ready on %s alone when both coding jobs use it",
+    async (_name, provider, unused, claudeTest, codexTest) => {
+      const document = sampleConfig();
+      document.factory.models.claude = { ...document.factory.models[provider], provider };
+      document.factory.models.codex = { ...document.factory.models[provider], provider };
+      const only = store.createVersion({ document, author: "t", message: "one", parentId: 1 });
+      store.approve(only.id);
+      await manager.deployVersion(only.id);
+      finishThread("t1", deployed(only.id, SHA2));
+      await manager.tick();
+      finishThread("t2", claudeTest);
+      finishThread("t3", codexTest);
+      await manager.tick();
+
+      expect(viewOf("env-1")).toMatchObject({
+        [provider]: "signed-in",
+        [unused]: "signed-out",
+        ready: true,
+        blocker: undefined,
+        ownerStep: false,
+      });
+      expect(manager.readyWorkers().map((view) => view.environmentId)).toEqual(["env-1"]);
+
+      // T3 not offering the unused instance at all is no fault and starts no repair.
+      reports = [
+        {
+          providerInstanceId: provider === "claude" ? FACTORY_CLAUDE : FACTORY_CODEX,
+          constraints: [],
+        },
+      ];
+      clock += 11 * 60_000;
+      await manager.tick();
+      const launched = t3.launches.length;
+      await manager.tick();
+      expect(viewOf("env-1")).toMatchObject({ [unused]: "missing", ready: true });
+      expect(t3.launches).toHaveLength(launched);
+    },
+  );
+
+  it("still needs both providers signed in while the jobs use both", async () => {
+    await manager.deployVersion(1);
+    finishThread("t1", deployed(1, SHA));
+    await manager.tick();
+    finishThread("t2", "FACTORY-READY");
+    finishThread("t3", "Not logged in");
+    await manager.tick();
+
+    expect(viewOf("env-1")).toMatchObject({
+      claude: "signed-in",
+      codex: "signed-out",
+      ready: false,
+      blocker: "Sign in Factory Codex.",
+    });
+  });
+
   it("is not ready when T3 reports a factory instance missing, disabled, or signed out", async () => {
     await makeReady();
     reports = [

@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Database } from "better-sqlite3";
-import type { FactoryConfig } from "../config/document.js";
+import type { FactoryConfig, ModelChoice } from "../config/document.js";
 import { launchModel, providerOfInstance } from "../config/effort.js";
+import { modelFor, providersInUse } from "../config/jobs.js";
 import type { ConfigStore } from "../config/store.js";
 import { getMeta, setMeta } from "../meta.js";
 import type { T3Adapter } from "../t3/adapter.js";
@@ -25,6 +26,19 @@ import {
 
 export const FACTORY_CLAUDE = "hephaestus-claude";
 export const FACTORY_CODEX = "hephaestus-codex";
+
+const INSTANCE_NAMES: Record<Provider, string> = {
+  claude: "Factory Claude",
+  codex: "Factory Codex",
+};
+
+/**
+ * The model a test turn on a provider's factory instance runs: the one a coding job on that
+ * provider uses, so the test proves what factory threads run, or the provider's default.
+ */
+function testModel(config: FactoryConfig, provider: Provider): ModelChoice {
+  return modelFor(config.factory, "implement", provider);
+}
 
 export type TaskKind =
   "deploy" | "claude-sign-in" | "codex-sign-in" | "test-claude" | "test-codex" | "cleanup";
@@ -363,8 +377,11 @@ export class WorkerManager {
     };
     const claude = state("claude");
     const codex = state("codex");
+    const states: Record<Provider, InstanceState> = { claude, codex };
+    // Only the providers the coding jobs use hold a worker back; the factory runs on one alone.
+    const needed = this.providersInUse();
     // Each problem as the owner reads it, and as it reads while Hephaestus repairs it.
-    const faults = (["claude", "codex"] as const).flatMap((provider) => {
+    const faults = needed.flatMap((provider) => {
       const check = worker.instances[provider];
       const name = provider === "claude" ? "Factory Claude" : "Factory Codex";
       if (check === undefined) return [];
@@ -405,30 +422,30 @@ export class WorkerManager {
       blocker =
         "A project with skills of its own was cloned here since its last deploy; deploying again installs them.";
       automatic = true;
-    } else if (this.repairDue(worker)) {
+    } else if (this.repairDue(worker, needed)) {
       blocker = `${faults.map((fault) => fault.repairing).join(" ")} Hephaestus deploys again to repair it.`;
       automatic = true;
     } else if (problems.length > 0) blocker = problems.join(" ");
-    else if (
-      (claude === "limited" && (codex === "signed-in" || codex === "limited")) ||
-      (codex === "limited" && claude === "signed-in")
-    ) {
-      const name = claude === "limited" ? "Factory Claude" : "Factory Codex";
-      const task = tasks[claude === "limited" ? "test-claude" : "test-codex"];
-      const when = task === undefined ? "soon" : `at ${utcMinute(limitRecheckAt(task))}`;
-      blocker =
-        `${name} reached its provider's usage limit, so its check could not run. Hephaestus checks again ${when}. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
-      automatic = true;
-    } else if (claude !== "signed-in" && claude !== "limited") {
-      automatic = claude === "checking" && tasks["claude-sign-in"]?.status !== "running";
-      blocker = automatic ? "Checking Factory Claude's sign-in." : "Sign in Factory Claude.";
-    } else if (codex !== "signed-in" && codex !== "limited") {
-      automatic = codex === "checking" && tasks["codex-sign-in"]?.status !== "running";
-      blocker = automatic ? "Checking Factory Codex's sign-in." : "Sign in Factory Codex.";
+    else {
+      const unsigned = needed.find(
+        (provider) => states[provider] !== "signed-in" && states[provider] !== "limited",
+      );
+      const limited = needed.find((provider) => states[provider] === "limited");
+      if (unsigned !== undefined) {
+        const name = INSTANCE_NAMES[unsigned];
+        automatic =
+          states[unsigned] === "checking" && tasks[`${unsigned}-sign-in`]?.status !== "running";
+        blocker = automatic ? `Checking ${name}'s sign-in.` : `Sign in ${name}.`;
+      } else if (limited !== undefined) {
+        const task = tasks[`test-${limited}`];
+        const when = task === undefined ? "soon" : `at ${utcMinute(limitRecheckAt(task))}`;
+        blocker =
+          `${INSTANCE_NAMES[limited]} reached its provider's usage limit, so its check could not run. Hephaestus checks again ${when}. ${typeof task?.detail.reason === "string" ? task.detail.reason : ""}`.trim();
+        automatic = true;
+      }
     }
     // A sign-in waiting on the owner's token or device code is theirs even while it runs.
-    const signingIn =
-      tasks["claude-sign-in"]?.status === "running" || tasks["codex-sign-in"]?.status === "running";
+    const signingIn = needed.some((provider) => tasks[`${provider}-sign-in`]?.status === "running");
     const ownerStep = worker.enabled && (signingIn || (blocker !== undefined && !automatic));
     return { ...worker, tasks, claude, codex, ready: blocker === undefined, blocker, ownerStep };
   }
@@ -537,13 +554,15 @@ export class WorkerManager {
    * instance still broken after a deploy that saw it broken is left to the owner, so a problem a
    * deploy cannot fix starts no loop.
    */
-  private repairDue(worker: Worker): boolean {
+  private repairDue(worker: Worker, needed: readonly Provider[]): boolean {
     const last = this.latestTask(worker.environmentId, "deploy");
     const tried = Array.isArray(last?.detail.repair) ? (last.detail.repair as unknown[]) : [];
+    // An instance no coding job uses stops nothing, so it starts no repair either.
     return broken(worker).some(
       (provider) =>
-        !tried.includes(provider) ||
-        (last?.createdSeq ?? 0) < (worker.instances[provider]?.healthySeq ?? 0),
+        needed.includes(provider) &&
+        (!tried.includes(provider) ||
+          (last?.createdSeq ?? 0) < (worker.instances[provider]?.healthySeq ?? 0)),
     );
   }
 
@@ -627,7 +646,7 @@ export class WorkerManager {
         last?.status === "succeeded" &&
         age < REDEPLOY_MS &&
         !this.clonedSinceDeploy(environmentId) &&
-        !this.repairDue(worker)
+        !this.repairDue(worker, this.providersInUse())
       ) {
         continue;
       }
@@ -644,7 +663,10 @@ export class WorkerManager {
     return this.startOnce(environmentId, "codex-sign-in", codexSignInMessage());
   }
 
-  /** Starts a test turn on both factory instances. */
+  /**
+   * Starts a test turn on both factory instances. One no coding job uses is tested too, so the
+   * Models page can tell which providers the workers can run.
+   */
   async startTests(environmentId: string): Promise<void> {
     await this.startOnce(environmentId, "test-claude", testTurnMessage());
     await this.startOnce(environmentId, "test-codex", testTurnMessage());
@@ -714,12 +736,12 @@ export class WorkerManager {
       kind === "test-claude"
         ? {
             providerInstanceId: FACTORY_CLAUDE,
-            ...launchModel(config.factory.models.claude, "claude"),
+            ...launchModel(testModel(config, "claude"), "claude"),
           }
         : kind === "test-codex"
           ? {
               providerInstanceId: FACTORY_CODEX,
-              ...launchModel(config.factory.models.codex, "codex"),
+              ...launchModel(testModel(config, "codex"), "codex"),
             }
           : {
               providerInstanceId: config.factory.setup.instanceId,
@@ -758,6 +780,17 @@ export class WorkerManager {
         console.error(`Starting ${kind} on ${environmentId} got no reply from T3`, error);
       }
     }
+  }
+
+  /**
+   * The providers the deployed config's coding jobs use. Only those must be signed in for a
+   * worker to be ready. Before any config exists, both are.
+   */
+  private providersInUse(): Provider[] {
+    const version =
+      this.options.store.list().find((candidate) => candidate.state === "deployed") ??
+      this.options.store.current();
+    return version === undefined ? ["claude", "codex"] : providersInUse(version.document.factory);
   }
 
   private config(): FactoryConfig {

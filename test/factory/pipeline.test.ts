@@ -8,6 +8,7 @@ import type { LaunchOptions } from "../../src/t3/adapter.js";
 import { T3ToolError } from "../../src/t3/connection.js";
 import { FACTORY_CLAUDE, FACTORY_CODEX } from "../../src/workers/manager.js";
 import { PRESETS } from "../../src/config/policy.js";
+import type { FactoryConfig } from "../../src/config/document.js";
 import {
   MERGE,
   SHA,
@@ -160,6 +161,65 @@ describe("Pipeline", () => {
     }
     expect(h.events.thread("w1", "t1")?.providerInstanceId).toBe(FACTORY_CLAUDE);
     expect(h.events.thread("w1", "t2")?.providerInstanceId).toBe(FACTORY_CODEX);
+  });
+
+  it.each([
+    ["Claude", "claude", FACTORY_CLAUDE, "claude-opus-5-5", "claude-haiku-5-5"],
+    ["Codex", "codex", FACTORY_CODEX, "gpt-6.2-astra", "gpt-6-luna"],
+  ] as const)(
+    "implements, reviews, and merges with both jobs on %s",
+    async (_name, provider, instance, implementModel, reviewModel) => {
+      const h = harness((config) => {
+        config.factory.models.claude = { model: implementModel, provider };
+        config.factory.models.codex = { model: reviewModel, provider };
+      });
+      const id = admitted(h);
+
+      await h.pipeline.queue(id, "Add the flag to the CLI.");
+      expect(h.t3.launches[0]).toMatchObject({
+        providerInstanceId: instance,
+        model: implementModel,
+      });
+      expect(h.tasks.get(id).implementer).toBe(provider);
+      h.github.prs.set(5, pr(5, SHA));
+      h.finish("t1", implementResult(5, SHA));
+      await h.pipeline.tick();
+      expect(h.t3.launches[1]).toMatchObject({ providerInstanceId: instance, model: reviewModel });
+
+      // A review by the author's own provider counts, so the approval lets the PR merge.
+      h.finish("t2", reviewResult("approve", SHA));
+      await h.pipeline.tick();
+      expect(h.tasks.approvedAt(id, SHA)).toBe(true);
+      expect(h.github.merged).toEqual([5]);
+      h.github.commits.set(MERGE, checks("success"));
+      await h.pipeline.tick();
+      expect(h.tasks.get(id).stage).toBe("Done");
+    },
+  );
+
+  it("starts a new task on the provider Implement uses now, and keeps a started one on its own", async () => {
+    let document: FactoryConfig | undefined;
+    const h = harness((config) => {
+      document = config;
+    });
+    const first = admitted(h);
+    await h.pipeline.queue(first, "Add the flag to the CLI.");
+    expect(h.t3.launches[0]?.providerInstanceId).toBe(FACTORY_CLAUDE);
+
+    // Review stays on Codex, so with Implement moved there too both run on Codex.
+    if (document === undefined) throw new Error("no config");
+    document.factory.models.claude = { model: "gpt-6.2-astra", provider: "codex" };
+    h.github.prs.set(5, pr(5, SHA));
+    h.finish("t1", implementResult(5, SHA));
+    await h.pipeline.tick();
+    expect(h.t3.launches[1]?.providerInstanceId).toBe(FACTORY_CODEX);
+    expect(h.tasks.get(first).implementer).toBe("claude");
+
+    h.github.issues.set(6, { number: 6, title: "Next", body: "b", author: "owner", state: "OPEN" });
+    const second = h.tasks.create({ repo: "octo/app", issueNumber: 6, title: "Next" }).id;
+    await h.pipeline.queue(second, "Do the next thing.");
+    const launch = h.t3.launches.find((each) => each.title.startsWith(`Task ${String(second)}`));
+    expect(launch).toMatchObject({ providerInstanceId: FACTORY_CODEX, model: "gpt-6.2-astra" });
   });
 
   it("starts implement and review threads at the configured effort, and records it", async () => {

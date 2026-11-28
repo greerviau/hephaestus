@@ -548,12 +548,15 @@ export class TaskStore {
       );
   }
 
-  /** Whether a reviewer other than the author approved exactly this head commit. */
+  /**
+   * Whether a review thread approved exactly this head commit. The Review job may run on the
+   * same provider as the author, so a review counts whichever provider gave it.
+   */
   approvedAt(taskId: number, headSha: string): boolean {
     const row = this.db
       .prepare(
         `SELECT 1 FROM review_results WHERE task_id = ? AND head_sha = ? AND verdict = 'approve'
-         AND reviewer != author ORDER BY at DESC LIMIT 1`,
+         ORDER BY at DESC LIMIT 1`,
       )
       .get(taskId, headSha);
     return row !== undefined;

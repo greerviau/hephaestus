@@ -22,7 +22,7 @@ On the host that runs Hephaestus:
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 - The GitHub CLI (`gh`), signed in
 
-On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` signed in to an account that can read your repos.
+On each worker: T3 Code, Claude Code or the Codex CLI (or both), `git`, `python3`, and `gh` signed in to an account that can read your repos. The factory runs on one provider alone when Implement and Review both use it.
 
 ## Install
 
@@ -39,7 +39,7 @@ Install asks for a dashboard password of 12 or more characters, then starts the 
 1. **Config**: name a private repo to store config versions, such as `you/hephaestus-config`. Hephaestus creates it if needed.
 2. **Workers**: click **Use as a worker** on each machine that should run tasks. Then sign in its factory agents as the page shows. A worker is ready when its checks pass.
 3. **Projects**: add each repo and pick a policy preset.
-4. **Config > Models**: choose the models the factory uses.
+4. **Config > Models**: choose the provider and model for each job. Implement and Review may use the same provider.
 5. **Chat** (optional): connect a Discord, Telegram, or Slack bot.
 
 ## Use it

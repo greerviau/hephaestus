@@ -1,5 +1,5 @@
 import { renameLegacyRole } from "../legacy-planner.js";
-import { effortProblem, providerOfInstance, type EffortProvider } from "./effort.js";
+import { PROVIDERS, effortProblem, providerOfInstance, type EffortProvider } from "./effort.js";
 import { POLICY_SETTING_NAMES, PRESET_NAMES, type Policy } from "./policy.js";
 
 export const ROLE_NAMES = ["communicator", "lead", "improver"] as const;
@@ -41,12 +41,25 @@ export interface ModelChoice {
   effort?: string;
 }
 
+/**
+ * A coding job's model choice. `provider` names the factory instance the job runs on; absent
+ * means the provider its slot in `FactorySettings.models` is named after, as configs saved
+ * before a job could choose its provider expect.
+ */
+export interface JobModelChoice extends ModelChoice {
+  provider?: EffortProvider;
+}
+
 /** How Hephaestus runs factory threads and the setup threads on each worker. */
 export interface FactorySettings {
   /** Names of skills in `FactoryConfig.skills` that factory threads load. */
   threadSkills: string[];
-  /** The model each factory instance runs. */
-  models: { claude: ModelChoice; codex: ModelChoice };
+  /**
+   * The model each coding job runs: `claude` is the Implement job and `codex` the Review job.
+   * The slots keep the names of the providers the jobs were tied to before either could choose
+   * its own, so saved configs read the same. Both jobs may use the same provider.
+   */
+  models: { claude: JobModelChoice; codex: JobModelChoice };
   /** The owner is told about an admitted task the lead has neither queued nor deferred after this many minutes; 0 never tells. */
   triageAlertMinutes: number;
   /** The owner's own provider instance and model that run deploy and sign-in threads on a worker. */
@@ -252,8 +265,15 @@ export function validateConfig(value: unknown): FactoryConfig {
     };
     const models = object("factory.models", factory.models);
     if (models !== undefined) {
-      model("factory.models.claude", models.claude, () => "claude");
-      model("factory.models.codex", models.codex, () => "codex");
+      for (const slot of ["claude", "codex"] as const) {
+        const path = `factory.models.${slot}`;
+        const choice = model(path, models[slot], (choice) =>
+          choice.provider === undefined ? slot : asEffortProvider(choice.provider),
+        );
+        if (choice?.provider !== undefined && asEffortProvider(choice.provider) === undefined) {
+          problems.push(`${path}.provider must be "claude" or "codex"`);
+        }
+      }
     }
     const setup = model("factory.setup", factory.setup, (choice) =>
       typeof choice.instanceId === "string" ? providerOfInstance(choice.instanceId) : undefined,
@@ -402,4 +422,8 @@ export function validateConfig(value: unknown): FactoryConfig {
 
 export function emptyConfig(): Record<string, never> {
   return {};
+}
+
+function asEffortProvider(value: unknown): EffortProvider | undefined {
+  return PROVIDERS.find((provider) => provider === value);
 }

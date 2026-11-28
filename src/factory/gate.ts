@@ -92,7 +92,7 @@ export interface GateInput {
   checkIds?: string[];
   /** False when the file list is incomplete; the escalation paths then cannot be checked. */
   filesComplete?: boolean;
-  /** A reviewer other than the author approved this exact head commit. */
+  /** A review thread approved this exact head commit. */
   approvedAtHead: boolean;
   /** The owner approved this exact head commit on the dashboard. */
   ownerApprovedAtHead: boolean;
@@ -110,7 +110,7 @@ export type GateDecision =
  * a stored reason that the checks no longer hold the merge back.
  */
 export const PAST_CHECKS = {
-  noReview: "no approving review from a different provider for the head commit",
+  noReview: "no approving review for the head commit",
   filesIncomplete: "the PR changes more files than GitHub lists",
   escalationPath: "the PR touches an escalation path",
   ownerApproves: "the policy has the owner approve every merge",
