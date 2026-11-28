@@ -13,6 +13,7 @@ import {
   buttonLink,
   callout,
   checkbox,
+  choiceOptions,
   empty,
   escapeHtml,
   externalLink,
@@ -20,6 +21,7 @@ import {
   input,
   layout,
   lookup,
+  modelSelect,
   pageHead,
   section,
   selectControl,
@@ -428,9 +430,6 @@ function modelSection(
   warned: Warned | undefined,
 ): string {
   const custom = provider.slug === "custom";
-  const models = provider.models
-    .map((name) => `<option value="${escapeHtml(name)}"></option>`)
-    .join("");
   const current = warned?.model ?? (catalog.provider === provider.slug ? catalog.model : "");
   const endpoint = custom
     ? `${input("base_url", "Endpoint URL", {
@@ -449,14 +448,27 @@ function modelSection(
         hint: `Stored on this host and never shown again.${warned === undefined ? "" : " Enter it again if the endpoint needs one."}`,
       })}`
     : "";
-  const modelField = field(
-    "model",
-    "Model",
-    `<input type="text" id="model" name="model" required value="${escapeHtml(current)}"${models === "" ? "" : ' list="models"'} autocomplete="off" aria-describedby="model-hint">${models === "" ? "" : `<datalist id="models">${models}</datalist>`}`,
-    {
-      hint: models === "" ? "As the provider spells it." : "Pick one or type another.",
-    },
-  );
+  // A provider Hermes lists models for gets the same dropdown as the Models tab; one without
+  // a list, such as a custom endpoint, takes the name as typed.
+  const modelField =
+    provider.models.length === 0
+      ? field(
+          "model",
+          "Model",
+          `<input type="text" id="model" name="model" required value="${escapeHtml(current)}" autocomplete="off" aria-describedby="model-hint">`,
+          { hint: "As the provider spells it." },
+        )
+      : field(
+          "model",
+          "Model",
+          modelSelect(
+            "model",
+            choiceOptions(provider.models, current),
+            current,
+            ' id="model" aria-describedby="model-hint"',
+          ),
+          { hint: "The models Hermes lists for this provider." },
+        );
   return section({
     title: "3. Model",
     body: `<form class="form step" method="post" action="${PLANNING_PATH}/set" autocomplete="off"><input type="hidden" name="provider" value="${escapeHtml(provider.slug)}">${endpoint}${modelField}${warned === undefined ? "" : checkbox("force", "Use it anyway", { value: "on" })}<div><button type="submit" class="primary">Use this model</button></div></form>`,

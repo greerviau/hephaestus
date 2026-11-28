@@ -13,7 +13,15 @@ import {
   providerOfInstance,
   type EffortProvider,
 } from "../config/effort.js";
-import { checkbox, escapeHtml, fold, section, setting } from "./html.js";
+import {
+  checkbox,
+  escapeHtml,
+  fold,
+  modelSelect,
+  placeholderOption,
+  section,
+  setting,
+} from "./html.js";
 
 /** Reads a form field: what the owner typed when a refused form comes back, else the saved value. */
 type Value = (name: string, saved: string) => string;
@@ -267,11 +275,6 @@ function providerOptions(
     .join("");
 }
 
-/** A disabled placeholder, so a selector with nothing chosen sends nothing. */
-function placeholder(text: string, current: string): string {
-  return `<option value="" disabled hidden${current === "" ? " selected" : ""}>${text}</option>`;
-}
-
 /**
  * A job's provider selector. A factory job offers only its instance's provider; the other
  * stays listed, so every row lists the same providers. A housekeeping instance of a provider
@@ -302,22 +305,27 @@ function effortSelect(
     readonly string[]
   >;
   const text = provider === undefined ? "No effort levels" : "Select effort";
-  return `<select class="effort" name="${key}.effort" aria-label="${job} effort" data-follows-provider data-placeholder="Select effort" data-placeholder-none="No effort levels">${placeholder(text, current)}${providerOptions(levels, provider, current)}</select>`;
+  return `<select class="effort" name="${key}.effort" aria-label="${job} effort" data-follows-provider data-placeholder="Select effort" data-placeholder-none="No effort levels">${placeholderOption(text, current)}${providerOptions(levels, provider, current)}</select>`;
 }
 
 /** A job's model selector: the models T3 offers for its provider. */
-function modelSelect(
+function modelChoice(
   key: JobKey,
   job: string,
   provider: EffortProvider | undefined,
   current: string,
 ): string {
-  return `<select class="model" name="${key}.model" aria-label="${job} model" required data-follows-provider>${placeholder("Select model", current)}${providerOptions(MODELS, provider, current)}</select>`;
+  return modelSelect(
+    `${key}.model`,
+    providerOptions(MODELS, provider, current),
+    current,
+    ` aria-label="${job} model" data-follows-provider`,
+  );
 }
 
 /** The housekeeping instance selector: the instances T3 creates for its provider. */
 function instanceSelect(provider: EffortProvider | undefined, current: string): string {
-  return `<select class="w-144" name="setup.instanceId" aria-label="Housekeeping provider instance" required data-follows-provider>${placeholder("Select instance", current)}${providerOptions(INSTANCES, provider, current)}</select>`;
+  return `<select class="w-144" name="setup.instanceId" aria-label="Housekeeping provider instance" required data-follows-provider>${placeholderOption("Select instance", current)}${providerOptions(INSTANCES, provider, current)}</select>`;
 }
 
 /** The Models tab's Coding section: a row per job, and each job's provider options in a fold. */
@@ -336,7 +344,7 @@ export function codingModelsFields(config: FactoryConfig, submitted?: URLSearchP
       instance === undefined
         ? instanceSelect(provider, instanceId)
         : `<span class="muted">${instance}</span>`;
-    const model = modelSelect(
+    const model = modelChoice(
       key,
       job,
       provider,

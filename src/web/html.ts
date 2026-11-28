@@ -751,6 +751,36 @@ export function selectControl(
     .join("")}</select>`;
 }
 
+/** The options of a dropdown: the given values, with a saved or typed one they lack first. */
+export function choiceOptions(values: readonly string[], current: string): string {
+  const all = current === "" || values.includes(current) ? values : [current, ...values];
+  return all
+    .map(
+      (value) =>
+        `<option value="${escapeHtml(value)}"${value === current ? " selected" : ""}>${escapeHtml(value)}</option>`,
+    )
+    .join("");
+}
+
+/** A disabled placeholder, so a dropdown with nothing chosen sends nothing. */
+export function placeholderOption(text: string, current: string): string {
+  return `<option value="" disabled hidden${current === "" ? " selected" : ""}>${escapeHtml(text)}</option>`;
+}
+
+/**
+ * The model dropdown that every model picker uses, with a Select model placeholder while
+ * nothing is chosen. `options` and `attributes` are already safe HTML: the options, from
+ * `choiceOptions` or a list that follows a provider, and extras such as an id or aria-label.
+ */
+export function modelSelect(
+  name: string,
+  options: string,
+  current: string,
+  attributes = "",
+): string {
+  return `<select class="model" name="${escapeHtml(name)}"${attributes} required>${placeholderOption("Select model", current)}${options}</select>`;
+}
+
 /** A labelled select with `value` selected. */
 export function select(
   name: string,
