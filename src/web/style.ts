@@ -143,6 +143,13 @@ a.title:hover, .row a.title:hover, .row .title a:hover { color: var(--accent); }
 .row.job .aside select { width: auto; max-width: 100%; }
 .row.job .aside select.model { min-width: 200px; }
 .row.job .aside input { width: 200px; }
+/* The PR's screenshots as a collage of small tiles, capped in height so a long list scrolls instead of pushing History down. */
+.row.evidence { align-items: start; }
+.shots { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; max-height: 188px; overflow-y: auto; margin-top: 8px; padding-right: 4px; }
+.shots a { display: block; border: 1px solid var(--line); border-radius: 4px; overflow: hidden; background: var(--sunk); }
+.shots a:hover, .shots a:focus-visible { border-color: var(--accent); }
+.shots img { display: block; width: 100%; height: 84px; object-fit: cover; object-position: top left; }
+ul.ev-links { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; }
 .grid-head, .grid-row { display: grid; grid-template-columns: minmax(0, 1fr) 144px 64px 72px; gap: 4px 16px; align-items: center; padding: 12px 8px; border-bottom: 1px solid var(--line); }
 .grid-head { color: var(--muted); font-size: 13px; padding-top: 8px; padding-bottom: 8px; }
 a.grid-row:hover, a.row:hover, details.xrow > summary:hover { background: var(--sunk); text-decoration: none; }

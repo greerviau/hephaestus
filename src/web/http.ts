@@ -20,6 +20,27 @@ export function send(
   response.end(body);
 }
 
+/**
+ * An image the dashboard serves, such as a screenshot from a PR. `cache` is
+ * the Cache-Control value: an image that does not change can be kept by the
+ * browser, so the task page's reloads do not fetch it again.
+ */
+export function sendImage(
+  response: ServerResponse,
+  contentType: string,
+  data: Buffer | string,
+  cache: string,
+): void {
+  response.writeHead(200, {
+    "content-type": contentType,
+    "content-length": String(Buffer.byteLength(data)),
+    "cache-control": cache,
+    "x-content-type-options": "nosniff",
+    "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'",
+  });
+  response.end(data);
+}
+
 export function sendHtml(response: ServerResponse, status: number, body: string): void {
   send(response, status, HTML, body);
 }

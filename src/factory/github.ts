@@ -546,6 +546,56 @@ export class GitHub {
     return { tree: tree.sha, files };
   }
 
+  /**
+   * The PR's body and every comment on it, as GitHub renders them. The
+   * rendered form is read because GitHub gives an image uploaded to a private
+   * repo a signed address there, which the host can fetch without a login.
+   */
+  async pullRequestHtml(repo: string, number: number): Promise<string[]> {
+    const accept = ["-H", "Accept: application/vnd.github.full+json"];
+    // Each text comes as one JSON string per line, so newlines in the HTML cannot split it.
+    const body = await this.gh([
+      "api",
+      ...accept,
+      `repos/${repo}/pulls/${String(number)}`,
+      "--jq",
+      '.body_html // "" | @json',
+    ]);
+    const comments = await this.gh([
+      "api",
+      "--paginate",
+      ...accept,
+      `repos/${repo}/issues/${String(number)}/comments?per_page=100`,
+      "--jq",
+      '.[] | .body_html // "" | @json',
+    ]);
+    return `${body}\n${comments}`
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as string);
+  }
+
+  /** A file in a repo at `ref`, or undefined when it is larger than `maxBytes`. */
+  async fileAt(
+    repo: string,
+    ref: string,
+    path: string,
+    maxBytes: number,
+  ): Promise<Buffer | undefined> {
+    const encoded = path.split("/").map(encodeURIComponent).join("/");
+    const file = await this.json<{ sha: string; size: number }>([
+      "api",
+      `repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`,
+    ]);
+    if (file.size > maxBytes) return undefined;
+    // The blob API, unlike contents, returns files over 1 MB.
+    const blob = await this.json<{ content: string; encoding: string }>([
+      "api",
+      `repos/${repo}/git/blobs/${file.sha}`,
+    ]);
+    return blob.encoding === "base64" ? Buffer.from(blob.content, "base64") : undefined;
+  }
+
   /** Whether a PR merged, without its files or checks, so a checks outage cannot fail the read. */
   async mergeState(repo: string, number: number): Promise<MergeState> {
     const pr = await this.json<{
