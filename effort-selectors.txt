@@ -1,0 +1,12 @@
+== Effort selectors on Config > Models > Coding ==
+Implement effort (claude.effort): Default effort | low | medium | high | [xhigh] | max | ultrathink
+Review effort (codex.effort): Default effort | low | medium | high | xhigh | max | [ultra]
+Housekeeping effort (setup.effort): [Default effort] | low | medium | high | xhigh | max | ultrathink
+
+== T3 launch options built from the saved choices ==
+Implement: {"model":"claude-sonnet-5-5","options":[{"id":"effort","value":"xhigh"}]}
+Review: {"model":"gpt-6.2-sol","options":[{"id":"reasoningEffort","value":"ultra"}]}
+Housekeeping (no effort): {"model":"claude-sonnet-5-5"}
+
+== Validation of an unsupported level ==
+factory.models.codex.effort must be one of low, medium, high, xhigh, max, ultra for Codex, not "ultrathink"
