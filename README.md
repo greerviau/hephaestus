@@ -1,78 +1,83 @@
 <p align="center"><img src="docs/images/banner.jpg" alt="Hephaestus" width="800"></p>
 
-Hephaestus turns your repos into a software factory. Requests become GitHub issues, AI agents implement them in [T3 Code](https://github.com/pingdotgg/t3code) threads on your machines, a second agent from another provider reviews each PR, and Hephaestus merges it only when your policy allows. A failing merge is reverted, everything is recorded, and every night the factory proposes improvements to its own instructions for you to approve.
+Hephaestus turns your repos into a software factory. You ask for work, AI agents build it on your own machines, a second agent reviews it, and Hephaestus merges it when your policy allows.
 
-It runs as a service on one Linux host and serves a dashboard on your LAN.
+<p align="center"><img src="docs/images/demo.gif" alt="Asking for work in Slack, following it in the thread with a screenshot of the change, approving the merge on the dashboard, and approving an improvement proposal" width="800"></p>
 
-## How it works
+## Features
 
-Three [Hermes Agent](https://github.com/NousResearch/hermes-agent) profiles manage the work: the communicator is the factory's chat agent: it answers questions, discusses ideas, reports stats, and turns requests for work into issues; the lead starts and unblocks work, and the improver proposes config changes. Each piece of work then runs as T3 threads on your worker machines, on two provider instances that Hephaestus sets up there: Factory Claude implements, and Factory Codex reviews.
-
-Hephaestus sits between them. It starts and watches every thread, enforces the thread limits and the merge gate, merges and reverts, keeps the record, and serves the dashboard. Nothing it adds changes your own Hermes profile, Claude and Codex config, or T3 settings, and uninstall removes it all.
+- Ask for work in chat (Discord, Telegram, or Slack), on the dashboard, or by opening a GitHub issue.
+- A coding agent implements each task in a [T3 Code](https://github.com/pingdotgg/t3code) thread on one of your worker machines.
+- An agent from a different provider reviews each PR.
+- A per-project merge policy decides what merges on its own and what waits for you.
+- A merge that breaks the default branch can be reverted automatically.
+- On a schedule, the factory proposes improvements to its own instructions for you to approve.
+- A dashboard on your LAN shows what needs you, what is running, and the full history.
+- Your own Claude, Codex, Hermes, and T3 setup is left untouched, and uninstall removes everything Hephaestus added.
 
 ## Requirements
 
 On the host that runs Hephaestus:
 
 - Linux with a systemd user session
-- Node.js 22.13 or newer, and npm 11 or newer
-- T3 Code, with your worker machines linked to it
-- Hermes Agent
+- Node.js 22.13 or newer
+- [T3 Code](https://github.com/pingdotgg/t3code), with your worker machines linked to it
+- [Hermes Agent](https://github.com/NousResearch/hermes-agent)
 - The GitHub CLI (`gh`), signed in
 
-On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` signed in to an account that can read your factory repos.
+On each worker: T3 Code, Claude Code, the Codex CLI, `git`, `python3`, and `gh` signed in to an account that can read your repos.
 
-## Set up
+## Install
 
-1. Install and start the service. It asks for a dashboard password of 12 or more characters.
+```sh
+git clone https://github.com/greerviau/hephaestus.git
+cd hephaestus
+npx -y npm@11 ci
+npm run build
+node dist/cli.js install
+```
 
-   ```sh
-   git clone https://github.com/greerviau/hephaestus.git
-   cd hephaestus
-   npx -y npm@11 ci
-   npm run build
-   node dist/cli.js install
-   ```
+Install asks for a dashboard password of 12 or more characters, then starts the service. Open `http://<host>:7700` (the default port), sign in, and finish setup on the dashboard:
 
-2. Open `http://<host>:7700` and sign in.
-3. At the top of **Config**, name a private repo for config versions, such as `you/hephaestus-config`. Hephaestus creates it if it does not exist. Then on **Workers**, open each machine that should run factory threads and click **Use as a worker**.
-4. On **Projects**, add each factory repo. Pick it from the list of repos your `gh` account can see, choose a policy preset (`strict`, `standard`, the default, or `yolo`), and change any setting from the preset if you need to. Adding a project creates a config version and approves and deploys it to every worker and to the factory's Hermes profiles.
-5. On **Workers**, sign each worker's factory instances in. For Claude, run `claude setup-token` on any machine and paste the token into the secret prompt that the worker's sign-in thread opens in T3. For Codex, approve the code the page shows. A worker is ready when both checks pass.
-6. On **Config**, open the Models tab and then "Plan, brief, and chat", and give the factory's Hermes a model. Pick any provider Hermes supports, sign in with an API key or the code the page shows, and choose a model. The factory's Hermes home is separate from your own `~/.hermes`.
-
-7. Optionally, on **Chat**, connect a Discord, Telegram, or Slack bot made for the factory. You can then talk with the factory in the chat, ask for work and follow each request in its own thread, and get alerts when something needs you.
+1. **Config**: name a private repo to store config versions, such as `you/hephaestus-config`. Hephaestus creates it if needed.
+2. **Workers**: click **Use as a worker** on each machine that should run tasks. Then sign in its factory agents as the page shows. A worker is ready when its checks pass.
+3. **Projects**: add each repo and pick a policy preset.
+4. **Config > Models**: choose the models the factory uses.
+5. **Chat** (optional): connect a Discord, Telegram, or Slack bot.
 
 ## Use it
 
-Talk with the factory in the chat you connected: ask what it is doing, bounce an idea off it, or ask for work. Or ask for work with Request work on **Work**, or open an issue on a factory repo and admit it under Needs you on **Work**. The dashboard shows what needs you first on **Home**: merges waiting for your approval, issues waiting for admission, improvement proposals, and workers that need a sign-in. **Pause** at the foot of the sidebar stops new factory threads.
+Ask for work in chat, with **Request work** on the **Work** page, or by opening an issue on a factory repo and admitting it. **Home** lists everything that needs you: merges to approve, issues to admit, improvement proposals, and workers to sign in. **Pause** in the sidebar stops new tasks from starting.
 
-The policy decides what merges on its own. `strict` stops for you on every merge. `standard` merges when checks pass and the other provider approved the exact head commit, and stops for you when a PR touches `.github/workflows/`. `yolo` needs no review.
+Each project's policy starts from a preset, and you can change any setting:
 
-## Update
+| Policy     | Merges on its own when                                                                                                             |
+| ---------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `strict`   | never: every merge waits for you                                                                                                   |
+| `standard` | checks pass and the reviewer approved the exact head commit, unless the PR touches an escalation path such as `.github/workflows/` |
+| `yolo`     | checks pass, with no review                                                                                                        |
+
+## Update and uninstall
 
 ```sh
 node dist/cli.js update
 ```
 
-Update fast-forwards the checkout the service runs from to `origin/main`, installs, builds, and restarts the service. It refuses when the checkout has uncommitted changes or cannot fast-forward, and rolls back when the build fails. When `origin/main` has new commits, dashboard pages show a notice with an Update now button that runs the same update. See [Install and uninstall](docs/install.md#update).
-
-## Uninstall
+Update pulls `origin/main`, rebuilds, and restarts the service. It rolls back if the build fails. The dashboard also shows an **Update now** button when a new version is available.
 
 ```sh
 node dist/cli.js uninstall
 ```
 
-Uninstall removes the factory setup from every worker, then the service and `~/.hephaestus/`, and reports any change to your own config since install. Revoke the Claude setup token in your Claude account afterwards.
+Uninstall removes Hephaestus from every worker and the host. Afterwards, revoke any tokens you gave the factory agents.
 
 ## Documentation
 
-- [Install and uninstall](docs/install.md): what install records and changes, updating, and dashboard security
-- [Configuration](docs/configuration.md): config versions, policies, factory settings, backups, and secrets
-- [Dashboard](docs/dashboard.md): the pages and the actions on each
-- [Workers](docs/workers.md): how workers are deployed, signed in, and cleaned up
-- [The factory](docs/factory.md): intake, the pipeline, the merge gate, revert, and the MCP server
-- [Factory Hermes](docs/hermes.md): the factory's own Hermes home and gateway
-- [T3 integration](docs/t3.md): how Hephaestus drives T3 and records threads
-- [Development](docs/development.md): checks, tests, and integration tests
-
-The MVP plan is in [issue #1](https://github.com/greerviau/hephaestus/issues/1).
+- [Install and uninstall](docs/install.md)
+- [Configuration](docs/configuration.md)
+- [Dashboard](docs/dashboard.md)
+- [Workers](docs/workers.md)
+- [The factory](docs/factory.md)
+- [Factory Hermes](docs/hermes.md)
+- [T3 integration](docs/t3.md)
+- [Development](docs/development.md)
